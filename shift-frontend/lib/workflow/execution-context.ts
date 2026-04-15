@@ -7,6 +7,7 @@ export type NodeExecState = {
   duration_ms?: number
   output?: Record<string, unknown>
   error?: string
+  is_pinned?: boolean
 }
 
 export const NodeExecutionContext = createContext<Record<string, NodeExecState>>({})

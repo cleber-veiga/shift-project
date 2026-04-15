@@ -36,6 +36,7 @@ class WorkflowTestService:
     async def run_streaming(
         self,
         workflow_id: UUID,
+        target_node_id: str | None = None,
     ) -> AsyncGenerator[str, None]:
         def sse(payload: dict) -> str:
             return f"data: {json.dumps(payload, default=str)}\n\n"
@@ -76,6 +77,13 @@ class WorkflowTestService:
         ordered_ids = _topological_sort(nodes, edges)
         node_map = {n["id"]: n for n in nodes}
 
+        # Se target_node_id informado, executa somente ate esse no (inclusive)
+        if target_node_id and target_node_id in node_map:
+            # Descobre quais nos sao ancestrais do target (+ o proprio)
+            required: set[str] = set()
+            _collect_ancestors(target_node_id, edges, node_map, required)
+            ordered_ids = [nid for nid in ordered_ids if nid in required]
+
         total_start = time.monotonic()
 
         yield sse({
@@ -95,6 +103,21 @@ class WorkflowTestService:
 
             node_type = node.get("type") or node.get("data", {}).get("type", "unknown")
             label: str = node.get("data", {}).get("label") or node_type
+
+            # Nó com dados fixados (Pin Data) — usa output salvo, pula execução
+            pinned_output = node.get("data", {}).get("pinnedOutput")
+            if pinned_output:
+                upstream[node_id] = pinned_output
+                yield sse({
+                    "type": "node_complete",
+                    "node_id": node_id,
+                    "label": label,
+                    "output": pinned_output,
+                    "duration_ms": 0,
+                    "is_pinned": True,
+                    "timestamp": _ts(),
+                })
+                continue
 
             # Nó desativado — pula silenciosamente
             if node.get("data", {}).get("enabled") is False:
@@ -233,6 +256,12 @@ async def _execute_node(
         return _exec_filter(node_id, data, upstream, edges)
 
     # ── Saída ─────────────────────────────────────────────────────────────────
+    if node_type == "truncate_table":
+        return await _exec_truncate_table(node_id, data, upstream, edges, conn_map)
+
+    if node_type == "bulk_insert":
+        return await _exec_bulk_insert(node_id, data, upstream, edges, conn_map)
+
     if node_type == "loadNode":
         return await _exec_load_node(node_id, data, upstream, edges, conn_map)
 
@@ -267,6 +296,7 @@ _MAPPER_TRANSFORMS: dict[str, Any] = {
     "lower":          lambda v: str(v).lower(),
     "trim":           lambda v: str(v).strip(),
     "remove_special": lambda v: re.sub(r"[^A-Za-z0-9 ]", "", str(v)),
+    "only_digits":    lambda v: re.sub(r"[^0-9]", "", str(v)),
 }
 
 
@@ -293,6 +323,38 @@ def _safe_cast(val: Any, field_type: str | None) -> Any:
         return None
 
 
+_EXPR_TOKEN_RE = re.compile(r"(\{\{[^}]+\}\}|\$[a-zA-Z_]+)")
+
+_SYSTEM_VARS = {
+    "$now":   lambda: datetime.now(timezone.utc).isoformat(),
+    "$today": lambda: date.today().isoformat(),
+}
+
+
+def _eval_expr_template(template: str, row: dict) -> str:
+    """
+    Evaluate an expression template by substituting {{FIELD}} with row
+    values and $var with system variable values.  Returns concatenated string.
+    """
+    parts: list[str] = []
+    last = 0
+    for m in _EXPR_TOKEN_RE.finditer(template):
+        if m.start() > last:
+            parts.append(template[last:m.start()])
+        tok = m.group(1)
+        if tok.startswith("{{"):
+            field = tok[2:-2]
+            val = row.get(field)
+            parts.append(str(val) if val is not None else "")
+        else:
+            resolver = _SYSTEM_VARS.get(tok)
+            parts.append(resolver() if resolver else tok)
+        last = m.end()
+    if last < len(template):
+        parts.append(template[last:])
+    return "".join(parts)
+
+
 def _exec_mapper(
     node_id: str,
     data: dict,
@@ -305,7 +367,8 @@ def _exec_mapper(
     Cada mapeamento pode ser:
       - campo de entrada (valueType="field"): pega valor da coluna source
       - valor fixo (valueType="static"): usa o valor literal informado
-    Transforms (upper, lower, trim, remove_special) sao aplicados em sequencia.
+      - expressao (valueType="expression"): template com {{CAMPO}} e $var
+    Transforms (upper, lower, trim, remove_special, only_digits, remove_chars, replace) sao aplicados em sequencia.
     O type (string, integer, float, boolean, date, datetime) aplica cast.
     """
     rows = _get_upstream_rows(node_id, upstream, edges)
@@ -331,11 +394,19 @@ def _exec_mapper(
 
             source = m.get("source")
             value_type = m.get("valueType", "field")
-            transforms: list[str] = m.get("transforms") or []
+            transforms: list = m.get("transforms") or []
             field_type: str | None = m.get("type")
 
             # Resolve raw value
-            if value_type == "static":
+            if value_type == "expression":
+                expr_template: str = m.get("exprTemplate") or ""
+                if not expr_template:
+                    continue
+                val = _eval_expr_template(expr_template, row)
+                # Track used fields
+                for fmatch in re.finditer(r"\{\{([^}]+)\}\}", expr_template):
+                    mapped_sources.add(fmatch.group(1))
+            elif value_type == "static":
                 val = m.get("value", "")
             elif source:
                 val = row.get(source)
@@ -344,11 +415,35 @@ def _exec_mapper(
                 continue
 
             # Apply transforms (field mode only)
+            # Each entry can be a string (simple) or dict {id, params} (parametrized)
             if value_type == "field" and transforms and val is not None:
-                for t_id in transforms:
+                for t_entry in transforms:
+                    if isinstance(t_entry, str):
+                        t_id     = t_entry
+                        t_params: dict = {}
+                    else:
+                        t_id     = str(t_entry.get("id", ""))
+                        t_params = dict(t_entry.get("params") or {})
+
                     fn = _MAPPER_TRANSFORMS.get(t_id)
                     if fn:
                         val = fn(val)
+                    elif t_id == "remove_chars":
+                        chars = t_params.get("chars", "")
+                        if chars:
+                            val = re.sub(f"[{re.escape(chars)}]", "", str(val))
+                    elif t_id == "replace":
+                        from_str = t_params.get("from", "")
+                        to_str   = t_params.get("to", "")
+                        if from_str:
+                            val = str(val).replace(from_str, to_str)
+                    elif t_id == "truncate":
+                        try:
+                            length = int(t_params.get("length", "0"))
+                        except (ValueError, TypeError):
+                            length = 0
+                        if length > 0:
+                            val = str(val)[:length]
 
             # Apply type cast
             val = _safe_cast(val, field_type)
@@ -491,6 +586,192 @@ async def _exec_sql_database(
 
 
 # ─── Load Node (escrita SQL) ───────────────────────────────────────────────────
+
+async def _exec_truncate_table(
+    node_id: str,
+    data: dict,
+    upstream: dict[str, Any],
+    edges: list[dict],
+    conn_map: dict[str, Connection],
+) -> dict[str, Any]:
+    """Limpa (TRUNCATE ou DELETE) uma tabela de destino e repassa dados upstream."""
+    from app.schemas.connection import ConnectionType
+
+    connection_id = str(data.get("connection_id") or "").strip()
+    if not connection_id:
+        raise ValueError(f"No '{node_id}': connection_id nao configurado.")
+
+    conn = conn_map.get(connection_id)
+    if conn is None:
+        raise ValueError(f"No '{node_id}': conexao '{connection_id}' nao encontrada.")
+
+    target_table = (data.get("target_table") or "").strip()
+    if not target_table:
+        raise ValueError(f"No '{node_id}': tabela de destino nao configurada.")
+
+    if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_.]*$', target_table):
+        raise ValueError(f"No '{node_id}': nome de tabela invalido '{target_table}'.")
+
+    mode: str = data.get("mode", "truncate")
+    where_clause: str = (data.get("where_clause") or "").strip()
+
+    if conn.type == ConnectionType.firebird.value:
+        raise ValueError(f"No '{node_id}': operacao em Firebird nao suportada no modo de teste.")
+
+    conn_str = connection_service.build_connection_string(conn)
+
+    def _run_truncate() -> int:
+        connect_args: dict[str, Any] = {}
+        if conn.type == "sqlserver":
+            connect_args["TrustServerCertificate"] = "yes"
+
+        engine: sa.Engine | None = None
+        try:
+            engine = sa.create_engine(
+                conn_str,
+                pool_pre_ping=False,
+                pool_size=1,
+                max_overflow=0,
+                connect_args=connect_args,
+            )
+            with engine.begin() as db_conn:
+                if mode == "delete":
+                    sql = f"DELETE FROM {target_table}"
+                    if where_clause:
+                        sql += f" WHERE {where_clause}"
+                    result = db_conn.execute(sa.text(sql))
+                    return result.rowcount
+                else:
+                    db_conn.execute(sa.text(f"TRUNCATE TABLE {target_table}"))
+                    return -1  # TRUNCATE nao retorna rowcount
+        finally:
+            if engine:
+                engine.dispose()
+
+    rows_affected = await asyncio.to_thread(_run_truncate)
+
+    # Repassa dados upstream sem alteracao
+    upstream_rows = _get_upstream_rows(node_id, upstream, edges)
+    output: dict[str, Any] = {
+        "status": "success",
+        "target_table": target_table,
+        "mode": mode,
+        "rows_affected": rows_affected,
+        "message": f"Tabela '{target_table}' limpa com sucesso."
+            + (f" {rows_affected} registros removidos." if rows_affected >= 0 else ""),
+    }
+    if upstream_rows:
+        output["row_count"] = len(upstream_rows)
+        output["columns"] = list(upstream_rows[0].keys())
+        output["rows"] = upstream_rows
+
+    return output
+
+
+async def _exec_bulk_insert(
+    node_id: str,
+    data: dict,
+    upstream: dict[str, Any],
+    edges: list[dict],
+    conn_map: dict[str, Connection],
+) -> dict[str, Any]:
+    """Insere linhas upstream em uma tabela de destino com mapeamento de colunas."""
+    from app.schemas.connection import ConnectionType
+
+    connection_id = str(data.get("connection_id") or "").strip()
+    if not connection_id:
+        raise ValueError(f"No '{node_id}': connection_id nao configurado.")
+
+    conn = conn_map.get(connection_id)
+    if conn is None:
+        raise ValueError(f"No '{node_id}': conexao '{connection_id}' nao encontrada.")
+
+    target_table = (data.get("target_table") or "").strip()
+    if not target_table:
+        raise ValueError(f"No '{node_id}': tabela de destino nao configurada.")
+
+    if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_.]*$', target_table):
+        raise ValueError(f"No '{node_id}': nome de tabela invalido '{target_table}'.")
+
+    column_mapping: list[dict] = data.get("column_mapping") or []
+    if not column_mapping:
+        raise ValueError(f"No '{node_id}': mapeamento de colunas nao configurado.")
+
+    # Validate all mappings have source and target
+    valid_maps = [m for m in column_mapping if m.get("source") and m.get("target")]
+    if not valid_maps:
+        raise ValueError(f"No '{node_id}': nenhum mapeamento de colunas valido.")
+
+    batch_size: int = int(data.get("batch_size", 1000))
+    rows = _get_upstream_rows(node_id, upstream, edges)
+
+    if not rows:
+        return {
+            "status": "skipped",
+            "message": "Sem dados upstream para inserir.",
+            "rows_written": 0,
+            "target_table": target_table,
+        }
+
+    if conn.type == ConnectionType.firebird.value:
+        raise ValueError(f"No '{node_id}': escrita em Firebird nao suportada no modo de teste.")
+
+    conn_str = connection_service.build_connection_string(conn)
+
+    # Build mapped rows: rename source columns to target column names
+    mapped_rows: list[dict] = []
+    for row in rows:
+        mapped_row: dict = {}
+        for m in valid_maps:
+            src = m["source"]
+            tgt = m["target"]
+            mapped_row[tgt] = row.get(src)
+        mapped_rows.append(mapped_row)
+
+    def _run_insert() -> int:
+        connect_args: dict[str, Any] = {}
+        if conn.type == "sqlserver":
+            connect_args["TrustServerCertificate"] = "yes"
+
+        engine: sa.Engine | None = None
+        try:
+            engine = sa.create_engine(
+                conn_str,
+                pool_pre_ping=False,
+                pool_size=1,
+                max_overflow=0,
+                connect_args=connect_args,
+            )
+            cols = [m["target"] for m in valid_maps]
+
+            for col in cols:
+                if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', col):
+                    raise ValueError(f"Nome de coluna invalido para escrita: '{col}'")
+
+            col_names = ", ".join(f'"{c}"' for c in cols)
+            placeholders = ", ".join(f":{c}" for c in cols)
+            insert_sql = sa.text(f'INSERT INTO {target_table} ({col_names}) VALUES ({placeholders})')
+
+            with engine.begin() as db_conn:
+                for i in range(0, len(mapped_rows), batch_size):
+                    batch = mapped_rows[i:i + batch_size]
+                    db_conn.execute(insert_sql, batch)
+
+            return len(mapped_rows)
+        finally:
+            if engine:
+                engine.dispose()
+
+    rows_written = await asyncio.to_thread(_run_insert)
+
+    return {
+        "status": "success",
+        "rows_written": rows_written,
+        "target_table": target_table,
+        "columns_mapped": len(valid_maps),
+        "message": f"{rows_written} registros inseridos em '{target_table}'.",
+    }
+
 
 async def _exec_load_node(
     node_id: str,
@@ -684,6 +965,23 @@ def _get_upstream_rows(
         if isinstance(output, dict) and isinstance(output.get("rows"), list):
             return output["rows"]
     return []
+
+
+def _collect_ancestors(
+    target: str,
+    edges: list[dict],
+    node_map: dict[str, dict],
+    result: set[str],
+) -> None:
+    """Coleta recursivamente todos os ancestrais de *target* (inclusive)."""
+    if target in result:
+        return
+    result.add(target)
+    for edge in edges:
+        if edge.get("target") == target:
+            src = edge.get("source")
+            if src and src in node_map:
+                _collect_ancestors(src, edges, node_map, result)
 
 
 def _topological_sort(nodes: list[dict], edges: list[dict]) -> list[str]:

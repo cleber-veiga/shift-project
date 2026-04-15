@@ -26,6 +26,7 @@ import {
   Search,
   Square,
   Trash2,
+  Pencil,
   X,
 } from "lucide-react"
 import {
@@ -34,6 +35,7 @@ import {
   executePlaygroundQuery,
   listSavedQueries,
   createSavedQuery,
+  updateSavedQuery,
   deleteSavedQuery,
   streamAiChat,
   type AiChatMessage,
@@ -668,6 +670,14 @@ export default function PlaygroundPage({ params }: PageProps) {
   const [saveDesc, setSaveDesc] = useState("")
   const [saving, setSaving] = useState(false)
 
+  // Edit saved query
+  const [editDialogOpen, setEditDialogOpen] = useState(false)
+  const [editingQuery, setEditingQuery] = useState<SavedQuery | null>(null)
+  const [editName, setEditName] = useState("")
+  const [editDesc, setEditDesc] = useState("")
+  const [editSql, setEditSql] = useState("")
+  const [editSaving, setEditSaving] = useState(false)
+
   const { size: sidebarWidth, onMouseDown: onSidebarDrag } = useResizable(224, 140, 480, "x")
   const { size: editorHeight, onMouseDown: onEditorDrag } = useResizable(220, 80, 600, "y")
   const { size: chatWidth, onMouseDown: onChatDrag } = useResizable(380, 280, 600, "x-inv")
@@ -774,6 +784,35 @@ export default function PlaygroundPage({ params }: PageProps) {
       setSaving(false)
     }
   }, [connectionId, query, saveName, saveDesc, toast, loadSavedQueries])
+
+  // ── Edit saved query ──
+  function handleOpenEdit(sq: SavedQuery) {
+    setEditingQuery(sq)
+    setEditName(sq.name)
+    setEditDesc(sq.description ?? "")
+    setEditSql(sq.query)
+    setEditDialogOpen(true)
+  }
+
+  const handleUpdateQuery = useCallback(async () => {
+    if (!editingQuery || !editName.trim() || !editSql.trim()) return
+    setEditSaving(true)
+    try {
+      const updated = await updateSavedQuery(editingQuery.id, {
+        name: editName.trim(),
+        description: editDesc.trim() || undefined,
+        query: editSql.trim(),
+      })
+      setSavedQueries((prev) => prev.map((q) => q.id === updated.id ? updated : q))
+      toast.success("Consulta atualizada", `"${updated.name}" atualizada com sucesso.`)
+      setEditDialogOpen(false)
+      setEditingQuery(null)
+    } catch (err) {
+      toast.error("Erro ao atualizar", err instanceof Error ? err.message : "Falha ao atualizar consulta.")
+    } finally {
+      setEditSaving(false)
+    }
+  }, [editingQuery, editName, editDesc, editSql, toast])
 
   // ── Delete saved query ──
   const handleDeleteSaved = useCallback(async (sq: SavedQuery) => {
@@ -1014,13 +1053,22 @@ export default function PlaygroundPage({ params }: PageProps) {
                             </p>
                           )}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => void handleDeleteSaved(sq)}
-                          className="shrink-0 rounded p-1 text-muted-foreground/0 transition-colors group-hover:text-destructive/70 hover:!text-destructive"
-                        >
-                          <Trash2 className="size-3" />
-                        </button>
+                        <div className="flex shrink-0 items-center gap-0.5">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEdit(sq)}
+                            className="rounded p-1 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground/70 hover:!text-foreground"
+                          >
+                            <Pencil className="size-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteSaved(sq)}
+                            className="rounded p-1 text-muted-foreground/0 transition-colors group-hover:text-destructive/70 hover:!text-destructive"
+                          >
+                            <Trash2 className="size-3" />
+                          </button>
+                        </div>
                       </div>
                       <p className="mt-1 line-clamp-2 font-mono text-[10px] text-muted-foreground/70">
                         {sq.query}
@@ -1174,6 +1222,76 @@ export default function PlaygroundPage({ params }: PageProps) {
           </>
         )}
       </div>
+
+      {/* Edit saved query dialog */}
+      {editDialogOpen && editingQuery && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-xl">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-foreground">Editar Consulta</h2>
+              <button
+                type="button"
+                onClick={() => setEditDialogOpen(false)}
+                className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <div>
+                <label className="text-xs font-medium text-foreground">Nome *</label>
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  placeholder="Ex: Listar todos os CFOPs"
+                  className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-1 focus:ring-ring/20"
+                  autoFocus
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-foreground">Descrição</label>
+                <input
+                  type="text"
+                  value={editDesc}
+                  onChange={(e) => setEditDesc(e.target.value)}
+                  placeholder="Descrição opcional..."
+                  className="mt-1 h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-1 focus:ring-ring/20"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-foreground">SQL *</label>
+                <textarea
+                  value={editSql}
+                  onChange={(e) => setEditSql(e.target.value)}
+                  rows={5}
+                  className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-[11px] text-foreground outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-1 focus:ring-ring/20 resize-none"
+                />
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setEditDialogOpen(false)}
+                className="h-8 rounded-md px-3 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleUpdateQuery()}
+                disabled={!editName.trim() || !editSql.trim() || editSaving}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                {editSaving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
+                Salvar alterações
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Save query dialog */}
       {saveDialogOpen && (

@@ -2,10 +2,10 @@
 Endpoints de execucao e acompanhamento de workflows.
 """
 
-from typing import Any
+from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,6 +51,7 @@ async def execute_workflow(
 )
 async def test_workflow(
     workflow_id: UUID,
+    target_node_id: Optional[str] = Query(None, description="Se informado, executa somente ate este no (inclusive)."),
     _=Depends(require_permission("workspace", "VIEWER")),
 ) -> StreamingResponse:
     """Executa um workflow em modo de teste com streaming SSE por no.
@@ -62,7 +63,10 @@ async def test_workflow(
     - error (caso critico antes de comecar)
     """
     async def event_stream():
-        async for chunk in workflow_test_service.run_streaming(workflow_id=workflow_id):
+        async for chunk in workflow_test_service.run_streaming(
+            workflow_id=workflow_id,
+            target_node_id=target_node_id,
+        ):
             yield chunk
 
     return StreamingResponse(

@@ -8,6 +8,8 @@ import { cn } from "@/lib/utils"
 import { SqlDatabaseConfig } from "@/components/workflow/nodes/sql-database-config"
 import { MapperConfig } from "@/components/workflow/nodes/mapper-config"
 import { FilterConfig } from "@/components/workflow/nodes/filter-config"
+import { TruncateTableConfig } from "@/components/workflow/nodes/truncate-table-config"
+import { BulkInsertConfig } from "@/components/workflow/nodes/bulk-insert-config"
 
 interface NodeConfigPanelProps {
   node: Node
@@ -151,22 +153,11 @@ export function NodeConfigFields({
     onUpdate(node.id, { ...data, [field]: value })
   }
 
-  // Common label field for all nodes
-  const labelField = (
-    <ConfigField label="Nome do nó">
-      <TextInput
-        value={(data.label as string) ?? ""}
-        onChange={(v) => update("label", v)}
-        placeholder="Nome personalizado..."
-      />
-    </ConfigField>
-  )
-
   switch (nodeType) {
     case "manual":
       return (
         <div className="space-y-4">
-          {labelField}
+
           <div className="rounded-lg border border-dashed border-amber-500/30 bg-amber-500/5 p-3">
             <p className="text-xs font-medium text-amber-600 dark:text-amber-400">Gatilho Manual</p>
             <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
@@ -179,7 +170,7 @@ export function NodeConfigFields({
     case "cron":
       return (
         <div className="space-y-4">
-          {labelField}
+
           <ConfigField label="Expressão Cron">
             <TextInput
               value={(data.cron_expression as string) ?? ""}
@@ -198,12 +189,12 @@ export function NodeConfigFields({
       )
 
     case "webhook":
-      return <div className="space-y-4">{labelField}</div>
+      return <div className="space-y-4"><p className="text-xs text-muted-foreground">Nenhuma configuração necessária.</p></div>
 
     case "polling":
       return (
         <div className="space-y-4">
-          {labelField}
+
           <ConfigField label="Connection ID">
             <TextInput
               value={(data.connection_id as string) ?? ""}
@@ -232,7 +223,7 @@ export function NodeConfigFields({
     case "csv_input":
       return (
         <div className="space-y-4">
-          {labelField}
+
           <ConfigField label="URL / Caminho">
             <TextInput
               value={(data.url as string) ?? ""}
@@ -263,7 +254,7 @@ export function NodeConfigFields({
     case "excel_input":
       return (
         <div className="space-y-4">
-          {labelField}
+
           <ConfigField label="URL / Caminho">
             <TextInput
               value={(data.url as string) ?? ""}
@@ -284,7 +275,7 @@ export function NodeConfigFields({
     case "api_input":
       return (
         <div className="space-y-4">
-          {labelField}
+
           <ConfigField label="URL">
             <TextInput
               value={(data.url as string) ?? ""}
@@ -330,7 +321,7 @@ export function NodeConfigFields({
     case "http_request":
       return (
         <div className="space-y-4">
-          {labelField}
+
           <ConfigField label="URL">
             <TextInput
               value={(data.url as string) ?? ""}
@@ -361,7 +352,7 @@ export function NodeConfigFields({
     case "inline_data":
       return (
         <div className="space-y-4">
-          {labelField}
+
           <ConfigField label="Dados (JSON)">
             <TextArea
               value={typeof data.data === "string" ? (data.data as string) : JSON.stringify(data.data ?? [], null, 2)}
@@ -398,7 +389,7 @@ export function NodeConfigFields({
     case "aggregator":
       return (
         <div className="space-y-4">
-          {labelField}
+
           <ConfigField label="Agrupar por (JSON array)">
             <TextArea
               value={JSON.stringify(data.group_by ?? [], null, 2)}
@@ -433,7 +424,7 @@ export function NodeConfigFields({
     case "math":
       return (
         <div className="space-y-4">
-          {labelField}
+
           <ConfigField label="Expressões (JSON)">
             <TextArea
               value={JSON.stringify(data.expressions ?? [], null, 2)}
@@ -454,7 +445,7 @@ export function NodeConfigFields({
     case "code":
       return (
         <div className="space-y-4">
-          {labelField}
+
           <ConfigField label="Código Python">
             <TextArea
               value={(data.code as string) ?? ""}
@@ -472,10 +463,26 @@ export function NodeConfigFields({
         </div>
       )
 
+    case "truncate_table":
+      return (
+        <TruncateTableConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "bulk_insert":
+      return (
+        <BulkInsertConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
     case "loadNode":
       return (
         <div className="space-y-4">
-          {labelField}
+
           <ConfigField label="Connection ID">
             <TextInput
               value={(data.connection_id as string) ?? ""}
@@ -507,7 +514,7 @@ export function NodeConfigFields({
     case "aiNode":
       return (
         <div className="space-y-4">
-          {labelField}
+
           <ConfigField label="Modelo">
             <TextInput
               value={(data.model_name as string) ?? "gpt-4"}
@@ -536,7 +543,7 @@ export function NodeConfigFields({
     default:
       return (
         <div className="space-y-4">
-          {labelField}
+
           <p className="text-xs text-muted-foreground">
             Configuração avançada não disponível para este tipo de nó.
           </p>

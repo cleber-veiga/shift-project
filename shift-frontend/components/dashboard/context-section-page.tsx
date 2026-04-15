@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ConnectionsSection } from "@/components/dashboard/connections-section"
 import { InputModelsSection } from "@/components/dashboard/input-models-section"
 import { NewWorkflowModal } from "@/components/workflow/new-workflow-modal"
-import { listWorkspaceWorkflows, deleteWorkflow, type Workflow as WorkflowType } from "@/lib/auth"
+import { listWorkspaceWorkflows, deleteWorkflow, listWorkspacePlayers, type Workflow as WorkflowType, type WorkspacePlayer } from "@/lib/auth"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 
 interface ContextSectionPageProps {
@@ -38,6 +38,7 @@ function FlowsSection({
 
   // Real data
   const [workflows, setWorkflows] = useState<WorkflowType[]>([])
+  const [players, setPlayers] = useState<WorkspacePlayer[]>([])
   const [loading, setLoading] = useState(true)
   const [deleteTarget, setDeleteTarget] = useState<WorkflowType | null>(null)
   const [deleting, setDeleting] = useState(false)
@@ -46,8 +47,12 @@ function FlowsSection({
     if (!selectedWorkspace?.id) return
     setLoading(true)
     try {
-      const data = await listWorkspaceWorkflows(selectedWorkspace.id)
+      const [data, playerData] = await Promise.all([
+        listWorkspaceWorkflows(selectedWorkspace.id),
+        listWorkspacePlayers(selectedWorkspace.id),
+      ])
       setWorkflows(data)
+      setPlayers(playerData)
     } catch {
       setWorkflows([])
     } finally {
@@ -78,6 +83,14 @@ function FlowsSection({
 
   function getStatus(w: WorkflowType) {
     return w.is_published ? "ATIVO" : "RASCUNHO"
+  }
+
+  function getPlayerName(flow: WorkflowType): string | null {
+    const meta = flow.definition?.meta as Record<string, unknown> | undefined
+    if ((meta?.workflow_type as string) !== "data-migration") return null
+    const playerId = meta?.player_id as string | undefined
+    if (!playerId) return "—"
+    return players.find((p) => p.id === playerId)?.name ?? "—"
   }
 
   const filtered = workflows.filter((w) => {
@@ -174,8 +187,9 @@ function FlowsSection({
         </div>
       ) : view === "list" ? (
         <div className="overflow-auto rounded-xl border border-border bg-card shadow-sm">
-          <div className="grid min-w-[760px] grid-cols-[1fr_140px_120px_120px] items-center border-b border-border px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+          <div className="grid min-w-[860px] grid-cols-[1fr_180px_140px_120px_120px] items-center border-b border-border px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
             <span>Fluxo</span>
+            <span className="text-left">Concorrente</span>
             <span className="text-left">Status</span>
             <span className="text-left">Atualizado</span>
             <span className="text-right">Ações</span>
@@ -185,7 +199,7 @@ function FlowsSection({
             {filtered.map((flow) => (
               <div
                 key={flow.id}
-                className="grid min-w-[760px] grid-cols-[1fr_140px_120px_120px] items-center px-4 py-4 transition-colors hover:bg-muted/10"
+                className="grid min-w-[860px] grid-cols-[1fr_180px_140px_120px_120px] items-center px-4 py-4 transition-colors hover:bg-muted/10"
               >
                 <div className="flex items-center gap-3">
                   <div className="flex size-8 items-center justify-center rounded-md bg-primary/10 text-primary">
@@ -195,6 +209,16 @@ function FlowsSection({
                     <p className="truncate text-[13px] font-semibold text-foreground">{flow.name}</p>
                     <p className="text-[11px] text-muted-foreground">{flow.description || scopeName}</p>
                   </div>
+                </div>
+
+                <div>
+                  {getPlayerName(flow) !== null ? (
+                    <span className="inline-flex rounded bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                      {getPlayerName(flow)}
+                    </span>
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground">—</span>
+                  )}
                 </div>
 
                 <div>
@@ -260,6 +284,14 @@ function FlowsSection({
                   {getStatus(flow)}
                 </span>
               </div>
+
+              {getPlayerName(flow) !== null && (
+                <div className="mt-3">
+                  <span className="inline-flex rounded bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                    {getPlayerName(flow)}
+                  </span>
+                </div>
+              )}
 
               <div className="mt-4 flex items-center justify-between text-xs text-muted-foreground">
                 <span>{formatDate(flow.updated_at)}</span>

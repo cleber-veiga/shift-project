@@ -104,20 +104,6 @@ export function FilterConfig({ data, onUpdate }: FilterConfigProps) {
 
   return (
     <div className="space-y-4">
-      {/* Label */}
-      <div className="space-y-1.5">
-        <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-          Nome do nó
-        </label>
-        <input
-          type="text"
-          value={(data.label as string) ?? ""}
-          onChange={(e) => onUpdate({ ...data, label: e.target.value })}
-          placeholder="Nome personalizado..."
-          className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
-        />
-      </div>
-
       {/* Logic selector */}
       <div className="space-y-1.5">
         <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">

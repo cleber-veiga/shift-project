@@ -119,11 +119,19 @@ function WorkflowEditorInner({
         setName(wf.name)
         setDescription(wf.description ?? "")
         const def = wf.definition ?? {}
-        setNodes((def.nodes as Node[]) ?? [])
+        const loadedNodes = (def.nodes as Node[]) ?? []
+        setNodes(loadedNodes)
         setEdges((def.edges as Edge[]) ?? [])
         setWorkflowMeta((def.meta as Record<string, unknown>) ?? {})
         // Store workspace_id for later use (auth scope in test endpoint)
         if (wf.workspace_id) setWorkflowWorkspaceId(wf.workspace_id)
+        // Pre-populate exec states from pinned outputs so data is visible immediately
+        const pinnedStates: Record<string, NodeExecState> = {}
+        for (const n of loadedNodes) {
+          const pinned = (n.data as Record<string, unknown>)?.pinnedOutput as Record<string, unknown> | undefined
+          if (pinned) pinnedStates[n.id] = { status: "success", output: pinned, is_pinned: true }
+        }
+        if (Object.keys(pinnedStates).length > 0) setNodeExecStates(pinnedStates)
       })
       .catch(() => {
         if (!cancelled) setStatusMessage("Erro ao carregar workflow")
@@ -201,8 +209,12 @@ function WorkflowEditorInner({
       setSelectedNode((prev) =>
         prev && prev.id === nodeId ? { ...prev, data } : prev,
       )
-      // Clear stale execution output when config changes
+      // Update exec state: keep pinned data visible; clear stale output otherwise
       setNodeExecStates((prev) => {
+        const pinned = (data as Record<string, unknown>)?.pinnedOutput as Record<string, unknown> | undefined
+        if (pinned) {
+          return { ...prev, [nodeId]: { status: "success", output: pinned, is_pinned: true } }
+        }
         if (!prev[nodeId]) return prev
         const { [nodeId]: _, ...rest } = prev
         return rest
@@ -253,7 +265,7 @@ function WorkflowEditorInner({
   }, [workflowId, name, description, nodes, edges, workflowMeta])
 
   // ── Execute (SSE streaming test) ─────────────────────────────────────────
-  const handleExecute = useCallback(async () => {
+  const handleExecute = useCallback(async (targetNodeId?: string) => {
     if (workflowId === "new") return
 
     // Cancel any in-flight execution
@@ -261,8 +273,13 @@ function WorkflowEditorInner({
     const controller = new AbortController()
     abortControllerRef.current = controller
 
-    // Reset state and show panel
-    setNodeExecStates({})
+    // Reset state — preserve pinned node outputs so they remain visible
+    const pinnedStates: Record<string, NodeExecState> = {}
+    for (const n of nodes) {
+      const pinned = (n.data as Record<string, unknown>)?.pinnedOutput as Record<string, unknown> | undefined
+      if (pinned) pinnedStates[n.id] = { status: "success", output: pinned, is_pinned: true }
+    }
+    setNodeExecStates(pinnedStates)
     setExecEvents([])
     setShowExecPanel(true)
     setIsExecuting(true)
@@ -303,6 +320,7 @@ function WorkflowEditorInner({
                 status: isSkipped ? "skipped" : "success",
                 duration_ms: event.duration_ms,
                 output: event.output,
+                is_pinned: event.is_pinned === true,
               },
             }))
           } else if (event.type === "node_error") {
@@ -330,6 +348,7 @@ function WorkflowEditorInner({
         },
       },
       controller.signal,
+      targetNodeId,
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workflowId, name, description, nodes, edges, workflowMeta, workflowWorkspaceId, selectedWorkspace])
@@ -485,9 +504,10 @@ function WorkflowEditorInner({
             node={currentSelectedNode}
             upstreamOutputs={upstreamOutputs}
             currentOutput={selectedNodeExecState}
+            isExecuting={isExecuting}
             onClose={() => setSelectedNode(null)}
             onUpdate={onUpdateNodeData}
-            onExecute={handleExecute}
+            onExecute={() => handleExecute(currentSelectedNode.id)}
           />
         )}
 

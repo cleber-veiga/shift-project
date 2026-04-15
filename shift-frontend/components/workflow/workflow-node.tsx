@@ -411,7 +411,7 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
       )}
 
       {/* ── Source handle (right) ── */}
-      {definition?.category !== "output" && (
+      {(definition?.category !== "output" || definition?.type === "truncate_table") && (
         <Handle
           type="source"
           position={Position.Right}

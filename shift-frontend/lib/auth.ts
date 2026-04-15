@@ -796,14 +796,26 @@ export type PlaygroundQueryResponse = {
   execution_time_ms: number
 }
 
+const _schemaCache = new Map<string, { data: SchemaResponse; ts: number }>()
+const _SCHEMA_CACHE_TTL = 5 * 60 * 1000 // 5 minutos
+
 export async function getConnectionSchema(
   connectionId: string,
   force = false
 ): Promise<SchemaResponse> {
+  const cacheKey = connectionId
+  if (!force) {
+    const cached = _schemaCache.get(cacheKey)
+    if (cached && Date.now() - cached.ts < _SCHEMA_CACHE_TTL) {
+      return cached.data
+    }
+  }
   const url = force
     ? `/connections/${connectionId}/schema?force=true`
     : `/connections/${connectionId}/schema`
-  return authorizedRequest<SchemaResponse>(url, { method: "GET" })
+  const result = await authorizedRequest<SchemaResponse>(url, { method: "GET" })
+  _schemaCache.set(cacheKey, { data: result, ts: Date.now() })
+  return result
 }
 
 export async function executePlaygroundQuery(
@@ -1133,7 +1145,7 @@ export async function getExecutionStatus(
 export type WorkflowTestEvent =
   | { type: "execution_start"; execution_id: string; node_count: number; timestamp: string }
   | { type: "node_start"; node_id: string; node_type: string; label: string; timestamp: string }
-  | { type: "node_complete"; node_id: string; label: string; output: Record<string, unknown>; duration_ms: number; timestamp: string }
+  | { type: "node_complete"; node_id: string; label: string; output: Record<string, unknown>; duration_ms: number; is_pinned?: boolean; timestamp: string }
   | { type: "node_error"; node_id: string; label: string; error: string; duration_ms: number; timestamp: string }
   | { type: "execution_complete"; execution_id: string; status: "SUCCESS" | "FAILED"; duration_ms: number; timestamp: string }
   | { type: "error"; error: string }
@@ -1153,6 +1165,7 @@ export async function testWorkflowStream(
   workspaceId: string | undefined,
   callbacks: WorkflowTestCallbacks,
   signal?: AbortSignal,
+  targetNodeId?: string,
 ): Promise<void> {
   const session = await getValidSession()
   if (!session) {
@@ -1160,9 +1173,12 @@ export async function testWorkflowStream(
     return
   }
 
-  const scopeParam = workspaceId ? `?workspace_id=${workspaceId}` : ""
+  const params = new URLSearchParams()
+  if (workspaceId) params.set("workspace_id", workspaceId)
+  if (targetNodeId) params.set("target_node_id", targetNodeId)
+  const qs = params.toString() ? `?${params.toString()}` : ""
   const response = await fetch(
-    `${getApiBaseUrl()}/workflows/${workflowId}/test${scopeParam}`,
+    `${getApiBaseUrl()}/workflows/${workflowId}/test${qs}`,
     {
       method: "POST",
       headers: {

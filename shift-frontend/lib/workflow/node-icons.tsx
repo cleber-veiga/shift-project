@@ -10,6 +10,7 @@ import {
   Code,
   Database,
   DatabaseZap,
+  Eraser,
   FileSpreadsheet,
   Filter,
   Globe,
@@ -18,6 +19,7 @@ import {
   Send,
   Sheet,
   Sparkles,
+  Upload,
   Webhook,
   type LucideIcon,
 } from "lucide-react"
@@ -31,6 +33,7 @@ const iconMap: Record<string, LucideIcon> = {
   Code,
   Database,
   DatabaseZap,
+  Eraser,
   FileSpreadsheet,
   Filter,
   Globe,
@@ -39,6 +42,7 @@ const iconMap: Record<string, LucideIcon> = {
   Send,
   Sheet,
   Sparkles,
+  Upload,
   Webhook,
 }
 

@@ -21,6 +21,7 @@ dependencies = [
     "python-multipart>=0.0.12",
     "httpx>=0.28",
     "cryptography>=43.0",
+    "pyodbc>=5.0",
     "sqlalchemy-firebird>=2.0",
     "firebird-driver>=2.0",
     "openpyxl>=3.1",

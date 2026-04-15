@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
 import { type Node } from "@xyflow/react"
 import {
   ArrowRightLeft,
@@ -11,6 +11,8 @@ import {
   Hash,
   List,
   Loader2,
+  Pin,
+  PinOff,
   Play,
   Table2,
   ToggleLeft,
@@ -23,7 +25,7 @@ import { getNodeDefinition } from "@/lib/workflow/types"
 import { getNodeIcon } from "@/lib/workflow/node-icons"
 import { NodeConfigFields } from "@/components/workflow/node-config-panel"
 import type { NodeExecState } from "@/lib/workflow/execution-context"
-import { UpstreamFieldsContext } from "@/lib/workflow/upstream-fields-context"
+import { UpstreamFieldsContext, UsedSourcesContext } from "@/lib/workflow/upstream-fields-context"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -38,6 +40,7 @@ interface NodeConfigModalProps {
   node: Node
   upstreamOutputs: UpstreamOutput[]
   currentOutput: NodeExecState | null
+  isExecuting?: boolean
   onClose: () => void
   onUpdate: (nodeId: string, data: Record<string, unknown>) => void
   onExecute: () => void
@@ -107,12 +110,20 @@ function typeLabel(type: FieldType): string {
   }
 }
 
+// ─── Persisted panel widths (survives modal close/reopen within session) ─────
+
+const _savedPanelWidths: { left: number | null; center: number | null } = {
+  left: null,
+  center: null,
+}
+
 // ─── Main Modal ───────────────────────────────────────────────────────────────
 
 export function NodeConfigModal({
   node,
   upstreamOutputs,
   currentOutput,
+  isExecuting: isExecutingProp,
   onClose,
   onUpdate,
   onExecute,
@@ -132,6 +143,86 @@ export function NodeConfigModal({
     return []
   }, [upstreamOutputs])
 
+  // Compute which source fields are already mapped (used by this node's mappings)
+  const usedSources = useMemo(() => {
+    const data = node.data as Record<string, unknown>
+    const mappings = Array.isArray(data?.mappings)
+      ? (data.mappings as Array<{ source?: string; valueType?: string; exprTemplate?: string }>)
+      : []
+    const sources = new Set<string>()
+    for (const m of mappings) {
+      if (m.valueType === "field" && m.source) {
+        sources.add(m.source)
+      } else if (m.valueType === "expression" && m.exprTemplate) {
+        const re = /\{\{([^}]+)\}\}/g
+        let match: RegExpExecArray | null
+        while ((match = re.exec(m.exprTemplate)) !== null) {
+          sources.add(match[1])
+        }
+      }
+    }
+    return sources
+  }, [node.data])
+
+  const isRunning = isExecutingProp || currentOutput?.status === "running"
+
+  // ── Resizable panels ──────────────────────────────────────────────────────
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [leftWidth, setLeftWidth]     = useState<number | null>(_savedPanelWidths.left)
+  const [centerWidth, setCenterWidth] = useState<number | null>(_savedPanelWidths.center)
+
+  // Persist widths so they survive modal close/reopen
+  useEffect(() => { _savedPanelWidths.left = leftWidth }, [leftWidth])
+  useEffect(() => { _savedPanelWidths.center = centerWidth }, [centerWidth])
+  const draggingRef = useRef<"left" | "right" | null>(null)
+  const startXRef   = useRef(0)
+  const startLRef   = useRef(0)
+  const startCRef   = useRef(0)
+
+  const leftRef   = useRef<HTMLDivElement>(null)
+  const centerRef = useRef<HTMLDivElement>(null)
+
+  const handlePointerDown = useCallback(
+    (side: "left" | "right", e: React.PointerEvent) => {
+      e.preventDefault()
+      draggingRef.current = side
+      startXRef.current = e.clientX
+      startLRef.current = leftRef.current?.offsetWidth ?? 0
+      startCRef.current = centerRef.current?.offsetWidth ?? 0
+      document.body.style.cursor = "col-resize"
+      document.body.style.userSelect = "none"
+    },
+    [],
+  )
+
+  useEffect(() => {
+    function onMove(e: PointerEvent) {
+      if (!draggingRef.current || !containerRef.current) return
+      const dx = e.clientX - startXRef.current
+      const totalW = containerRef.current.offsetWidth
+      const MIN = 240
+      if (draggingRef.current === "left") {
+        const newLeft = Math.max(MIN, Math.min(startLRef.current + dx, totalW - MIN * 2 - 16))
+        setLeftWidth(newLeft)
+      } else {
+        const newCenter = Math.max(MIN, Math.min(startCRef.current + dx, totalW - MIN * 2 - 16))
+        setCenterWidth(newCenter)
+      }
+    }
+    function onUp() {
+      if (!draggingRef.current) return
+      draggingRef.current = null
+      document.body.style.cursor = ""
+      document.body.style.userSelect = ""
+    }
+    document.addEventListener("pointermove", onMove)
+    document.addEventListener("pointerup", onUp)
+    return () => {
+      document.removeEventListener("pointermove", onMove)
+      document.removeEventListener("pointerup", onUp)
+    }
+  }, [])
+
   // Close on Escape
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -147,41 +238,32 @@ export function NodeConfigModal({
       onClick={onClose}
     >
       <div
-        className="flex h-[92vh] w-[96vw] max-w-[1440px] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
+        className="flex h-[96vh] w-[98vw] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* ── Header ── */}
-        <div className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
-          <div className="flex items-center gap-3">
-            <div
-              className={cn(
-                "flex size-8 items-center justify-center rounded-lg",
-                iconBgMap[color],
-              )}
-            >
-              <Icon className={cn("size-4", iconColorMap[color])} />
-            </div>
-            <div>
-              <span className="text-sm font-semibold text-foreground">
-                {label ?? definition?.label ?? node.type}
-              </span>
-              {definition?.description && (
-                <span className="ml-2 text-xs text-muted-foreground">
-                  {definition.description}
-                </span>
-              )}
-            </div>
+        {/* ── Header: icon + editable name + description + close ── */}
+        <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-4">
+          <div
+            className={cn(
+              "flex size-8 shrink-0 items-center justify-center rounded-lg",
+              iconBgMap[color],
+            )}
+          >
+            <Icon className={cn("size-4", iconColorMap[color])} />
           </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onExecute}
-              className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
-            >
-              <Play className="size-3" />
-              Executar
-            </button>
+          <input
+            type="text"
+            value={label ?? definition?.label ?? node.type ?? ""}
+            onChange={(e) =>
+              onUpdate(node.id, {
+                ...(node.data as Record<string, unknown>),
+                label: e.target.value,
+              })
+            }
+            placeholder="Nome do nó..."
+            className="h-8 min-w-0 max-w-[300px] rounded-md border border-transparent bg-transparent px-2 text-sm font-semibold text-foreground outline-none transition-colors placeholder:text-muted-foreground hover:border-input focus:border-input focus:ring-1 focus:ring-primary"
+          />
+          <div className="ml-auto">
             <button
               type="button"
               onClick={onClose}
@@ -193,16 +275,55 @@ export function NodeConfigModal({
           </div>
         </div>
 
-        {/* ── Body: 3 columns (35% / 30% / 35%) ── */}
-        <div className="flex min-h-0 flex-1 divide-x divide-border">
+        {/* ── Body: 3 resizable columns ── */}
+        <div ref={containerRef} className="flex min-h-0 flex-1">
           {/* LEFT: Input data */}
-          <div className="flex min-h-0 min-w-[300px] flex-[7] flex-col">
-            <InputPanel upstreamOutputs={upstreamOutputs} />
+          <div
+            ref={leftRef}
+            className="flex min-h-0 min-w-[240px] flex-col"
+            style={leftWidth ? { width: leftWidth, flexShrink: 0, flexGrow: 0 } : { flex: 7 }}
+          >
+            <UsedSourcesContext.Provider value={usedSources}>
+              <InputPanel upstreamOutputs={upstreamOutputs} />
+            </UsedSourcesContext.Provider>
+          </div>
+
+          {/* Resize handle LEFT ↔ CENTER */}
+          <div
+            className="group relative z-10 flex w-2 shrink-0 cursor-col-resize items-center justify-center border-x border-border bg-transparent transition-colors hover:bg-primary/5"
+            onPointerDown={(e) => handlePointerDown("left", e)}
+          >
+            <div className="h-8 w-[3px] rounded-full bg-border transition-colors group-hover:bg-primary/40 group-active:bg-primary/60" />
           </div>
 
           {/* CENTER: Parameters */}
-          <div className="flex min-h-0 min-w-[260px] flex-[6] flex-col">
-            <PanelHeader label="Parâmetros" />
+          <div
+            ref={centerRef}
+            className="flex min-h-0 min-w-[240px] flex-col"
+            style={centerWidth ? { width: centerWidth, flexShrink: 0, flexGrow: 0 } : { flex: 6 }}
+          >
+            {/* Parameters header with execute button */}
+            <div className="flex h-9 shrink-0 items-center justify-between border-b border-border px-3">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Parâmetros
+              </span>
+              <button
+                type="button"
+                onClick={onExecute}
+                disabled={isRunning}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-lg px-3 py-1 text-[11px] font-semibold transition-colors",
+                  isRunning
+                    ? "bg-primary/70 text-primary-foreground cursor-not-allowed"
+                    : "bg-primary text-primary-foreground hover:bg-primary/90",
+                )}
+              >
+                {isRunning
+                  ? <><Loader2 className="size-3 animate-spin" /> Executando…</>
+                  : <><Play className="size-3" /> Executar</>
+                }
+              </button>
+            </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
               <UpstreamFieldsContext.Provider value={upstreamColumns}>
                 <NodeConfigFields node={node} onUpdate={onUpdate} />
@@ -210,9 +331,32 @@ export function NodeConfigModal({
             </div>
           </div>
 
+          {/* Resize handle CENTER ↔ RIGHT */}
+          <div
+            className="group relative z-10 flex w-2 shrink-0 cursor-col-resize items-center justify-center border-x border-border bg-transparent transition-colors hover:bg-primary/5"
+            onPointerDown={(e) => handlePointerDown("right", e)}
+          >
+            <div className="h-8 w-[3px] rounded-full bg-border transition-colors group-hover:bg-primary/40 group-active:bg-primary/60" />
+          </div>
+
           {/* RIGHT: Output data */}
-          <div className="flex min-h-0 min-w-[300px] flex-[7] flex-col">
-            <OutputPanel currentOutput={currentOutput} onExecute={onExecute} />
+          <div className="flex min-h-0 min-w-[240px] flex-1 flex-col">
+            <OutputPanel
+              currentOutput={currentOutput}
+              onExecute={onExecute}
+              isPinned={Boolean((node.data as Record<string, unknown>)?.pinnedOutput)}
+              onPin={() => {
+                if (!currentOutput?.output) return
+                onUpdate(node.id, {
+                  ...(node.data as Record<string, unknown>),
+                  pinnedOutput: currentOutput.output,
+                })
+              }}
+              onUnpin={() => {
+                const { pinnedOutput: _, ...rest } = node.data as Record<string, unknown>
+                onUpdate(node.id, rest)
+              }}
+            />
           </div>
         </div>
 
@@ -300,13 +444,54 @@ function InputPanel({ upstreamOutputs }: { upstreamOutputs: UpstreamOutput[] }) 
 function OutputPanel({
   currentOutput,
   onExecute,
+  isPinned,
+  onPin,
+  onUnpin,
 }: {
   currentOutput: NodeExecState | null
   onExecute: () => void
+  isPinned: boolean
+  onPin: () => void
+  onUnpin: () => void
 }) {
+  const canPin = Boolean(currentOutput?.output) && !currentOutput?.is_pinned
+
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col">
-      <PanelHeader label="Output" />
+      {/* Header with pin button */}
+      <div className="flex h-9 shrink-0 items-center justify-between border-b border-border px-3">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Output
+        </span>
+        {(isPinned || canPin) && (
+          <button
+            type="button"
+            onClick={isPinned ? onUnpin : onPin}
+            title={isPinned ? "Liberar dados fixados" : "Fixar dados (não re-executa ao recarregar)"}
+            className={cn(
+              "flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+              isPinned
+                ? "bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
+                : "text-muted-foreground/60 hover:bg-muted hover:text-foreground",
+            )}
+          >
+            {isPinned
+              ? <><PinOff className="size-3" /> Liberar</>
+              : <><Pin className="size-3" /> Fixar</>
+            }
+          </button>
+        )}
+      </div>
+
+      {/* Pinned banner */}
+      {isPinned && (
+        <div className="flex items-center gap-2 border-b border-amber-500/20 bg-amber-500/5 px-3 py-2">
+          <Pin className="size-3 shrink-0 text-amber-500" />
+          <span className="text-[10px] text-amber-600 dark:text-amber-400">
+            Dados fixados — nó não será re-executado
+          </span>
+        </div>
+      )}
 
       {currentOutput?.status === "running" ? (
         <div className="flex flex-1 items-center justify-center gap-2 text-xs text-muted-foreground">
@@ -439,6 +624,7 @@ function SchemaView({
   sourceNodeType?: string
 }) {
   const [expanded, setExpanded] = useState(true)
+  const usedSources = useContext(UsedSourcesContext)
   const rows = Array.isArray(output.rows) ? output.rows as Array<Record<string, unknown>> : []
 
   // If we have columns, show structured schema tree
@@ -475,13 +661,14 @@ function SchemaView({
         {/* Fields */}
         {expanded && (
           <div className="mt-0.5">
-            {columns.map((col) => {
-              const value = sampleRow?.[col]
-              const type = detectFieldType(value)
+            {columns.map((col, ci) => {
+              const value   = sampleRow?.[col]
+              const type    = detectFieldType(value)
+              const isUsed  = usedSources.has(col)
 
               return (
                 <div
-                  key={col}
+                  key={`${col}-${ci}`}
                   draggable
                   onDragStart={(e) => {
                     e.dataTransfer.setData("application/x-shift-field", col)
@@ -495,13 +682,27 @@ function SchemaView({
                     e.dataTransfer.setDragImage(ghost, 0, 0)
                     requestAnimationFrame(() => ghost.remove())
                   }}
-                  className="group flex cursor-grab items-center gap-1.5 py-1.5 pl-5 pr-3 transition-colors hover:bg-muted/30 active:cursor-grabbing"
+                  className={cn(
+                    "group flex cursor-grab items-center gap-1.5 py-1.5 pl-5 pr-3 transition-colors active:cursor-grabbing",
+                    isUsed
+                      ? "bg-primary/[0.05] hover:bg-primary/[0.09]"
+                      : "hover:bg-muted/30",
+                  )}
                 >
                   <GripVertical className="size-3 shrink-0 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground/40" />
                   <TypeIcon type={type} />
-                  <span className="shrink-0 text-[11px] font-medium text-foreground">
+                  <span className={cn(
+                    "shrink-0 text-[11px] font-medium",
+                    isUsed ? "text-primary" : "text-foreground",
+                  )}>
                     {col}
                   </span>
+                  {isUsed && (
+                    <span
+                      title="Campo já mapeado"
+                      className="ml-1 size-1.5 shrink-0 rounded-full bg-primary/60"
+                    />
+                  )}
                   <span className="ml-auto max-w-[50%] truncate text-right text-[11px] text-muted-foreground" title={value != null ? String(value) : "null"}>
                     {value == null ? (
                       <span className="italic text-muted-foreground/40">null</span>
@@ -589,9 +790,9 @@ function MiniTable({
           <th className="sticky left-0 z-20 w-8 border-b border-r border-border bg-muted/80 px-1.5 py-1.5 text-center font-semibold text-muted-foreground backdrop-blur-sm">
             #
           </th>
-          {columns.map((col) => (
+          {columns.map((col, ci) => (
             <th
-              key={col}
+              key={`${col}-${ci}`}
               className="whitespace-nowrap border-b border-r border-border px-3 py-1.5 text-left font-semibold text-muted-foreground last:border-r-0"
             >
               {col}
@@ -605,9 +806,9 @@ function MiniTable({
             <td className="sticky left-0 z-10 border-b border-r border-border/40 bg-card px-1.5 py-1 text-center tabular-nums text-muted-foreground/50">
               {i + 1}
             </td>
-            {columns.map((col) => (
+            {columns.map((col, ci) => (
               <td
-                key={col}
+                key={`${col}-${ci}`}
                 className="max-w-[260px] truncate whitespace-nowrap border-b border-r border-border/40 px-3 py-1 text-foreground last:border-r-0"
                 title={row[col] != null ? String(row[col]) : undefined}
               >

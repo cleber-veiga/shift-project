@@ -265,11 +265,18 @@ class ConnectionService:
                 f"@{conn.host}:{conn.port}/{conn.database}"
             )
 
-        if conn.extra_params:
+        extra_params = dict(conn.extra_params) if conn.extra_params else {}
+
+        # SQL Server via pyodbc exige que o driver ODBC seja especificado.
+        # Injeta um padrão se o usuário não tiver configurado nenhum.
+        if conn.type == ConnectionType.sqlserver.value and "driver" not in extra_params:
+            extra_params["driver"] = "ODBC Driver 17 for SQL Server"
+
+        if extra_params:
             sep = "&" if "?" in base else "?"
             qs = "&".join(
                 f"{quote_plus(str(k))}={quote_plus(str(v))}"
-                for k, v in conn.extra_params.items()
+                for k, v in extra_params.items()
             )
             base = f"{base}{sep}{qs}"
         return base

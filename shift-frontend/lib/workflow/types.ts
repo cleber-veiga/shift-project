@@ -170,6 +170,24 @@ export const NODE_REGISTRY: NodeDefinition[] = [
 
   // --- Output ---
   {
+    type: "truncate_table",
+    label: "Limpar Tabela",
+    description: "Limpar dados da tabela de destino",
+    category: "output",
+    icon: "Eraser",
+    color: "emerald",
+    defaultData: { type: "truncate_table", connection_id: "", target_table: "", mode: "truncate" },
+  },
+  {
+    type: "bulk_insert",
+    label: "Inserção em Massa",
+    description: "Inserir dados em tabela de destino",
+    category: "output",
+    icon: "Upload",
+    color: "emerald",
+    defaultData: { type: "bulk_insert", connection_id: "", target_table: "", column_mapping: [], batch_size: 1000 },
+  },
+  {
     type: "loadNode",
     label: "Destino SQL",
     description: "Gravar dados em banco de destino",

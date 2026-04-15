@@ -449,9 +449,9 @@ function SqlTable({
           <th className="w-8 border-b border-r border-border px-2 py-1.5 text-center font-semibold text-muted-foreground">
             #
           </th>
-          {columns.map((col) => (
+          {columns.map((col, ci) => (
             <th
-              key={col}
+              key={`${col}-${ci}`}
               className="whitespace-nowrap border-b border-r border-border px-3 py-1.5 text-left font-semibold text-muted-foreground last:border-r-0"
             >
               {col}
@@ -465,9 +465,9 @@ function SqlTable({
             <td className="border-b border-r border-border/40 px-2 py-1.5 text-center tabular-nums text-muted-foreground/50">
               {i + 1}
             </td>
-            {columns.map((col) => (
+            {columns.map((col, ci) => (
               <td
-                key={col}
+                key={`${col}-${ci}`}
                 className="max-w-[220px] truncate border-b border-r border-border/40 px-3 py-1.5 text-foreground last:border-r-0"
                 title={row[col] != null ? String(row[col]) : undefined}
               >

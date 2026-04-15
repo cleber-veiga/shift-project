@@ -41,7 +41,9 @@
       "Bash(python -c \"import secrets; print\\(secrets.token_hex\\(6\\)\\)\")",
       "Bash(alembic upgrade:*)",
       "Bash(python -m alembic upgrade head)",
-      "Bash(python -m alembic revision --autogenerate -m \"add input_model_rows\")"
+      "Bash(python -m alembic revision --autogenerate -m \"add input_model_rows\")",
+      "Bash(find \"D:\\\\Labs\\\\shift-project\\\\shift-frontend\\\\components\" -name \"*.tsx\" -type f -exec grep -l \"\\\\.map.*col\\\\|\\\\.map.*column\\\\|\\\\.map.*field\" {} \\\\;)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('app/services/workflow_test_service.py', doraise=True\\); print\\('OK'\\)\")"
     ]
   }
 }
