@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+MANIFEST
+
+# Virtualenv
+venv/
+.venv/
+env/
+.env/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# pytest
+.pytest_cache/
+.cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# mypy / ruff / pyright
+.mypy_cache/
+.ruff_cache/
+.pyright/
+pyrightconfig.json
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Alembic (manter versões, ignorar temporários)
+# alembic/versions/*.py  # descomente se não quiser versionar migrations
+
+# Prefect
+.prefect/
+
+# DuckDB (arquivos de banco local)
+*.duckdb
+*.duckdb.wal
+
+# Firebird local
+*.fdb
+*.gdb
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+*.spec

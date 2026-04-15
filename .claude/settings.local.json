@@ -1,0 +1,42 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python test_e2e_oracle_aggregator.py)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/data_pipelines/duckdb_storage.py'\\).read\\(\\)\\); print\\('duckdb_storage.py: OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/workflow/nodes/aggregator_node.py'\\).read\\(\\)\\); print\\('aggregator_node.py: OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/workflow/nodes/mapper_node.py'\\).read\\(\\)\\); print\\('mapper_node.py: OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/workflow/nodes/filter_node.py'\\).read\\(\\)\\); print\\('filter_node.py: OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/workflow/nodes/math_node.py'\\).read\\(\\)\\); print\\('math_node.py: OK'\\)\")",
+      "Bash(grep -E \"\\\\.py$\")",
+      "Bash(python -c ':*)",
+      "Bash(ls *.toml *.cfg *.txt requirements* pyproject*)",
+      "Bash(npx tsc:*)",
+      "Bash(pnpm exec:*)",
+      "Bash(pnpm install:*)",
+      "Bash(pnpm build:*)",
+      "Bash(venv/Scripts/alembic upgrade:*)",
+      "Bash(venv/Scripts/alembic heads:*)",
+      "Bash(venv/Scripts/alembic show:*)",
+      "Bash(venv/Scripts/alembic merge:*)",
+      "Bash(npx next:*)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(netstat -ano)",
+      "Bash(taskkill //PID 23800 //F)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8000/health)",
+      "Bash(venv/Scripts/python.exe -c \"from cryptography.fernet import Fernet; print\\(Fernet.generate_key\\(\\).decode\\(\\)\\)\")",
+      "Bash(venv\\\\Scripts\\\\pip install:*)",
+      "Bash(./venv/Scripts/pip install:*)",
+      "Bash(./venv/Scripts/python -c \"import pkg_resources; [print\\(ep\\) for ep in pkg_resources.iter_entry_points\\('sqlalchemy.dialects'\\) if 'firebird' in str\\(ep\\)]\")",
+      "Bash(./venv/Scripts/python -c \"from importlib.metadata import entry_points; eps = entry_points\\(group='sqlalchemy.dialects'\\); [print\\(ep.name, '->', ep.value\\) for ep in eps if 'firebird' in ep.name.lower\\(\\)]\")",
+      "Bash(./venv/Scripts/python -c \"from sqlalchemy import create_engine; e = create_engine\\('firebird+firebird://user:pass@localhost/test'\\); print\\('dialect loaded ok:', e.dialect.name\\)\")",
+      "Bash(./venv/Scripts/python -c ':*)",
+      "Bash(xargs grep:*)",
+      "Bash(./venv/Scripts/python -m alembic upgrade head)",
+      "Bash(pnpm add:*)",
+      "Bash(ls D:/Labs/shift-project/shift-backend/.env*)",
+      "Bash(find \"D:\\\\Labs\\\\shift-project\\\\shift-backend\\\\app\" -name \"*.py\" -type f -exec grep -l \"oracle\\\\|Oracle\" {} \\\\;)",
+      "Bash(xargs ls:*)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('app/api/v1/workflows_crud.py', doraise=True\\); py_compile.compile\\('app/api/v1/workflows.py', doraise=True\\); py_compile.compile\\('app/services/workflow_crud_service.py', doraise=True\\); py_compile.compile\\('app/core/security.py', doraise=True\\); print\\('OK'\\)\")"
+    ]
+  }
+}

@@ -1,0 +1,596 @@
+"use client"
+
+import { X } from "lucide-react"
+import { type Node } from "@xyflow/react"
+import { getNodeDefinition } from "@/lib/workflow/types"
+import { getNodeIcon } from "@/lib/workflow/node-icons"
+import { cn } from "@/lib/utils"
+import { SqlDatabaseConfig } from "@/components/workflow/nodes/sql-database-config"
+import { MapperConfig } from "@/components/workflow/nodes/mapper-config"
+import { FilterConfig } from "@/components/workflow/nodes/filter-config"
+
+interface NodeConfigPanelProps {
+  node: Node
+  onClose: () => void
+  onUpdate: (nodeId: string, data: Record<string, unknown>) => void
+}
+
+const categoryBgMap: Record<string, string> = {
+  amber: "bg-amber-500/10",
+  blue: "bg-blue-500/10",
+  violet: "bg-violet-500/10",
+  emerald: "bg-emerald-500/10",
+  pink: "bg-pink-500/10",
+}
+
+const categoryTextMap: Record<string, string> = {
+  amber: "text-amber-500",
+  blue: "text-blue-500",
+  violet: "text-violet-500",
+  emerald: "text-emerald-500",
+  pink: "text-pink-500",
+}
+
+function ConfigField({
+  label,
+  children,
+}: {
+  label: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="space-y-1.5">
+      <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{label}</label>
+      {children}
+    </div>
+  )
+}
+
+function TextInput({
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  type?: string
+}) {
+  return (
+    <input
+      type={type}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
+    />
+  )
+}
+
+function TextArea({
+  value,
+  onChange,
+  placeholder,
+  rows = 4,
+}: {
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  rows?: number
+}) {
+  return (
+    <textarea
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      rows={rows}
+      className="w-full rounded-md border border-input bg-background px-2.5 py-2 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
+    />
+  )
+}
+
+function SelectInput({
+  value,
+  onChange,
+  options,
+}: {
+  value: string
+  onChange: (v: string) => void
+  options: { value: string; label: string }[]
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-primary"
+    >
+      {options.map((opt) => (
+        <option key={opt.value} value={opt.value}>
+          {opt.label}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+function CheckboxInput({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean
+  onChange: (v: boolean) => void
+  label: string
+}) {
+  return (
+    <label className="flex items-center gap-2">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="size-3.5 rounded border-input accent-primary"
+      />
+      <span className="text-xs text-foreground">{label}</span>
+    </label>
+  )
+}
+
+/** Render config fields based on the node type */
+export function NodeConfigFields({
+  node,
+  onUpdate,
+}: {
+  node: Node
+  onUpdate: (nodeId: string, data: Record<string, unknown>) => void
+}) {
+  const data = node.data as Record<string, unknown>
+  const nodeType = (data.type as string) ?? node.type
+
+  function update(field: string, value: unknown) {
+    onUpdate(node.id, { ...data, [field]: value })
+  }
+
+  // Common label field for all nodes
+  const labelField = (
+    <ConfigField label="Nome do nó">
+      <TextInput
+        value={(data.label as string) ?? ""}
+        onChange={(v) => update("label", v)}
+        placeholder="Nome personalizado..."
+      />
+    </ConfigField>
+  )
+
+  switch (nodeType) {
+    case "manual":
+      return (
+        <div className="space-y-4">
+          {labelField}
+          <div className="rounded-lg border border-dashed border-amber-500/30 bg-amber-500/5 p-3">
+            <p className="text-xs font-medium text-amber-600 dark:text-amber-400">Gatilho Manual</p>
+            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+              Este nó marca o ponto de entrada do fluxo. A execução será disparada manualmente pelo botão "Executar" na toolbar.
+            </p>
+          </div>
+        </div>
+      )
+
+    case "cron":
+      return (
+        <div className="space-y-4">
+          {labelField}
+          <ConfigField label="Expressão Cron">
+            <TextInput
+              value={(data.cron_expression as string) ?? ""}
+              onChange={(v) => update("cron_expression", v)}
+              placeholder="0 0 * * *"
+            />
+          </ConfigField>
+          <ConfigField label="Timezone">
+            <TextInput
+              value={(data.timezone as string) ?? "UTC"}
+              onChange={(v) => update("timezone", v)}
+              placeholder="America/Sao_Paulo"
+            />
+          </ConfigField>
+        </div>
+      )
+
+    case "webhook":
+      return <div className="space-y-4">{labelField}</div>
+
+    case "polling":
+      return (
+        <div className="space-y-4">
+          {labelField}
+          <ConfigField label="Connection ID">
+            <TextInput
+              value={(data.connection_id as string) ?? ""}
+              onChange={(v) => update("connection_id", v)}
+              placeholder="UUID da conexão"
+            />
+          </ConfigField>
+          <ConfigField label="Query">
+            <TextArea
+              value={(data.query as string) ?? ""}
+              onChange={(v) => update("query", v)}
+              placeholder="SELECT * FROM ..."
+            />
+          </ConfigField>
+        </div>
+      )
+
+    case "sql_database":
+      return (
+        <SqlDatabaseConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "csv_input":
+      return (
+        <div className="space-y-4">
+          {labelField}
+          <ConfigField label="URL / Caminho">
+            <TextInput
+              value={(data.url as string) ?? ""}
+              onChange={(v) => update("url", v)}
+              placeholder="https://... ou /path/to/file.csv"
+            />
+          </ConfigField>
+          <ConfigField label="Delimitador">
+            <TextInput
+              value={(data.delimiter as string) ?? ","}
+              onChange={(v) => update("delimiter", v)}
+            />
+          </ConfigField>
+          <CheckboxInput
+            checked={(data.has_header as boolean) ?? true}
+            onChange={(v) => update("has_header", v)}
+            label="Possui cabeçalho"
+          />
+          <ConfigField label="Encoding">
+            <TextInput
+              value={(data.encoding as string) ?? "utf-8"}
+              onChange={(v) => update("encoding", v)}
+            />
+          </ConfigField>
+        </div>
+      )
+
+    case "excel_input":
+      return (
+        <div className="space-y-4">
+          {labelField}
+          <ConfigField label="URL / Caminho">
+            <TextInput
+              value={(data.url as string) ?? ""}
+              onChange={(v) => update("url", v)}
+              placeholder="https://... ou /path/to/file.xlsx"
+            />
+          </ConfigField>
+          <ConfigField label="Nome da Aba">
+            <TextInput
+              value={(data.sheet_name as string) ?? ""}
+              onChange={(v) => update("sheet_name", v)}
+              placeholder="Sheet1 (vazio = primeira aba)"
+            />
+          </ConfigField>
+        </div>
+      )
+
+    case "api_input":
+      return (
+        <div className="space-y-4">
+          {labelField}
+          <ConfigField label="URL">
+            <TextInput
+              value={(data.url as string) ?? ""}
+              onChange={(v) => update("url", v)}
+              placeholder="https://api.exemplo.com/dados"
+            />
+          </ConfigField>
+          <ConfigField label="Método">
+            <SelectInput
+              value={(data.method as string) ?? "GET"}
+              onChange={(v) => update("method", v)}
+              options={[
+                { value: "GET", label: "GET" },
+                { value: "POST", label: "POST" },
+                { value: "PUT", label: "PUT" },
+                { value: "PATCH", label: "PATCH" },
+              ]}
+            />
+          </ConfigField>
+          <ConfigField label="Data Path (JSONPath)">
+            <TextInput
+              value={(data.data_path as string) ?? "$"}
+              onChange={(v) => update("data_path", v)}
+              placeholder="$.data.items"
+            />
+          </ConfigField>
+          <ConfigField label="Paginação">
+            <SelectInput
+              value={(data.pagination_type as string) ?? "none"}
+              onChange={(v) => update("pagination_type", v)}
+              options={[
+                { value: "none", label: "Nenhuma" },
+                { value: "offset", label: "Offset" },
+                { value: "page_number", label: "Número de página" },
+                { value: "cursor", label: "Cursor" },
+                { value: "next_url", label: "URL próxima" },
+              ]}
+            />
+          </ConfigField>
+        </div>
+      )
+
+    case "http_request":
+      return (
+        <div className="space-y-4">
+          {labelField}
+          <ConfigField label="URL">
+            <TextInput
+              value={(data.url as string) ?? ""}
+              onChange={(v) => update("url", v)}
+              placeholder="https://..."
+            />
+          </ConfigField>
+          <ConfigField label="Método">
+            <SelectInput
+              value={(data.method as string) ?? "GET"}
+              onChange={(v) => update("method", v)}
+              options={["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].map((m) => ({
+                value: m,
+                label: m,
+              }))}
+            />
+          </ConfigField>
+          <ConfigField label="Timeout (s)">
+            <TextInput
+              type="number"
+              value={String((data.timeout_seconds as number) ?? 30)}
+              onChange={(v) => update("timeout_seconds", Number(v))}
+            />
+          </ConfigField>
+        </div>
+      )
+
+    case "inline_data":
+      return (
+        <div className="space-y-4">
+          {labelField}
+          <ConfigField label="Dados (JSON)">
+            <TextArea
+              value={typeof data.data === "string" ? (data.data as string) : JSON.stringify(data.data ?? [], null, 2)}
+              onChange={(v) => {
+                try {
+                  update("data", JSON.parse(v))
+                } catch {
+                  update("data", v)
+                }
+              }}
+              placeholder='[{"id": 1, "name": "..."}]'
+              rows={6}
+            />
+          </ConfigField>
+        </div>
+      )
+
+    case "mapper":
+      return (
+        <MapperConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "filter":
+      return (
+        <FilterConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "aggregator":
+      return (
+        <div className="space-y-4">
+          {labelField}
+          <ConfigField label="Agrupar por (JSON array)">
+            <TextArea
+              value={JSON.stringify(data.group_by ?? [], null, 2)}
+              onChange={(v) => {
+                try {
+                  update("group_by", JSON.parse(v))
+                } catch {
+                  /* keep raw */
+                }
+              }}
+              placeholder='["coluna1", "coluna2"]'
+              rows={2}
+            />
+          </ConfigField>
+          <ConfigField label="Agregações (JSON)">
+            <TextArea
+              value={JSON.stringify(data.aggregations ?? [], null, 2)}
+              onChange={(v) => {
+                try {
+                  update("aggregations", JSON.parse(v))
+                } catch {
+                  /* keep raw */
+                }
+              }}
+              placeholder='[{"column": "valor", "operation": "sum", "alias": "total"}]'
+              rows={4}
+            />
+          </ConfigField>
+        </div>
+      )
+
+    case "math":
+      return (
+        <div className="space-y-4">
+          {labelField}
+          <ConfigField label="Expressões (JSON)">
+            <TextArea
+              value={JSON.stringify(data.expressions ?? [], null, 2)}
+              onChange={(v) => {
+                try {
+                  update("expressions", JSON.parse(v))
+                } catch {
+                  /* keep raw */
+                }
+              }}
+              placeholder='[{"target_column": "total", "expression": "preco * qtd"}]'
+              rows={4}
+            />
+          </ConfigField>
+        </div>
+      )
+
+    case "code":
+      return (
+        <div className="space-y-4">
+          {labelField}
+          <ConfigField label="Código Python">
+            <TextArea
+              value={(data.code as string) ?? ""}
+              onChange={(v) => update("code", v)}
+              placeholder="# Escreva seu código aqui..."
+              rows={8}
+            />
+          </ConfigField>
+          <ConfigField label="Variável de resultado">
+            <TextInput
+              value={(data.result_variable as string) ?? "result"}
+              onChange={(v) => update("result_variable", v)}
+            />
+          </ConfigField>
+        </div>
+      )
+
+    case "loadNode":
+      return (
+        <div className="space-y-4">
+          {labelField}
+          <ConfigField label="Connection ID">
+            <TextInput
+              value={(data.connection_id as string) ?? ""}
+              onChange={(v) => update("connection_id", v)}
+              placeholder="UUID da conexão de destino"
+            />
+          </ConfigField>
+          <ConfigField label="Tabela de destino">
+            <TextInput
+              value={(data.target_table as string) ?? ""}
+              onChange={(v) => update("target_table", v)}
+              placeholder="schema.tabela"
+            />
+          </ConfigField>
+          <ConfigField label="Modo de escrita">
+            <SelectInput
+              value={(data.write_disposition as string) ?? "append"}
+              onChange={(v) => update("write_disposition", v)}
+              options={[
+                { value: "append", label: "Append (adicionar)" },
+                { value: "replace", label: "Replace (substituir)" },
+                { value: "merge", label: "Merge (mesclar)" },
+              ]}
+            />
+          </ConfigField>
+        </div>
+      )
+
+    case "aiNode":
+      return (
+        <div className="space-y-4">
+          {labelField}
+          <ConfigField label="Modelo">
+            <TextInput
+              value={(data.model_name as string) ?? "gpt-4"}
+              onChange={(v) => update("model_name", v)}
+              placeholder="gpt-4"
+            />
+          </ConfigField>
+          <ConfigField label="Temperature">
+            <TextInput
+              type="number"
+              value={String((data.temperature as number) ?? 0.7)}
+              onChange={(v) => update("temperature", Number(v))}
+            />
+          </ConfigField>
+          <ConfigField label="Prompt Template">
+            <TextArea
+              value={(data.prompt_template as string) ?? ""}
+              onChange={(v) => update("prompt_template", v)}
+              placeholder="Analise os seguintes dados: {{data}}"
+              rows={6}
+            />
+          </ConfigField>
+        </div>
+      )
+
+    default:
+      return (
+        <div className="space-y-4">
+          {labelField}
+          <p className="text-xs text-muted-foreground">
+            Configuração avançada não disponível para este tipo de nó.
+          </p>
+          <ConfigField label="Dados (JSON)">
+            <TextArea
+              value={JSON.stringify(data, null, 2)}
+              onChange={(v) => {
+                try {
+                  onUpdate(node.id, JSON.parse(v))
+                } catch {
+                  /* keep raw */
+                }
+              }}
+              rows={8}
+            />
+          </ConfigField>
+        </div>
+      )
+  }
+}
+
+export function NodeConfigPanel({ node, onClose, onUpdate }: NodeConfigPanelProps) {
+  const definition = getNodeDefinition(node.type ?? "")
+  const Icon = getNodeIcon(definition?.icon ?? "Database")
+  const color = definition?.color ?? "blue"
+
+  return (
+    <div className="flex h-full w-72 flex-col border-l border-border bg-card">
+      {/* Header */}
+      <div className="flex h-10 shrink-0 items-center justify-between border-b border-border px-3">
+        <div className="flex items-center gap-2">
+          <div className={cn("flex size-6 items-center justify-center rounded", categoryBgMap[color])}>
+            <Icon className={cn("size-3.5", categoryTextMap[color])} />
+          </div>
+          <span className="text-xs font-semibold text-foreground">{definition?.label ?? node.type}</span>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <X className="size-3.5" />
+        </button>
+      </div>
+
+      {/* Config form */}
+      <div className="flex-1 overflow-y-auto px-3 py-4">
+        <NodeConfigFields node={node} onUpdate={onUpdate} />
+      </div>
+
+      {/* Footer */}
+      <div className="shrink-0 border-t border-border px-3 py-2">
+        <p className="text-[10px] text-muted-foreground">ID: {node.id}</p>
+      </div>
+    </div>
+  )
+}

@@ -1,0 +1,268 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --ui-scale: 1;
+  --background: oklch(0.978 0.006 95);
+  --foreground: oklch(0.215 0.018 255);
+  --card: oklch(0.995 0.003 95);
+  --card-foreground: oklch(0.215 0.018 255);
+  --popover: oklch(0.995 0.003 95);
+  --popover-foreground: oklch(0.215 0.018 255);
+  --primary: oklch(0.4 0.08 255);
+  --primary-foreground: oklch(0.985 0.004 95);
+  --secondary: oklch(0.952 0.008 95);
+  --secondary-foreground: oklch(0.255 0.02 255);
+  --muted: oklch(0.962 0.008 95);
+  --muted-foreground: oklch(0.5 0.016 255);
+  --accent: oklch(0.938 0.018 235);
+  --accent-foreground: oklch(0.255 0.02 255);
+  --destructive: oklch(0.55 0.22 27);
+  --destructive-foreground: oklch(0.985 0 0);
+  --success: oklch(0.55 0.2 145);
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.7 0.18 80);
+  --warning-foreground: oklch(0.145 0 0);
+  --info: oklch(0.55 0.18 250);
+  --info-foreground: oklch(0.985 0 0);
+  --border: oklch(0.89 0.01 95);
+  --input: oklch(0.925 0.01 95);
+  --ring: oklch(0.62 0.06 250);
+  --radius: 0.5rem;
+}
+
+.dark {
+  --background: oklch(0.15 0.012 255);
+  --foreground: oklch(0.958 0.006 95);
+  --card: oklch(0.185 0.014 255);
+  --card-foreground: oklch(0.958 0.006 95);
+  --popover: oklch(0.185 0.014 255);
+  --popover-foreground: oklch(0.958 0.006 95);
+  --primary: oklch(0.76 0.08 245);
+  --primary-foreground: oklch(0.17 0.014 255);
+  --secondary: oklch(0.245 0.014 255);
+  --secondary-foreground: oklch(0.958 0.006 95);
+  --muted: oklch(0.225 0.012 255);
+  --muted-foreground: oklch(0.72 0.012 95);
+  --accent: oklch(0.28 0.02 240);
+  --accent-foreground: oklch(0.958 0.006 95);
+  --destructive: oklch(0.55 0.22 27);
+  --destructive-foreground: oklch(0.985 0 0);
+  --success: oklch(0.65 0.2 145);
+  --success-foreground: oklch(0.985 0 0);
+  --warning: oklch(0.75 0.18 80);
+  --warning-foreground: oklch(0.098 0 0);
+  --info: oklch(0.65 0.18 250);
+  --info-foreground: oklch(0.985 0 0);
+  --border: oklch(0.3 0.012 255);
+  --input: oklch(0.24 0.012 255);
+  --ring: oklch(0.68 0.06 245);
+}
+
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    font-size: calc(16px * var(--ui-scale));
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    background-image:
+      radial-gradient(circle at top left, color-mix(in oklab, var(--primary) 9%, transparent), transparent 26%),
+      radial-gradient(circle at top right, color-mix(in oklab, var(--accent) 22%, transparent), transparent 22%);
+  }
+
+  a {
+    @apply transition-colors;
+  }
+}
+
+@layer components {
+  .auth-shell {
+    background:
+      radial-gradient(circle at top, color-mix(in oklab, var(--foreground) 10%, transparent), transparent 42%),
+      linear-gradient(180deg, color-mix(in oklab, var(--background) 92%, black 8%) 0%, var(--background) 100%);
+  }
+
+  .dark .auth-shell {
+    background:
+      radial-gradient(circle at top, color-mix(in oklab, var(--foreground) 14%, transparent), transparent 46%),
+      linear-gradient(135deg, color-mix(in oklab, var(--background) 92%, white 3%) 0%, var(--background) 100%);
+  }
+
+  .auth-grid {
+    background-image:
+      linear-gradient(color-mix(in oklab, var(--foreground) 7%, transparent) 1px, transparent 1px),
+      linear-gradient(90deg, color-mix(in oklab, var(--foreground) 7%, transparent) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: linear-gradient(180deg, white 0%, transparent 100%);
+  }
+
+  .auth-panel {
+    box-shadow:
+      0 24px 80px color-mix(in oklab, var(--foreground) 10%, transparent),
+      inset 0 1px 0 color-mix(in oklab, var(--background) 72%, white 28%);
+  }
+
+  .auth-brand {
+    background:
+      linear-gradient(135deg, color-mix(in oklab, var(--accent) 55%, transparent), transparent 65%),
+      linear-gradient(180deg, color-mix(in oklab, var(--card) 82%, transparent), transparent);
+  }
+
+  .morph-loader {
+    position: relative;
+    display: inline-block;
+    width: 1.15rem;
+    height: 1.15rem;
+    border-radius: 0.2rem;
+    background: linear-gradient(135deg, color-mix(in oklab, var(--foreground) 90%, transparent), color-mix(in oklab, var(--primary) 82%, transparent));
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--foreground) 20%, transparent),
+      0 8px 20px color-mix(in oklab, var(--foreground) 22%, transparent);
+    animation: morph-loader 1.5s infinite cubic-bezier(0.62, 0.08, 0.38, 0.92);
+  }
+
+  .morph-loader::before {
+    content: "";
+    position: absolute;
+    inset: -40%;
+    border-radius: 9999px;
+    background: radial-gradient(circle, color-mix(in oklab, var(--foreground) 22%, transparent) 0%, transparent 68%);
+    filter: blur(5px);
+    opacity: 0.45;
+    z-index: -1;
+    animation: morph-aura 1.5s infinite cubic-bezier(0.62, 0.08, 0.38, 0.92);
+  }
+
+  .morph-loader.morph-muted {
+    background: linear-gradient(135deg, color-mix(in oklab, var(--muted-foreground) 74%, transparent), color-mix(in oklab, var(--muted-foreground) 54%, transparent));
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--muted-foreground) 22%, transparent),
+      0 8px 18px color-mix(in oklab, var(--muted-foreground) 20%, transparent);
+  }
+
+  .morph-loader.morph-shift {
+    box-shadow:
+      0 0 0 1px color-mix(in oklab, var(--foreground) 25%, transparent),
+      0 12px 30px color-mix(in oklab, var(--foreground) 26%, transparent),
+      0 0 26px color-mix(in oklab, var(--primary) 30%, transparent);
+  }
+}
+
+@keyframes morph-loader {
+  0%,
+  100% {
+    border-radius: 0.2rem;
+    transform: rotate(0deg) scale(1);
+  }
+  25% {
+    border-radius: 45% 10% 45% 10%;
+    transform: rotate(45deg) scale(0.82) skew(-2deg, 2deg);
+  }
+  50% {
+    border-radius: 9999px;
+    transform: rotate(92deg) scale(1.08);
+  }
+  75% {
+    border-radius: 10% 45% 10% 45%;
+    transform: rotate(138deg) scale(0.82) skew(2deg, -2deg);
+  }
+}
+
+@keyframes morph-aura {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 0.66;
+    transform: scale(1.12);
+  }
+}
+
+/* ── React Flow canvas overrides ──────────────────────────────────────────── */
+
+.workflow-canvas .react-flow__edge-path {
+  stroke: var(--muted-foreground);
+  stroke-width: 2;
+}
+
+.workflow-canvas .react-flow__edge.selected .react-flow__edge-path,
+.workflow-canvas .react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--primary);
+}
+
+.workflow-canvas .react-flow__connection-line {
+  stroke: var(--primary);
+  stroke-width: 2;
+  stroke-dasharray: 5 5;
+}
+
+.workflow-canvas .react-flow__controls {
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  box-shadow: 0 2px 8px color-mix(in oklab, var(--foreground) 8%, transparent);
+  overflow: hidden;
+}
+
+.workflow-canvas .react-flow__controls-button {
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  fill: var(--foreground);
+}
+
+.workflow-canvas .react-flow__controls-button:hover {
+  background: var(--muted);
+}
+
+.workflow-canvas .react-flow__minimap {
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--card) !important;
+}
