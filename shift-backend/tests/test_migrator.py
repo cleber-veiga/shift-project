@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 import sqlalchemy as sa
 
-from app.data_pipelines.migrator import _load_via_sqlalchemy
+from app.services.load_service import _load_source_via_sqlalchemy as _load_via_sqlalchemy
 from tests.conftest import create_duckdb_with_rows
 
 

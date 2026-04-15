@@ -86,6 +86,9 @@ function WorkflowEditorInner({
 
   const [name, setName] = useState(initialName || "Novo Fluxo")
   const [description, setDescription] = useState(initialDescription)
+  const [status, setStatus] = useState<"draft" | "published">("draft")
+  const [isTemplate, setIsTemplate] = useState(false)
+  const [isPublished, setIsPublished] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [isExecuting, setIsExecuting] = useState(false)
   const [isLoading, setIsLoading] = useState(workflowId !== "new")
@@ -118,6 +121,9 @@ function WorkflowEditorInner({
         if (cancelled) return
         setName(wf.name)
         setDescription(wf.description ?? "")
+        setStatus(wf.status ?? "draft")
+        setIsTemplate(wf.is_template ?? false)
+        setIsPublished(wf.is_published ?? false)
         const def = wf.definition ?? {}
         const loadedNodes = (def.nodes as Node[]) ?? []
         setNodes(loadedNodes)
@@ -263,6 +269,37 @@ function WorkflowEditorInner({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workflowId, name, description, nodes, edges, workflowMeta])
+
+  // ── Settings changes (persist immediately) ───────────────────────────────
+  const handleStatusChange = useCallback(async (newStatus: "draft" | "published") => {
+    if (workflowId === "new") return
+    setStatus(newStatus)
+    try {
+      await updateWorkflow(workflowId, { status: newStatus })
+    } catch (err: unknown) {
+      setStatusMessage(err instanceof Error ? err.message : "Erro ao alterar status")
+    }
+  }, [workflowId])
+
+  const handleIsTemplateChange = useCallback(async (value: boolean) => {
+    if (workflowId === "new") return
+    setIsTemplate(value)
+    try {
+      await updateWorkflow(workflowId, { is_template: value })
+    } catch (err: unknown) {
+      setStatusMessage(err instanceof Error ? err.message : "Erro ao alterar template")
+    }
+  }, [workflowId])
+
+  const handleIsPublishedChange = useCallback(async (value: boolean) => {
+    if (workflowId === "new") return
+    setIsPublished(value)
+    try {
+      await updateWorkflow(workflowId, { is_published: value })
+    } catch (err: unknown) {
+      setStatusMessage(err instanceof Error ? err.message : "Erro ao alterar publicação")
+    }
+  }, [workflowId])
 
   // ── Execute (SSE streaming test) ─────────────────────────────────────────
   const handleExecute = useCallback(async (targetNodeId?: string) => {
@@ -416,8 +453,14 @@ function WorkflowEditorInner({
         <WorkflowToolbar
           name={name}
           description={description}
+          status={status}
+          isTemplate={isTemplate}
+          isPublished={isPublished}
           onNameChange={setName}
           onDescriptionChange={setDescription}
+          onStatusChange={handleStatusChange}
+          onIsTemplateChange={handleIsTemplateChange}
+          onIsPublishedChange={handleIsPublishedChange}
           onSave={handleSave}
           onExecute={handleExecute}
           isSaving={isSaving}

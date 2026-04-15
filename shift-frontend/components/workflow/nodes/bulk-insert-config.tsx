@@ -67,6 +67,9 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
   const columnMapping: ColumnMap[] = Array.isArray(data.column_mapping)
     ? (data.column_mapping as ColumnMap[])
     : []
+  const uniqueColumns: string[] = Array.isArray(data.unique_columns)
+    ? (data.unique_columns as string[])
+    : []
 
   // Get columns for selected table
   const targetColumns = useMemo(() => {
@@ -409,6 +412,48 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
           >
             + Adicionar coluna
           </button>
+        </div>
+      )}
+
+      {/* ── Unique columns (dedup) ── */}
+      {selectedTableName && columnMapping.length > 0 && (
+        <div className="space-y-1.5">
+          <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Colunas únicas (dedup)
+          </label>
+          <div className="flex flex-wrap gap-1.5">
+            {columnMapping
+              .filter((m) => m.target)
+              .map((m) => {
+                const isSelected = uniqueColumns.includes(m.target)
+                return (
+                  <button
+                    key={m.target}
+                    type="button"
+                    onClick={() => {
+                      const next = isSelected
+                        ? uniqueColumns.filter((c) => c !== m.target)
+                        : [...uniqueColumns, m.target]
+                      onUpdate({ ...data, unique_columns: next })
+                    }}
+                    className={cn(
+                      "inline-flex h-6 items-center gap-1 rounded-md border px-2 text-[10px] font-medium transition-colors",
+                      isSelected
+                        ? "border-primary/30 bg-primary/10 text-primary"
+                        : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground",
+                    )}
+                  >
+                    {isSelected && <span className="size-1.5 rounded-full bg-primary" />}
+                    {m.target}
+                  </button>
+                )
+              })}
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            {uniqueColumns.length > 0
+              ? `Duplicatas com mesmos valores em [${uniqueColumns.join(", ")}] serão removidas antes do INSERT.`
+              : "Selecione colunas que formam a chave única. Duplicatas serão removidas antes de inserir."}
+          </p>
         </div>
       )}
 

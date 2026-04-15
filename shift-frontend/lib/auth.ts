@@ -1017,6 +1017,7 @@ export type Workflow = {
   workspace_id: string | null
   is_template: boolean
   is_published: boolean
+  status: "draft" | "published"
   definition: Record<string, unknown>
   created_at: string
   updated_at: string
@@ -1035,7 +1036,9 @@ export type UpdateWorkflowPayload = {
   name?: string
   description?: string | null
   definition?: Record<string, unknown>
+  is_template?: boolean
   is_published?: boolean
+  status?: "draft" | "published"
 }
 
 export type ExecutionResponse = {

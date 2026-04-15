@@ -46,6 +46,9 @@ class Workflow(Base):
     )
     is_template: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_published: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="draft", server_default="draft"
+    )
     definition: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

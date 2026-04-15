@@ -70,8 +70,14 @@ class WorkflowCrudService:
             workflow.description = payload.description
         if payload.definition is not None:
             workflow.definition = payload.definition
+        if payload.is_template is not None:
+            workflow.is_template = payload.is_template
         if payload.is_published is not None:
             workflow.is_published = payload.is_published
+        if payload.status is not None:
+            if payload.status not in ("draft", "published"):
+                raise ValueError("Status deve ser 'draft' ou 'published'.")
+            workflow.status = payload.status
 
         await db.flush()
         await db.refresh(workflow)

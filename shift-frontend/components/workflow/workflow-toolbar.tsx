@@ -4,12 +4,10 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import {
   ArrowLeft,
-  Check,
   Loader2,
   Pencil,
   Play,
   Save,
-  Settings,
   Undo2,
   Redo2,
   ZoomIn,
@@ -21,8 +19,14 @@ import { useReactFlow } from "@xyflow/react"
 interface WorkflowToolbarProps {
   name: string
   description: string
+  status: "draft" | "published"
+  isTemplate: boolean
+  isPublished: boolean
   onNameChange: (name: string) => void
   onDescriptionChange: (description: string) => void
+  onStatusChange: (status: "draft" | "published") => void
+  onIsTemplateChange: (value: boolean) => void
+  onIsPublishedChange: (value: boolean) => void
   onSave: () => void
   onExecute: () => void
   isSaving?: boolean
@@ -36,8 +40,14 @@ interface WorkflowToolbarProps {
 export function WorkflowToolbar({
   name,
   description,
+  status,
+  isTemplate,
+  isPublished,
   onNameChange,
   onDescriptionChange,
+  onStatusChange,
+  onIsTemplateChange,
+  onIsPublishedChange,
   onSave,
   onExecute,
   isSaving = false,
@@ -51,6 +61,8 @@ export function WorkflowToolbar({
   const { zoomIn, zoomOut, fitView } = useReactFlow()
   const [editingName, setEditingName] = useState(false)
   const [editingDesc, setEditingDesc] = useState(false)
+
+  const isProduction = status === "published"
 
   return (
     <div className="flex h-12 shrink-0 items-center justify-between border-b border-border bg-card px-3">
@@ -159,8 +171,52 @@ export function WorkflowToolbar({
         </button>
       </div>
 
-      {/* Right section: save + execute */}
+      {/* Right section: toggles + save + execute */}
       <div className="flex items-center gap-2">
+        {/* Toggle: Teste / Produção */}
+        <button
+          type="button"
+          onClick={() => onStatusChange(isProduction ? "draft" : "published")}
+          className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-xs font-medium transition-colors ${
+            isProduction
+              ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20 dark:text-emerald-400"
+              : "border-amber-500/30 bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 dark:text-amber-400"
+          }`}
+        >
+          <span className={`size-2 rounded-full ${isProduction ? "bg-emerald-500" : "bg-amber-500"}`} />
+          {isProduction ? "Produção" : "Teste"}
+        </button>
+
+        {/* Toggle: Template */}
+        <button
+          type="button"
+          onClick={() => onIsTemplateChange(!isTemplate)}
+          className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-xs font-medium transition-colors ${
+            isTemplate
+              ? "border-violet-500/30 bg-violet-500/10 text-violet-700 hover:bg-violet-500/20 dark:text-violet-400"
+              : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+          }`}
+        >
+          <span className={`size-2 rounded-full ${isTemplate ? "bg-violet-500" : "bg-muted-foreground/40"}`} />
+          Template
+        </button>
+
+        {/* Toggle: Publicado */}
+        <button
+          type="button"
+          onClick={() => onIsPublishedChange(!isPublished)}
+          className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-xs font-medium transition-colors ${
+            isPublished
+              ? "border-sky-500/30 bg-sky-500/10 text-sky-700 hover:bg-sky-500/20 dark:text-sky-400"
+              : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+          }`}
+        >
+          <span className={`size-2 rounded-full ${isPublished ? "bg-sky-500" : "bg-muted-foreground/40"}`} />
+          Publicado
+        </button>
+
+        <div className="h-5 w-px bg-border" />
+
         <button
           type="button"
           onClick={onSave}

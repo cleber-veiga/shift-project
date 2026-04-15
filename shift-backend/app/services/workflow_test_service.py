@@ -13,12 +13,10 @@ import json
 import re
 import time
 from collections import defaultdict, deque
-from datetime import date, datetime, time as dt_time, timezone
-from decimal import Decimal
+from datetime import date, datetime, timezone
 from typing import Any, AsyncGenerator
 from uuid import UUID
 
-import sqlalchemy as sa
 from sqlalchemy import or_, select, update
 
 from app.db.session import async_session_factory
@@ -26,8 +24,11 @@ from app.models import Project
 from app.models.connection import Connection
 from app.models.workflow import Workflow, WorkflowExecution
 from app.services.connection_service import _collect_connection_ids, connection_service
+from app.services.extraction_service import extraction_service
+from app.services.load_service import load_service
 
 _MAX_ROWS = 200
+_SSE_PREVIEW_ROWS = 100  # maximo de linhas enviadas por SSE em modo producao
 
 
 class WorkflowTestService:
@@ -37,6 +38,7 @@ class WorkflowTestService:
         self,
         workflow_id: UUID,
         target_node_id: str | None = None,
+        mode: str | None = None,
     ) -> AsyncGenerator[str, None]:
         def sse(payload: dict) -> str:
             return f"data: {json.dumps(payload, default=str)}\n\n"
@@ -49,6 +51,10 @@ class WorkflowTestService:
             if workflow is None:
                 yield sse({"type": "error", "error": f"Workflow '{workflow_id}' nao encontrado."})
                 return
+
+            # Deriva modo de execucao do status do workflow se nao informado
+            if mode is None:
+                mode = "production" if workflow.status == "published" else "test"
 
             workspace_id: UUID | None = workflow.workspace_id
             if workspace_id is None and workflow.project_id is not None:
@@ -90,6 +96,7 @@ class WorkflowTestService:
             "type": "execution_start",
             "execution_id": str(execution_id),
             "node_count": len(ordered_ids),
+            "mode": mode,
             "timestamp": _ts(),
         })
 
@@ -142,14 +149,16 @@ class WorkflowTestService:
 
             t0 = time.monotonic()
             try:
-                output = await _execute_node(node, upstream, conn_map, edges)
+                output = await _execute_node(node, upstream, conn_map, edges, mode)
                 ms = int((time.monotonic() - t0) * 1000)
                 upstream[node_id] = output
+                # Em producao, envia apenas preview para nao sobrecarregar SSE
+                sse_output = _trim_for_sse(output) if mode == "production" else output
                 yield sse({
                     "type": "node_complete",
                     "node_id": node_id,
                     "label": label,
-                    "output": output,
+                    "output": sse_output,
                     "duration_ms": ms,
                     "timestamp": _ts(),
                 })
@@ -228,6 +237,7 @@ async def _execute_node(
     upstream: dict[str, Any],
     conn_map: dict[str, Connection],
     edges: list[dict],
+    mode: str = "test",
 ) -> dict[str, Any]:
     node_type = node.get("type") or node.get("data", {}).get("type", "unknown")
     data = node.get("data", {})
@@ -243,7 +253,7 @@ async def _execute_node(
 
     # ── Entrada ───────────────────────────────────────────────────────────────
     if node_type == "sql_database":
-        return await _exec_sql_database(node_id, data, conn_map)
+        return await _exec_sql_database(node_id, data, conn_map, mode)
 
     if node_type == "inline_data":
         return _exec_inline_data(data)
@@ -562,6 +572,7 @@ async def _exec_sql_database(
     node_id: str,
     data: dict,
     conn_map: dict[str, Connection],
+    mode: str = "test",
 ) -> dict[str, Any]:
     from app.schemas.connection import ConnectionType
 
@@ -580,16 +591,39 @@ async def _exec_sql_database(
     lowered = query.lstrip().lower()
     if not (lowered.startswith("select") or lowered.startswith("with")):
         raise ValueError(
-            f"No SQL '{node_id}': apenas queries SELECT/WITH sao permitidas no modo de teste."
+            f"No SQL '{node_id}': apenas queries SELECT/WITH sao permitidas."
         )
 
-    max_rows = min(int(data.get("max_rows") or _MAX_ROWS), _MAX_ROWS)
+    if mode == "production":
+        # Producao: sem limite (0 = busca todas as linhas)
+        max_rows = 0
+    else:
+        # Teste: limitado a _MAX_ROWS
+        max_rows = min(int(data.get("max_rows") or _MAX_ROWS), _MAX_ROWS)
 
+    firebird_config = None
     if conn.type == ConnectionType.firebird.value:
-        return await asyncio.to_thread(_exec_firebird, conn, query, max_rows)
+        firebird_config = {
+            "host": conn.host,
+            "port": conn.port,
+            "database": conn.database,
+            "username": conn.username,
+            "password": conn.password,
+        }
+        if conn.extra_params:
+            firebird_config.update(conn.extra_params)
 
     conn_str = connection_service.build_connection_string(conn)
-    return await asyncio.to_thread(_exec_sa, conn_str, conn.type, query, max_rows)
+
+    result = await asyncio.to_thread(
+        extraction_service.extract_sql,
+        conn_str,
+        conn.type,
+        query,
+        max_rows=max_rows,
+        firebird_config=firebird_config,
+    )
+    return result.to_dict()
 
 
 # ─── Load Node (escrita SQL) ───────────────────────────────────────────────────
@@ -627,130 +661,24 @@ async def _exec_truncate_table(
 
     conn_str = connection_service.build_connection_string(conn)
 
-    def _run_truncate() -> int:
-        connect_args: dict[str, Any] = {}
-        if conn.type == "sqlserver":
-            connect_args["TrustServerCertificate"] = "yes"
-
-        engine: sa.Engine | None = None
-        try:
-            engine = sa.create_engine(
-                conn_str,
-                pool_pre_ping=False,
-                pool_size=1,
-                max_overflow=0,
-                connect_args=connect_args,
-            )
-            with engine.begin() as db_conn:
-                if mode == "delete":
-                    sql = f"DELETE FROM {target_table}"
-                    if where_clause:
-                        sql += f" WHERE {where_clause}"
-                    result = db_conn.execute(sa.text(sql))
-                    return result.rowcount
-                else:
-                    db_conn.execute(sa.text(f"TRUNCATE TABLE {target_table}"))
-                    return -1  # TRUNCATE nao retorna rowcount
-        finally:
-            if engine:
-                engine.dispose()
-
-    rows_affected = await asyncio.to_thread(_run_truncate)
+    truncate_result = await asyncio.to_thread(
+        load_service.truncate,
+        conn_str,
+        conn.type,
+        target_table,
+        mode=mode,
+        where_clause=where_clause or None,
+    )
 
     # Repassa dados upstream sem alteracao
     upstream_rows = _get_upstream_rows(node_id, upstream, edges)
-    output: dict[str, Any] = {
-        "status": "success",
-        "target_table": target_table,
-        "mode": mode,
-        "rows_affected": rows_affected,
-        "message": f"Tabela '{target_table}' limpa com sucesso."
-            + (f" {rows_affected} registros removidos." if rows_affected >= 0 else ""),
-    }
+    output = truncate_result.to_dict()
     if upstream_rows:
         output["row_count"] = len(upstream_rows)
         output["columns"] = list(upstream_rows[0].keys())
         output["rows"] = upstream_rows
 
     return output
-
-
-# Tipos que devem ser tratados como numerico
-_NUMERIC_DB_TYPES = {"NUMBER", "NUMERIC", "DECIMAL", "FLOAT", "DOUBLE", "REAL",
-                     "INTEGER", "INT", "SMALLINT", "BIGINT", "DOUBLE_PRECISION",
-                     "BINARY_FLOAT", "BINARY_DOUBLE", "MONEY", "TINYINT"}
-
-# Tipos que devem ser tratados como data/hora
-_DATE_DB_TYPES = {"DATE", "DATETIME", "TIMESTAMP", "DATETIME2", "SMALLDATETIME",
-                  "TIMESTAMP_NTZ", "TIMESTAMP_LTZ", "TIMESTAMP_TZ"}
-
-# Tipos inteiros (sem casas decimais)
-_INT_DB_TYPES = {"INTEGER", "INT", "SMALLINT", "BIGINT", "TINYINT"}
-
-
-def _cast_for_db(val: Any, db_type: str) -> Any:
-    """Converte um valor Python para o tipo esperado pela coluna do banco.
-
-    Resolve o problema classico de strings numericas ('0.0') sendo enviadas
-    para colunas NUMBER em Oracle/Postgres, causando ORA-01722 e similares.
-    """
-    if val is None:
-        return None
-
-    if not db_type:
-        return val
-
-    # ── Numerico ──
-    if db_type in _NUMERIC_DB_TYPES:
-        if isinstance(val, (int, float, Decimal)):
-            if db_type in _INT_DB_TYPES:
-                return int(val)
-            return val
-        if isinstance(val, str):
-            s = val.strip()
-            if s == "":
-                return None
-            if db_type in _INT_DB_TYPES:
-                return int(float(s))
-            # Tenta manter como Decimal para precisao
-            try:
-                return float(s)
-            except ValueError:
-                return val  # Deixa o DB rejeitar com mensagem clara
-        return val
-
-    # ── Data/hora ──
-    if db_type in _DATE_DB_TYPES:
-        if isinstance(val, (datetime, date)):
-            return val
-        if isinstance(val, str):
-            s = val.strip()
-            if s == "":
-                return None
-            # Tenta parsing progressivo
-            for fmt in (
-                "%Y-%m-%d %H:%M:%S",
-                "%Y-%m-%dT%H:%M:%S",
-                "%Y-%m-%d",
-                "%d/%m/%Y %H:%M:%S",
-                "%d/%m/%Y",
-            ):
-                try:
-                    return datetime.strptime(s, fmt)
-                except ValueError:
-                    continue
-            # Fallback: ISO parse
-            try:
-                return datetime.fromisoformat(s)
-            except ValueError:
-                return val
-        return val
-
-    # ── String (VARCHAR, CHAR, CLOB, TEXT, NVARCHAR) — garante str ──
-    if isinstance(val, (int, float, Decimal)):
-        return str(val)
-
-    return val
 
 
 async def _exec_bulk_insert(
@@ -762,8 +690,8 @@ async def _exec_bulk_insert(
 ) -> dict[str, Any]:
     """Insere linhas upstream em uma tabela de destino com mapeamento de colunas.
 
-    Faz introspeccao dos tipos da tabela destino e converte os valores
-    automaticamente para evitar erros de tipo (ex: ORA-01722).
+    Delega para load_service que faz introspeccao dos tipos da tabela destino
+    e converte os valores automaticamente para evitar erros de tipo (ex: ORA-01722).
     """
     from app.schemas.connection import ConnectionType
 
@@ -786,12 +714,12 @@ async def _exec_bulk_insert(
     if not column_mapping:
         raise ValueError(f"No '{node_id}': mapeamento de colunas nao configurado.")
 
-    # Validate all mappings have source and target
     valid_maps = [m for m in column_mapping if m.get("source") and m.get("target")]
     if not valid_maps:
         raise ValueError(f"No '{node_id}': nenhum mapeamento de colunas valido.")
 
     batch_size: int = int(data.get("batch_size", 1000))
+    unique_columns: list[str] = data.get("unique_columns") or []
     rows = _get_upstream_rows(node_id, upstream, edges)
 
     if not rows:
@@ -807,145 +735,24 @@ async def _exec_bulk_insert(
 
     conn_str = connection_service.build_connection_string(conn)
 
-    def _run_insert() -> dict[str, Any]:
-        connect_args: dict[str, Any] = {}
-        if conn.type == "sqlserver":
-            connect_args["TrustServerCertificate"] = "yes"
+    result = await asyncio.to_thread(
+        load_service.insert,
+        conn_str,
+        conn.type,
+        target_table,
+        rows,
+        column_mapping=valid_maps,
+        batch_size=batch_size,
+        unique_columns=unique_columns if unique_columns else None,
+    )
 
-        engine: sa.Engine | None = None
-        try:
-            engine = sa.create_engine(
-                conn_str,
-                pool_pre_ping=False,
-                pool_size=1,
-                max_overflow=0,
-                connect_args=connect_args,
-            )
-
-            # ── Introspeccao: descobre tipos das colunas destino ──
-            col_type_map: dict[str, str] = {}
-            try:
-                inspector = sa.inspect(engine)
-                # Suporta schema.tabela
-                parts = target_table.split(".", 1)
-                if len(parts) == 2:
-                    tbl_schema, tbl_name = parts
-                else:
-                    tbl_schema, tbl_name = None, parts[0]
-
-                db_columns = inspector.get_columns(tbl_name, schema=tbl_schema)
-                for c in db_columns:
-                    type_obj = c.get("type")
-                    type_name = type(type_obj).__name__.upper() if type_obj else ""
-                    col_type_map[c["name"].upper()] = type_name
-            except Exception:
-                # Se introspeccao falhar, continua sem cast
-                pass
-
-            cols = [m["target"] for m in valid_maps]
-
-            for col in cols:
-                if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', col):
-                    raise ValueError(f"Nome de coluna invalido para escrita: '{col}'")
-
-            # ── Mapeamento + cast de tipos ──
-            mapped_rows: list[dict] = []
-            cast_errors: list[str] = []
-
-            for row_idx, row in enumerate(rows):
-                mapped_row: dict = {}
-                for m in valid_maps:
-                    src = m["source"]
-                    tgt = m["target"]
-                    val = row.get(src)
-                    db_type = col_type_map.get(tgt.upper(), "")
-
-                    try:
-                        val = _cast_for_db(val, db_type)
-                    except (ValueError, TypeError) as cast_exc:
-                        cast_errors.append(
-                            f"Linha {row_idx + 1}, coluna '{tgt}': "
-                            f"valor '{val}' ({type(val).__name__}) -> {db_type}: {cast_exc}"
-                        )
-
-                    mapped_row[tgt] = val
-                mapped_rows.append(mapped_row)
-
-            if cast_errors:
-                # Reporta primeiros erros mas nao bloqueia
-                # (pode ser que o DB aceite mesmo assim)
-                pass
-
-            col_names = ", ".join(f'"{c}"' for c in cols)
-            placeholders = ", ".join(f":{c}" for c in cols)
-            insert_sql = sa.text(
-                f'INSERT INTO {target_table} ({col_names}) VALUES ({placeholders})'
-            )
-
-            rows_written = 0
-            failed_batch: int | None = None
-            batch_error: str | None = None
-
-            with engine.begin() as db_conn:
-                for i in range(0, len(mapped_rows), batch_size):
-                    batch = mapped_rows[i:i + batch_size]
-                    try:
-                        db_conn.execute(insert_sql, batch)
-                        rows_written += len(batch)
-                    except Exception as exc:
-                        failed_batch = i
-                        batch_error = str(exc)
-                        # Tenta identificar a linha problematica
-                        # inserindo uma a uma neste batch
-                        for j, single_row in enumerate(batch):
-                            try:
-                                db_conn.execute(insert_sql, [single_row])
-                                rows_written += 1
-                            except Exception as row_exc:
-                                row_num = i + j + 1
-                                sample_vals = {
-                                    k: f"{v!r} ({type(v).__name__})"
-                                    for k, v in single_row.items()
-                                }
-                                raise ValueError(
-                                    f"Erro na linha {row_num} de {len(mapped_rows)}: "
-                                    f"{row_exc}\n\n"
-                                    f"Valores da linha:\n"
-                                    + "\n".join(
-                                        f"  {k}: {v}" for k, v in sample_vals.items()
-                                    )
-                                ) from row_exc
-
-            return {
-                "rows_written": rows_written,
-                "cast_errors": cast_errors[:5],
-                "col_types": {
-                    tgt: col_type_map.get(tgt.upper(), "?")
-                    for m in valid_maps
-                    for tgt in [m["target"]]
-                },
-            }
-        finally:
-            if engine:
-                engine.dispose()
-
-    result = await asyncio.to_thread(_run_insert)
-    rows_written: int = result["rows_written"]
-    col_types: dict = result.get("col_types", {})
-    cast_errors: list = result.get("cast_errors", [])
-
-    output: dict[str, Any] = {
-        "status": "success",
-        "rows_written": rows_written,
-        "target_table": target_table,
-        "columns_mapped": len(valid_maps),
-        "column_types": col_types,
-        "message": f"{rows_written} registros inseridos em '{target_table}'.",
-    }
-
-    if cast_errors:
-        output["cast_warnings"] = cast_errors
-
+    output = result.to_dict()
+    parts = [f"{result.rows_written} registros inseridos em '{target_table}'."]
+    if result.duplicates_removed > 0:
+        parts.append(f"{result.duplicates_removed} duplicatas removidas.")
+    if result.dest_count_after >= 0:
+        parts.append(f"Total na tabela: {result.dest_count_after}.")
+    output["message"] = " ".join(parts)
     return output
 
 
@@ -956,7 +763,10 @@ async def _exec_load_node(
     edges: list[dict],
     conn_map: dict[str, Connection],
 ) -> dict[str, Any]:
-    """Grava linhas upstream em uma tabela SQL de destino."""
+    """Grava linhas upstream em uma tabela SQL de destino.
+
+    Delega para load_service que faz introspeccao de tipos e cast automatico.
+    """
     from app.schemas.connection import ConnectionType
 
     connection_id = str(data.get("connection_id") or "").strip()
@@ -971,11 +781,11 @@ async def _exec_load_node(
     if not target_table:
         raise ValueError(f"No '{node_id}': tabela de destino nao configurada.")
 
-    # Valida formato do nome da tabela (schema.tabela ou tabela)
     if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_.]*$', target_table):
         raise ValueError(f"No '{node_id}': nome de tabela invalido '{target_table}'.")
 
     write_disposition: str = data.get("write_disposition", "append")
+    unique_columns: list[str] = data.get("unique_columns") or []
     rows = _get_upstream_rows(node_id, upstream, edges)
 
     if not rows:
@@ -990,138 +800,20 @@ async def _exec_load_node(
         raise ValueError(f"No '{node_id}': escrita em Firebird nao suportada no modo de teste.")
 
     conn_str = connection_service.build_connection_string(conn)
-    rows_written = await asyncio.to_thread(
-        _exec_load_sa, conn_str, conn.type, target_table, rows, write_disposition
+
+    result = await asyncio.to_thread(
+        load_service.insert,
+        conn_str,
+        conn.type,
+        target_table,
+        rows,
+        write_disposition=write_disposition,
+        unique_columns=unique_columns if unique_columns else None,
     )
 
-    return {
-        "rows_written": rows_written,
-        "target_table": target_table,
-        "write_disposition": write_disposition,
-        "status": "success",
-    }
+    return result.to_dict()
 
 
-# ─── Executores SQL sincronos (threadpool) ─────────────────────────────────────
-
-def _exec_sa(conn_str: str, conn_type: str, query: str, max_rows: int) -> dict[str, Any]:
-    connect_args: dict[str, Any] = {}
-    if conn_type == "sqlserver":
-        connect_args["TrustServerCertificate"] = "yes"
-
-    engine: sa.Engine | None = None
-    try:
-        engine = sa.create_engine(
-            conn_str,
-            pool_pre_ping=False,
-            pool_size=1,
-            max_overflow=0,
-            connect_args=connect_args,
-        )
-        with engine.connect() as db_conn:
-            result = db_conn.execute(sa.text(query))
-            columns = list(result.keys())
-            rows = result.fetchmany(max_rows)
-            serialized = [
-                {col: _sv(val) for col, val in zip(columns, row)}
-                for row in rows
-            ]
-            return {
-                "row_count": len(serialized),
-                "columns": columns,
-                "rows": serialized,
-                "preview_limit": max_rows,
-            }
-    finally:
-        if engine:
-            engine.dispose()
-
-
-def _exec_load_sa(
-    conn_str: str,
-    conn_type: str,
-    target_table: str,
-    rows: list[dict],
-    write_disposition: str,
-) -> int:
-    """Escreve linhas em uma tabela SQL. Retorna quantidade de linhas gravadas."""
-    connect_args: dict[str, Any] = {}
-    if conn_type == "sqlserver":
-        connect_args["TrustServerCertificate"] = "yes"
-
-    engine: sa.Engine | None = None
-    try:
-        engine = sa.create_engine(
-            conn_str,
-            pool_pre_ping=False,
-            pool_size=1,
-            max_overflow=0,
-            connect_args=connect_args,
-        )
-        cols = list(rows[0].keys())
-
-        # Valida nomes de colunas
-        for col in cols:
-            if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', col):
-                raise ValueError(f"Nome de coluna invalido para escrita: '{col}'")
-
-        col_names = ", ".join(f'"{c}"' for c in cols)
-        placeholders = ", ".join(f":{c}" for c in cols)
-        insert_sql = sa.text(f'INSERT INTO {target_table} ({col_names}) VALUES ({placeholders})')
-
-        with engine.begin() as db_conn:
-            # Limpa tabela se modo replace
-            if write_disposition == "replace":
-                db_conn.execute(sa.text(f"DELETE FROM {target_table}"))
-
-            # Insere em lotes de 500
-            batch_size = 500
-            for i in range(0, len(rows), batch_size):
-                batch = rows[i:i + batch_size]
-                db_conn.execute(insert_sql, batch)
-
-        return len(rows)
-    finally:
-        if engine:
-            engine.dispose()
-
-
-def _exec_firebird(conn: Connection, query: str, max_rows: int) -> dict[str, Any]:
-    from app.services.firebird_client import connect_firebird
-
-    config: dict[str, Any] = {
-        "host": conn.host,
-        "port": conn.port,
-        "database": conn.database,
-        "username": conn.username,
-    }
-    if conn.extra_params:
-        config.update(conn.extra_params)
-
-    fb_conn = None
-    try:
-        fb_conn = connect_firebird(config=config, secret={"password": conn.password})
-        cur = fb_conn.cursor()
-        cur.execute(query)
-        columns = [desc[0] for desc in (cur.description or [])]
-        rows = cur.fetchmany(max_rows)
-        cur.close()
-        serialized = [
-            {col: _sv(val) for col, val in zip(columns, row)}
-            for row in rows
-        ]
-        return {
-            "row_count": len(serialized),
-            "columns": columns,
-            "rows": serialized,
-            "preview_limit": max_rows,
-        }
-    finally:
-        if fb_conn is not None:
-            try:
-                fb_conn.close()
-            except Exception:
-                pass
 
 
 # ─── IF Node (decisao binaria) ────────────────────────────────────────────────
@@ -1296,6 +988,37 @@ def _exec_switch_node(
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
 
+def _trim_for_sse(output: dict[str, Any]) -> dict[str, Any]:
+    """Cria uma versao resumida do output para transporte via SSE.
+
+    Em modo producao, os nos podem produzir milhares de linhas. Enviar tudo
+    pelo SSE sobrecarregaria o frontend. Esta funcao mantém apenas as
+    primeiras _SSE_PREVIEW_ROWS linhas e adiciona metadados de preview.
+    """
+    if not isinstance(output, dict):
+        return output
+
+    # Nos com branches (IF, Switch) — aplica trim em cada branch
+    branches = output.get("__branches")
+    if isinstance(branches, dict):
+        trimmed = {**output}
+        trimmed["__branches"] = {
+            k: _trim_for_sse(v) for k, v in branches.items()
+        }
+        return trimmed
+
+    # Nos com rows[]
+    rows = output.get("rows")
+    if not isinstance(rows, list) or len(rows) <= _SSE_PREVIEW_ROWS:
+        return output
+
+    trimmed = {**output}
+    trimmed["rows"] = rows[:_SSE_PREVIEW_ROWS]
+    trimmed["is_preview"] = True
+    trimmed["total_rows"] = len(rows)
+    return trimmed
+
+
 def _get_upstream_rows(
     node_id: str,
     upstream: dict[str, Any],
@@ -1381,21 +1104,6 @@ def _topological_sort(nodes: list[dict], edges: list[dict]) -> list[str]:
 
 def _ts() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _sv(val: Any) -> Any:
-    """Converte valores nao-serializaveis para JSON."""
-    if val is None or isinstance(val, (int, float, str, bool)):
-        return val
-    if isinstance(val, datetime):
-        return val.isoformat()
-    if isinstance(val, date):
-        return val.isoformat()
-    if isinstance(val, dt_time):
-        return val.isoformat()
-    if isinstance(val, Decimal):
-        return float(val)
-    return str(val)
 
 
 workflow_test_service = WorkflowTestService()

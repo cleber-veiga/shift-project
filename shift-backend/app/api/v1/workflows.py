@@ -52,20 +52,30 @@ async def execute_workflow(
 async def test_workflow(
     workflow_id: UUID,
     target_node_id: Optional[str] = Query(None, description="Se informado, executa somente ate este no (inclusive)."),
+    mode: Optional[str] = Query(None, description="Override do modo: 'test' ou 'production'. Se omitido, usa o status do workflow (draft→test, published→production)."),
     _=Depends(require_permission("workspace", "VIEWER")),
 ) -> StreamingResponse:
-    """Executa um workflow em modo de teste com streaming SSE por no.
+    """Executa um workflow com streaming SSE por no.
+
+    O modo de execucao e derivado automaticamente do campo ``status`` do workflow:
+    - draft   → test (extrai ate 200 linhas por no de entrada)
+    - published → production (extrai todas as linhas, fluxo completo)
+
+    O parametro ``mode`` pode ser usado como override explicito.
 
     Retorna uma stream de eventos Server-Sent Events:
-    - execution_start
+    - execution_start (inclui campo 'mode')
     - node_start  / node_complete / node_error  (um par por no)
     - execution_complete
     - error (caso critico antes de comecar)
     """
+    effective_mode = mode if mode in ("test", "production") else None
+
     async def event_stream():
         async for chunk in workflow_test_service.run_streaming(
             workflow_id=workflow_id,
             target_node_id=target_node_id,
+            mode=effective_mode,
         ):
             yield chunk
 

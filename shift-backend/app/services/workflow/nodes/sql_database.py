@@ -1,11 +1,13 @@
 """
 Processador de extracao SQL com dlt e materializacao em DuckDB temporario.
+
+Delega para extraction_service que centraliza toda logica de leitura.
 """
 
 from typing import Any
 from uuid import uuid4
 
-from app.data_pipelines.sql_extractor import extract_sql_to_duckdb
+from app.services.extraction_service import extraction_service
 from app.services.workflow.nodes import BaseNodeProcessor, register_processor
 from app.services.workflow.nodes.exceptions import NodeProcessingError
 
@@ -52,8 +54,8 @@ class SqlDatabaseProcessor(BaseNodeProcessor):
             or uuid4()
         )
 
-        storage_reference = extract_sql_to_duckdb(
-            connection_url=str(connection_string),
+        result = extraction_service.extract_sql_to_duckdb(
+            connection_string=str(connection_string),
             query=effective_query,
             execution_id=execution_id,
             resource_name=node_id,
@@ -67,5 +69,5 @@ class SqlDatabaseProcessor(BaseNodeProcessor):
             "status": "completed",
             "query": effective_query,
             "output_field": output_field,
-            output_field: storage_reference,
+            output_field: result.to_dict(),
         }

@@ -52,7 +52,15 @@
       "Bash(python -m py_compile app/db/session.py)",
       "Bash(python -m py_compile alembic/versions/2026_04_15_b5c6d7e8f9a0_add_performance_indexes.py)",
       "Bash(python -c \"from app.core.security import authorization_service, require_permission; print\\('OK: security imports'\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/workflow_test_service.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/workflow_test_service.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/load_service.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/extraction_service.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/workflow/nodes/sql_database.py'\\).read\\(\\)\\); ast.parse\\(open\\('app/services/workflow/nodes/load_node.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -m pytest tests/test_migrator.py -v --timeout=30)",
+      "Bash(pip install:*)",
+      "Bash(python -m pytest tests/test_migrator.py -v)",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(python -m pytest tests/ -x -q)"
     ]
   }
 }

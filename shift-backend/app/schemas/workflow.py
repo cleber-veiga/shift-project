@@ -405,7 +405,12 @@ class WorkflowUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     definition: dict[str, Any] | None = None
+    is_template: bool | None = None
     is_published: bool | None = None
+    status: str | None = Field(
+        default=None,
+        description="Status do workflow: 'draft' ou 'published'.",
+    )
 
 
 class WorkflowResponse(BaseModel):
@@ -420,6 +425,7 @@ class WorkflowResponse(BaseModel):
     workspace_id: UUID | None = None
     is_template: bool
     is_published: bool
+    status: str = "draft"
     definition: dict[str, Any]
     created_at: datetime
     updated_at: datetime

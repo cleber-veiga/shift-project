@@ -1,6 +1,8 @@
 """
 Processador do no de carga para referencias DuckDB materializadas.
 
+Delega para load_service que centraliza toda logica de escrita.
+
 Configuracao do no:
   connection_string:  Connection string do banco de destino (obrigatorio).
   target_table:       Nome da tabela de destino, pode incluir schema (ex: VIASOFTMCP.RESUMO).
@@ -14,7 +16,7 @@ Configuracao do no:
 from typing import Any
 
 from app.data_pipelines.duckdb_storage import build_table_ref, get_primary_input_reference
-from app.data_pipelines.migrator import run_migration_pipeline
+from app.services.load_service import load_service
 from app.services.workflow.nodes import BaseNodeProcessor, register_processor
 from app.services.workflow.nodes.exceptions import NodeProcessingError
 
@@ -64,7 +66,7 @@ class LoadNodeProcessor(BaseNodeProcessor):
         source_table = str(input_reference["table_name"])
         query = f"SELECT * FROM {build_table_ref(input_reference)}"
 
-        load_result = run_migration_pipeline(
+        load_result = load_service.insert_from_source(
             source_connection=source_connection,
             destination_connection=str(connection_string),
             table_name=source_table,
