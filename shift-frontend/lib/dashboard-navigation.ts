@@ -1,7 +1,7 @@
-import { Building2, GitBranch, Home, Plug2, Users, type LucideIcon } from "lucide-react"
+import { Building2, FileSpreadsheet, GitBranch, Home, Plug2, Users, type LucideIcon } from "lucide-react"
 
 export type DashboardScope = "space" | "project"
-export type DashboardSection = "visao-geral" | "grupo-economico" | "conexoes" | "fluxos" | "membros"
+export type DashboardSection = "visao-geral" | "grupo-economico" | "conexoes" | "fluxos" | "modelos-entrada" | "membros"
 
 type SectionDefinition = {
   slug: DashboardSection
@@ -50,6 +50,12 @@ const sectionDefinitions: SectionDefinition[] = [
     icon: GitBranch,
   },
   {
+    slug: "modelos-entrada",
+    label: "Modelos de Entrada",
+    description: "Defina templates de Excel/CSV para padronizar a importação de dados.",
+    icon: FileSpreadsheet,
+  },
+  {
     slug: "membros",
     label: "Membros",
     description: "Gerencie os acessos e participantes vinculados a este escopo.",
@@ -87,11 +93,12 @@ export function getDashboardSectionMeta(scope: DashboardScope, section: Dashboar
 function buildNavigationItems(scope: DashboardScope) {
   if (scope === "project") {
     return sectionDefinitions
-      .filter((section) => section.slug !== "grupo-economico")
+      .filter((section) => section.slug !== "grupo-economico" && section.slug !== "modelos-entrada")
       .map((section) => getDashboardSectionMeta(scope, section.slug))
   }
 
-  return sectionDefinitions.map((section) => getDashboardSectionMeta(scope, section.slug))
+  return sectionDefinitions
+    .map((section) => getDashboardSectionMeta(scope, section.slug))
 }
 
 export const dashboardNavigationGroups = [

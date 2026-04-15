@@ -14,6 +14,7 @@ engine = create_async_engine(
     echo=False,
     pool_size=20,
     max_overflow=10,
+    pool_pre_ping=True,
 )
 
 # Fábrica de sessões — expire_on_commit=False evita lazy-load em contexto async

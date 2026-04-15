@@ -4,6 +4,8 @@ Exports centralizados dos modelos ORM.
 
 from .connection import Connection
 from .connection_schema import ConnectionSchema
+from .input_model import InputModel
+from .input_model_row import InputModelRow
 from .saved_query import SavedQuery
 from .organization import (
     EconomicGroup,
@@ -26,6 +28,8 @@ from .workspace import (
 __all__ = [
     "Connection",
     "ConnectionSchema",
+    "InputModel",
+    "InputModelRow",
     "SavedQuery",
     "EconomicGroup",
     "Establishment",

@@ -12,6 +12,7 @@ import {
 } from "@/lib/dashboard-navigation"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ConnectionsSection } from "@/components/dashboard/connections-section"
+import { InputModelsSection } from "@/components/dashboard/input-models-section"
 import { NewWorkflowModal } from "@/components/workflow/new-workflow-modal"
 import { listWorkspaceWorkflows, deleteWorkflow, type Workflow as WorkflowType } from "@/lib/auth"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
@@ -342,6 +343,10 @@ export function ContextSectionPage({ scope, section }: ContextSectionPageProps) 
 
   if (section === "conexoes") {
     return <ConnectionsSection scope={scope} />
+  }
+
+  if (section === "modelos-entrada") {
+    return <InputModelsSection />
   }
 
   return (

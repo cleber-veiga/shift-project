@@ -36,7 +36,12 @@
       "Bash(ls D:/Labs/shift-project/shift-backend/.env*)",
       "Bash(find \"D:\\\\Labs\\\\shift-project\\\\shift-backend\\\\app\" -name \"*.py\" -type f -exec grep -l \"oracle\\\\|Oracle\" {} \\\\;)",
       "Bash(xargs ls:*)",
-      "Bash(python -c \"import py_compile; py_compile.compile\\('app/api/v1/workflows_crud.py', doraise=True\\); py_compile.compile\\('app/api/v1/workflows.py', doraise=True\\); py_compile.compile\\('app/services/workflow_crud_service.py', doraise=True\\); py_compile.compile\\('app/core/security.py', doraise=True\\); print\\('OK'\\)\")"
+      "Bash(python -c \"import py_compile; py_compile.compile\\('app/api/v1/workflows_crud.py', doraise=True\\); py_compile.compile\\('app/api/v1/workflows.py', doraise=True\\); py_compile.compile\\('app/services/workflow_crud_service.py', doraise=True\\); py_compile.compile\\('app/core/security.py', doraise=True\\); print\\('OK'\\)\")",
+      "Bash(find /d/Labs/shift-project/shift-backend/app/services -name \"saved_query_service.py\" -exec cat {} \\\\;)",
+      "Bash(python -c \"import secrets; print\\(secrets.token_hex\\(6\\)\\)\")",
+      "Bash(alembic upgrade:*)",
+      "Bash(python -m alembic upgrade head)",
+      "Bash(python -m alembic revision --autogenerate -m \"add input_model_rows\")"
     ]
   }
 }

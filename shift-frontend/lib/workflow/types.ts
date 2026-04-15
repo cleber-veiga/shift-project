@@ -129,7 +129,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     category: "transform",
     icon: "ArrowRightLeft",
     color: "violet",
-    defaultData: { type: "mapper", mappings: [], drop_unmapped: false },
+    defaultData: { type: "mapper", mappings: [], drop_unmapped: true },
   },
   {
     type: "filter",

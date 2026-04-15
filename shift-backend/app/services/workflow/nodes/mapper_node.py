@@ -54,11 +54,22 @@ class MapperNodeProcessor(BaseNodeProcessor):
         #   {"source": "COL_A", "target": "COL_B"}  -> renomeia
         #   {"source": "COL_A", "target": "COL_A"}  -> mantém com mesmo nome
         #   {"target": "NOVA_COL", "expression": "COL_A * 2"}  -> campo computado
+        # DuckDB type names for TRY_CAST
+        _DUCKDB_TYPES: dict[str, str] = {
+            "string":   "VARCHAR",
+            "integer":  "INTEGER",
+            "float":    "DOUBLE",
+            "boolean":  "BOOLEAN",
+            "date":     "DATE",
+            "datetime": "TIMESTAMP",
+        }
+
         select_items: list[str] = []
         for mapping in mappings:
             target = mapping.get("target")
             source = mapping.get("source")
             expression = mapping.get("expression")
+            field_type = mapping.get("type")
 
             if not target:
                 raise NodeProcessingError(
@@ -66,18 +77,23 @@ class MapperNodeProcessor(BaseNodeProcessor):
                 )
 
             if expression:
-                select_items.append(
-                    f"({expression}) AS {quote_identifier(str(target))}"
-                )
+                col_expr = f"({expression})"
             elif source:
-                select_items.append(
-                    f"{quote_identifier(str(source))} AS {quote_identifier(str(target))}"
-                )
+                col_expr = quote_identifier(str(source))
             else:
                 raise NodeProcessingError(
                     f"No mapper '{node_id}': mapping para '{target}' precisa de "
                     f"'source' ou 'expression'."
                 )
+
+            # Apply TRY_CAST when a type is explicitly set (non-string or any explicit)
+            if field_type and field_type in _DUCKDB_TYPES:
+                duckdb_type = _DUCKDB_TYPES[field_type]
+                col_expr = f"TRY_CAST({col_expr} AS {duckdb_type})"
+
+            select_items.append(
+                f"{col_expr} AS {quote_identifier(str(target))}"
+            )
 
         if drop_unmapped:
             select_clause = ", ".join(select_items)
@@ -85,7 +101,7 @@ class MapperNodeProcessor(BaseNodeProcessor):
             mapped_sources = {
                 str(m["source"])
                 for m in mappings
-                if m.get("source") and not m.get("expression")
+                if m.get("source")
             }
             exclude_clause = (
                 f"EXCLUDE ({', '.join(quote_identifier(s) for s in mapped_sources)})"

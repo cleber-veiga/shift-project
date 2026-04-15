@@ -8,6 +8,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.ai_chat import router as ai_chat_router
+from app.api.v1.input_models import router as input_models_router
+from app.api.v1.input_model_rows import router as input_model_rows_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.connections import router as connections_router
 from app.api.v1.economic_groups import router as economic_groups_router
@@ -57,6 +59,8 @@ app.include_router(workflow_crud_router, prefix="/api/v1")
 app.include_router(playground_router, prefix="/api/v1")
 app.include_router(saved_queries_router, prefix="/api/v1")
 app.include_router(ai_chat_router, prefix="/api/v1")
+app.include_router(input_models_router, prefix="/api/v1")
+app.include_router(input_model_rows_router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["sistema"])

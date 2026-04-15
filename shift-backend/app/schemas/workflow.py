@@ -40,9 +40,12 @@ TransformOperation = Annotated[
 class MapperFieldConfig(BaseModel):
     """Mapeia um campo de origem para um destino, com transformacao opcional."""
 
+    model_config = ConfigDict(extra="allow")
+
     source: str | None = None
     target: str
-    transform: str | None = None
+    expression: str | None = None  # expressao SQL computada (ex: UPPER("col"))
+    type: str | None = None        # tipo de saida para TRY_CAST (string, integer, ...)
 
 
 class MapperNodeConfig(BaseModel):

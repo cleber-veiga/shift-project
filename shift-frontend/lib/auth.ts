@@ -144,6 +144,70 @@ export type Conglomerate = {
   updated_at: string
 }
 
+// ─── Input Models ─────────────────────────────────────────────────────────────
+
+export type InputModelColumnType = "text" | "number" | "integer" | "date" | "datetime" | "boolean"
+export type InputModelFileType = "excel" | "csv" | "data"
+
+export type InputModelColumn = {
+  name: string
+  type: InputModelColumnType
+  required: boolean
+}
+
+export type InputModelSheet = {
+  name: string
+  columns: InputModelColumn[]
+}
+
+export type InputModelSchema = {
+  sheets: InputModelSheet[]
+}
+
+export type InputModel = {
+  id: string
+  workspace_id: string
+  name: string
+  description: string | null
+  file_type: InputModelFileType
+  schema_def: InputModelSchema
+  created_by_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type CreateInputModelPayload = {
+  name: string
+  description?: string | null
+  file_type: InputModelFileType
+  schema_def: InputModelSchema
+}
+
+export type UpdateInputModelPayload = {
+  name?: string
+  description?: string | null
+  file_type?: InputModelFileType
+  schema_def?: InputModelSchema
+}
+
+export type InputModelValidationResult = {
+  valid: boolean
+  errors: string[]
+}
+
+export type InputModelRow = {
+  id: string
+  input_model_id: string
+  row_order: number
+  data: Record<string, unknown>
+  created_at: string
+}
+
+export type InputModelRowsResponse = {
+  total: number
+  rows: InputModelRow[]
+}
+
 export type ConnectionType = "oracle" | "postgresql" | "firebird" | "sqlserver" | "mysql"
 
 export type Connection = {
@@ -1167,4 +1231,103 @@ export async function testWorkflowStream(
     reader.releaseLock()
     callbacks.onDone?.()
   }
+}
+
+// ─── Input Models API ─────────────────────────────────────────────────────────
+
+export async function listWorkspaceInputModels(workspaceId: string): Promise<InputModel[]> {
+  return authorizedRequest<InputModel[]>(`/workspaces/${workspaceId}/input-models`, { method: "GET" })
+}
+
+export async function createInputModel(workspaceId: string, payload: CreateInputModelPayload): Promise<InputModel> {
+  return authorizedRequest<InputModel>(`/workspaces/${workspaceId}/input-models`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function getInputModel(inputModelId: string): Promise<InputModel> {
+  return authorizedRequest<InputModel>(`/input-models/${inputModelId}`, { method: "GET" })
+}
+
+export async function updateInputModel(inputModelId: string, payload: UpdateInputModelPayload): Promise<InputModel> {
+  return authorizedRequest<InputModel>(`/input-models/${inputModelId}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteInputModel(inputModelId: string): Promise<void> {
+  return authorizedRequest<void>(`/input-models/${inputModelId}`, { method: "DELETE" })
+}
+
+export async function downloadInputModelTemplate(inputModelId: string): Promise<void> {
+  const session = getStoredSession()
+  if (!session) throw new Error("Sessao expirada.")
+  const res = await fetch(`${getApiBaseUrl()}/input-models/${inputModelId}/template`, {
+    headers: { Authorization: `Bearer ${session.accessToken}` },
+  })
+  if (!res.ok) throw new Error("Erro ao baixar template.")
+  const blob = await res.blob()
+  const disposition = res.headers.get("Content-Disposition") ?? ""
+  const match = disposition.match(/filename="?(.+?)"?$/)
+  const filename = match?.[1] ?? "template"
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+export async function validateInputModelFile(
+  inputModelId: string,
+  file: File,
+): Promise<InputModelValidationResult> {
+  const session = getStoredSession()
+  if (!session) throw new Error("Sessao expirada.")
+  const form = new FormData()
+  form.append("file", file)
+  const res = await fetch(`${getApiBaseUrl()}/input-models/${inputModelId}/validate`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${session.accessToken}` },
+    body: form,
+  })
+  if (!res.ok) throw new Error("Erro ao validar arquivo.")
+  return res.json() as Promise<InputModelValidationResult>
+}
+
+// ─── Input Model Rows API ────────────────────────────────────────────────────
+
+export async function listInputModelRows(inputModelId: string): Promise<InputModelRowsResponse> {
+  return authorizedRequest<InputModelRowsResponse>(`/input-models/${inputModelId}/rows`, { method: "GET" })
+}
+
+export async function addInputModelRow(inputModelId: string, data: Record<string, unknown>): Promise<InputModelRow> {
+  return authorizedRequest<InputModelRow>(`/input-models/${inputModelId}/rows`, {
+    method: "POST",
+    body: JSON.stringify({ data }),
+  })
+}
+
+export async function addInputModelRowsBulk(inputModelId: string, rows: Record<string, unknown>[]): Promise<InputModelRowsResponse> {
+  return authorizedRequest<InputModelRowsResponse>(`/input-models/${inputModelId}/rows/bulk`, {
+    method: "POST",
+    body: JSON.stringify({ rows }),
+  })
+}
+
+export async function updateInputModelRow(rowId: string, data: Record<string, unknown>): Promise<InputModelRow> {
+  return authorizedRequest<InputModelRow>(`/input-model-rows/${rowId}`, {
+    method: "PUT",
+    body: JSON.stringify({ data }),
+  })
+}
+
+export async function deleteInputModelRow(rowId: string): Promise<void> {
+  return authorizedRequest<void>(`/input-model-rows/${rowId}`, { method: "DELETE" })
+}
+
+export async function clearInputModelRows(inputModelId: string): Promise<{ deleted: number }> {
+  return authorizedRequest<{ deleted: number }>(`/input-models/${inputModelId}/rows`, { method: "DELETE" })
 }

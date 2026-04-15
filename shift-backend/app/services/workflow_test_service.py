@@ -262,6 +262,37 @@ def _exec_inline_data(data: dict) -> dict[str, Any]:
 
 # ─── Mapper (Set) ─────────────────────────────────────────────────────────────
 
+_MAPPER_TRANSFORMS: dict[str, Any] = {
+    "upper":          lambda v: str(v).upper(),
+    "lower":          lambda v: str(v).lower(),
+    "trim":           lambda v: str(v).strip(),
+    "remove_special": lambda v: re.sub(r"[^A-Za-z0-9 ]", "", str(v)),
+}
+
+
+def _safe_cast(val: Any, field_type: str | None) -> Any:
+    """Tenta converter o valor para o tipo informado (equivale ao TRY_CAST)."""
+    if val is None or not field_type:
+        return val
+    try:
+        if field_type == "integer":
+            return int(float(val))
+        if field_type == "float":
+            return float(val)
+        if field_type == "boolean":
+            if isinstance(val, str):
+                return val.lower() in ("true", "1", "yes", "sim")
+            return bool(val)
+        if field_type == "date":
+            return str(date.fromisoformat(str(val)[:10]))
+        if field_type == "datetime":
+            return str(datetime.fromisoformat(str(val)))
+        # string ou desconhecido
+        return str(val)
+    except (ValueError, TypeError):
+        return None
+
+
 def _exec_mapper(
     node_id: str,
     data: dict,
@@ -269,10 +300,13 @@ def _exec_mapper(
     edges: list[dict],
 ) -> dict[str, Any]:
     """
-    Renomeia/seleciona campos das linhas upstream.
+    Renomeia, transforma e/ou cria campos nas linhas upstream.
 
-    Cada mapeamento: {"source": "coluna_original", "target": "novo_nome"}
-    Se drop_unmapped=true, remove campos não mapeados.
+    Cada mapeamento pode ser:
+      - campo de entrada (valueType="field"): pega valor da coluna source
+      - valor fixo (valueType="static"): usa o valor literal informado
+    Transforms (upper, lower, trim, remove_special) sao aplicados em sequencia.
+    O type (string, integer, float, boolean, date, datetime) aplica cast.
     """
     rows = _get_upstream_rows(node_id, upstream, edges)
     if not rows:
@@ -282,25 +316,51 @@ def _exec_mapper(
     drop_unmapped: bool = bool(data.get("drop_unmapped", False))
 
     if not mappings:
-        # Sem mapeamentos: passa os dados intactos
         columns = list(rows[0].keys()) if rows else []
         return {"row_count": len(rows), "columns": columns, "rows": rows}
-
-    # Constrói dicionário source → target
-    mapping_dict: dict[str, str] = {
-        m["source"]: m["target"]
-        for m in mappings
-        if m.get("source") and m.get("target")
-    }
 
     mapped_rows: list[dict] = []
     for row in rows:
         new_row: dict = {}
-        for key, val in row.items():
-            if key in mapping_dict:
-                new_row[mapping_dict[key]] = val
-            elif not drop_unmapped:
-                new_row[key] = val
+        mapped_sources: set[str] = set()
+
+        for m in mappings:
+            target = m.get("target")
+            if not target:
+                continue
+
+            source = m.get("source")
+            value_type = m.get("valueType", "field")
+            transforms: list[str] = m.get("transforms") or []
+            field_type: str | None = m.get("type")
+
+            # Resolve raw value
+            if value_type == "static":
+                val = m.get("value", "")
+            elif source:
+                val = row.get(source)
+                mapped_sources.add(source)
+            else:
+                continue
+
+            # Apply transforms (field mode only)
+            if value_type == "field" and transforms and val is not None:
+                for t_id in transforms:
+                    fn = _MAPPER_TRANSFORMS.get(t_id)
+                    if fn:
+                        val = fn(val)
+
+            # Apply type cast
+            val = _safe_cast(val, field_type)
+
+            new_row[target] = val
+
+        # Include unmapped fields
+        if not drop_unmapped:
+            for key, v in row.items():
+                if key not in mapped_sources and key not in new_row:
+                    new_row[key] = v
+
         mapped_rows.append(new_row)
 
     columns = list(mapped_rows[0].keys()) if mapped_rows else []

@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db.session import get_async_session
 from app.models.connection import Connection
+from app.models.input_model import InputModel
+from app.models.input_model_row import InputModelRow
 from app.models import (
     EconomicGroup,
     Establishment,
@@ -363,6 +365,22 @@ class AuthorizationService:
                 select(Workflow.workspace_id)
                 .join(WorkflowExecution, WorkflowExecution.workflow_id == Workflow.id)
                 .where(WorkflowExecution.id == execution_id)
+            )
+            return result.scalar_one_or_none()
+
+        input_model_id = self._read_uuid_param(request, "input_model_id")
+        if input_model_id is not None:
+            result = await db.execute(
+                select(InputModel.workspace_id).where(InputModel.id == input_model_id)
+            )
+            return result.scalar_one_or_none()
+
+        row_id = self._read_uuid_param(request, "row_id")
+        if row_id is not None:
+            result = await db.execute(
+                select(InputModel.workspace_id)
+                .join(InputModelRow, InputModelRow.input_model_id == InputModel.id)
+                .where(InputModelRow.id == row_id)
             )
             return result.scalar_one_or_none()
 
