@@ -8,6 +8,8 @@ import { cn } from "@/lib/utils"
 import { SqlDatabaseConfig } from "@/components/workflow/nodes/sql-database-config"
 import { MapperConfig } from "@/components/workflow/nodes/mapper-config"
 import { FilterConfig } from "@/components/workflow/nodes/filter-config"
+import { IfConfig } from "@/components/workflow/nodes/if-config"
+import { SwitchConfig } from "@/components/workflow/nodes/switch-config"
 import { TruncateTableConfig } from "@/components/workflow/nodes/truncate-table-config"
 import { BulkInsertConfig } from "@/components/workflow/nodes/bulk-insert-config"
 
@@ -22,6 +24,7 @@ const categoryBgMap: Record<string, string> = {
   blue: "bg-blue-500/10",
   violet: "bg-violet-500/10",
   emerald: "bg-emerald-500/10",
+  orange: "bg-orange-500/10",
   pink: "bg-pink-500/10",
 }
 
@@ -30,6 +33,7 @@ const categoryTextMap: Record<string, string> = {
   blue: "text-blue-500",
   violet: "text-violet-500",
   emerald: "text-emerald-500",
+  orange: "text-orange-500",
   pink: "text-pink-500",
 }
 
@@ -381,6 +385,22 @@ export function NodeConfigFields({
     case "filter":
       return (
         <FilterConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "if_node":
+      return (
+        <IfConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "switch_node":
+      return (
+        <SwitchConfig
           data={data}
           onUpdate={(newData) => onUpdate(node.id, newData)}
         />

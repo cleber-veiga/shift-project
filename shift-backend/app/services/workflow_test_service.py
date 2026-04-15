@@ -265,6 +265,13 @@ async def _execute_node(
     if node_type == "loadNode":
         return await _exec_load_node(node_id, data, upstream, edges, conn_map)
 
+    # ── Decisão ───────────────────────────────────────────────────────────────
+    if node_type == "if_node":
+        return _exec_if_node(node_id, data, upstream, edges)
+
+    if node_type == "switch_node":
+        return _exec_switch_node(node_id, data, upstream, edges)
+
     # Pass-through para nos nao implementados
     return {
         "status": "skipped",
@@ -668,6 +675,84 @@ async def _exec_truncate_table(
     return output
 
 
+# Tipos que devem ser tratados como numerico
+_NUMERIC_DB_TYPES = {"NUMBER", "NUMERIC", "DECIMAL", "FLOAT", "DOUBLE", "REAL",
+                     "INTEGER", "INT", "SMALLINT", "BIGINT", "DOUBLE_PRECISION",
+                     "BINARY_FLOAT", "BINARY_DOUBLE", "MONEY", "TINYINT"}
+
+# Tipos que devem ser tratados como data/hora
+_DATE_DB_TYPES = {"DATE", "DATETIME", "TIMESTAMP", "DATETIME2", "SMALLDATETIME",
+                  "TIMESTAMP_NTZ", "TIMESTAMP_LTZ", "TIMESTAMP_TZ"}
+
+# Tipos inteiros (sem casas decimais)
+_INT_DB_TYPES = {"INTEGER", "INT", "SMALLINT", "BIGINT", "TINYINT"}
+
+
+def _cast_for_db(val: Any, db_type: str) -> Any:
+    """Converte um valor Python para o tipo esperado pela coluna do banco.
+
+    Resolve o problema classico de strings numericas ('0.0') sendo enviadas
+    para colunas NUMBER em Oracle/Postgres, causando ORA-01722 e similares.
+    """
+    if val is None:
+        return None
+
+    if not db_type:
+        return val
+
+    # ── Numerico ──
+    if db_type in _NUMERIC_DB_TYPES:
+        if isinstance(val, (int, float, Decimal)):
+            if db_type in _INT_DB_TYPES:
+                return int(val)
+            return val
+        if isinstance(val, str):
+            s = val.strip()
+            if s == "":
+                return None
+            if db_type in _INT_DB_TYPES:
+                return int(float(s))
+            # Tenta manter como Decimal para precisao
+            try:
+                return float(s)
+            except ValueError:
+                return val  # Deixa o DB rejeitar com mensagem clara
+        return val
+
+    # ── Data/hora ──
+    if db_type in _DATE_DB_TYPES:
+        if isinstance(val, (datetime, date)):
+            return val
+        if isinstance(val, str):
+            s = val.strip()
+            if s == "":
+                return None
+            # Tenta parsing progressivo
+            for fmt in (
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%d",
+                "%d/%m/%Y %H:%M:%S",
+                "%d/%m/%Y",
+            ):
+                try:
+                    return datetime.strptime(s, fmt)
+                except ValueError:
+                    continue
+            # Fallback: ISO parse
+            try:
+                return datetime.fromisoformat(s)
+            except ValueError:
+                return val
+        return val
+
+    # ── String (VARCHAR, CHAR, CLOB, TEXT, NVARCHAR) — garante str ──
+    if isinstance(val, (int, float, Decimal)):
+        return str(val)
+
+    return val
+
+
 async def _exec_bulk_insert(
     node_id: str,
     data: dict,
@@ -675,7 +760,11 @@ async def _exec_bulk_insert(
     edges: list[dict],
     conn_map: dict[str, Connection],
 ) -> dict[str, Any]:
-    """Insere linhas upstream em uma tabela de destino com mapeamento de colunas."""
+    """Insere linhas upstream em uma tabela de destino com mapeamento de colunas.
+
+    Faz introspeccao dos tipos da tabela destino e converte os valores
+    automaticamente para evitar erros de tipo (ex: ORA-01722).
+    """
     from app.schemas.connection import ConnectionType
 
     connection_id = str(data.get("connection_id") or "").strip()
@@ -718,17 +807,7 @@ async def _exec_bulk_insert(
 
     conn_str = connection_service.build_connection_string(conn)
 
-    # Build mapped rows: rename source columns to target column names
-    mapped_rows: list[dict] = []
-    for row in rows:
-        mapped_row: dict = {}
-        for m in valid_maps:
-            src = m["source"]
-            tgt = m["target"]
-            mapped_row[tgt] = row.get(src)
-        mapped_rows.append(mapped_row)
-
-    def _run_insert() -> int:
+    def _run_insert() -> dict[str, Any]:
         connect_args: dict[str, Any] = {}
         if conn.type == "sqlserver":
             connect_args["TrustServerCertificate"] = "yes"
@@ -742,35 +821,132 @@ async def _exec_bulk_insert(
                 max_overflow=0,
                 connect_args=connect_args,
             )
+
+            # ── Introspeccao: descobre tipos das colunas destino ──
+            col_type_map: dict[str, str] = {}
+            try:
+                inspector = sa.inspect(engine)
+                # Suporta schema.tabela
+                parts = target_table.split(".", 1)
+                if len(parts) == 2:
+                    tbl_schema, tbl_name = parts
+                else:
+                    tbl_schema, tbl_name = None, parts[0]
+
+                db_columns = inspector.get_columns(tbl_name, schema=tbl_schema)
+                for c in db_columns:
+                    type_obj = c.get("type")
+                    type_name = type(type_obj).__name__.upper() if type_obj else ""
+                    col_type_map[c["name"].upper()] = type_name
+            except Exception:
+                # Se introspeccao falhar, continua sem cast
+                pass
+
             cols = [m["target"] for m in valid_maps]
 
             for col in cols:
                 if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', col):
                     raise ValueError(f"Nome de coluna invalido para escrita: '{col}'")
 
+            # ── Mapeamento + cast de tipos ──
+            mapped_rows: list[dict] = []
+            cast_errors: list[str] = []
+
+            for row_idx, row in enumerate(rows):
+                mapped_row: dict = {}
+                for m in valid_maps:
+                    src = m["source"]
+                    tgt = m["target"]
+                    val = row.get(src)
+                    db_type = col_type_map.get(tgt.upper(), "")
+
+                    try:
+                        val = _cast_for_db(val, db_type)
+                    except (ValueError, TypeError) as cast_exc:
+                        cast_errors.append(
+                            f"Linha {row_idx + 1}, coluna '{tgt}': "
+                            f"valor '{val}' ({type(val).__name__}) -> {db_type}: {cast_exc}"
+                        )
+
+                    mapped_row[tgt] = val
+                mapped_rows.append(mapped_row)
+
+            if cast_errors:
+                # Reporta primeiros erros mas nao bloqueia
+                # (pode ser que o DB aceite mesmo assim)
+                pass
+
             col_names = ", ".join(f'"{c}"' for c in cols)
             placeholders = ", ".join(f":{c}" for c in cols)
-            insert_sql = sa.text(f'INSERT INTO {target_table} ({col_names}) VALUES ({placeholders})')
+            insert_sql = sa.text(
+                f'INSERT INTO {target_table} ({col_names}) VALUES ({placeholders})'
+            )
+
+            rows_written = 0
+            failed_batch: int | None = None
+            batch_error: str | None = None
 
             with engine.begin() as db_conn:
                 for i in range(0, len(mapped_rows), batch_size):
                     batch = mapped_rows[i:i + batch_size]
-                    db_conn.execute(insert_sql, batch)
+                    try:
+                        db_conn.execute(insert_sql, batch)
+                        rows_written += len(batch)
+                    except Exception as exc:
+                        failed_batch = i
+                        batch_error = str(exc)
+                        # Tenta identificar a linha problematica
+                        # inserindo uma a uma neste batch
+                        for j, single_row in enumerate(batch):
+                            try:
+                                db_conn.execute(insert_sql, [single_row])
+                                rows_written += 1
+                            except Exception as row_exc:
+                                row_num = i + j + 1
+                                sample_vals = {
+                                    k: f"{v!r} ({type(v).__name__})"
+                                    for k, v in single_row.items()
+                                }
+                                raise ValueError(
+                                    f"Erro na linha {row_num} de {len(mapped_rows)}: "
+                                    f"{row_exc}\n\n"
+                                    f"Valores da linha:\n"
+                                    + "\n".join(
+                                        f"  {k}: {v}" for k, v in sample_vals.items()
+                                    )
+                                ) from row_exc
 
-            return len(mapped_rows)
+            return {
+                "rows_written": rows_written,
+                "cast_errors": cast_errors[:5],
+                "col_types": {
+                    tgt: col_type_map.get(tgt.upper(), "?")
+                    for m in valid_maps
+                    for tgt in [m["target"]]
+                },
+            }
         finally:
             if engine:
                 engine.dispose()
 
-    rows_written = await asyncio.to_thread(_run_insert)
+    result = await asyncio.to_thread(_run_insert)
+    rows_written: int = result["rows_written"]
+    col_types: dict = result.get("col_types", {})
+    cast_errors: list = result.get("cast_errors", [])
 
-    return {
+    output: dict[str, Any] = {
         "status": "success",
         "rows_written": rows_written,
         "target_table": target_table,
         "columns_mapped": len(valid_maps),
+        "column_types": col_types,
         "message": f"{rows_written} registros inseridos em '{target_table}'.",
     }
+
+    if cast_errors:
+        output["cast_warnings"] = cast_errors
+
+    return output
 
 
 async def _exec_load_node(
@@ -948,6 +1124,176 @@ def _exec_firebird(conn: Connection, query: str, max_rows: int) -> dict[str, Any
                 pass
 
 
+# ─── IF Node (decisao binaria) ────────────────────────────────────────────────
+
+def _exec_if_node(
+    node_id: str,
+    data: dict,
+    upstream: dict[str, Any],
+    edges: list[dict],
+) -> dict[str, Any]:
+    """
+    Avalia condicoes sobre cada linha upstream e divide em dois branches:
+    ``true`` (linhas que passam) e ``false`` (linhas que nao passam).
+
+    Retorna formato ``__branches`` para que ``_get_upstream_rows`` escolha
+    o branch correto via ``sourceHandle``.
+    """
+    rows = _get_upstream_rows(node_id, upstream, edges)
+    conditions: list[dict] = data.get("conditions", [])
+    logic: str = data.get("logic", "and")
+
+    if not conditions:
+        # Sem condicoes: tudo vai para true
+        columns = list(rows[0].keys()) if rows else []
+        branch = {"row_count": len(rows), "columns": columns, "rows": rows}
+        return {
+            "__branches": {
+                "true": branch,
+                "false": {"row_count": 0, "columns": columns, "rows": []},
+            },
+            "row_count": len(rows),
+            "true_count": len(rows),
+            "false_count": 0,
+        }
+
+    def _eval_cond(row: dict, cond: dict) -> bool:
+        field = cond.get("field", "")
+        op = cond.get("operator", "eq")
+        value = cond.get("value")
+        cell = row.get(field)
+
+        if op == "is_null":
+            return cell is None
+        if op == "is_not_null":
+            return cell is not None
+
+        cell_str = str(cell) if cell is not None else ""
+        value_str = str(value) if value is not None else ""
+
+        if op == "eq":
+            return cell_str == value_str
+        if op == "neq":
+            return cell_str != value_str
+        if op == "contains":
+            return value_str.lower() in cell_str.lower()
+        if op == "startswith":
+            return cell_str.lower().startswith(value_str.lower())
+        if op == "endswith":
+            return cell_str.lower().endswith(value_str.lower())
+
+        try:
+            cell_num = float(cell_str)
+            value_num = float(value_str)
+            if op == "gt":
+                return cell_num > value_num
+            if op == "gte":
+                return cell_num >= value_num
+            if op == "lt":
+                return cell_num < value_num
+            if op == "lte":
+                return cell_num <= value_num
+        except (ValueError, TypeError):
+            pass
+
+        return False
+
+    def _row_passes(row: dict) -> bool:
+        results = [_eval_cond(row, c) for c in conditions]
+        return all(results) if logic == "and" else any(results)
+
+    true_rows: list[dict] = []
+    false_rows: list[dict] = []
+    for row in rows:
+        if _row_passes(row):
+            true_rows.append(row)
+        else:
+            false_rows.append(row)
+
+    columns = list(rows[0].keys()) if rows else []
+
+    return {
+        "__branches": {
+            "true": {"row_count": len(true_rows), "columns": columns, "rows": true_rows},
+            "false": {"row_count": len(false_rows), "columns": columns, "rows": false_rows},
+        },
+        "row_count": len(rows),
+        "true_count": len(true_rows),
+        "false_count": len(false_rows),
+    }
+
+
+# ─── Switch Node (decisao multipla) ──────────────────────────────────────────
+
+def _exec_switch_node(
+    node_id: str,
+    data: dict,
+    upstream: dict[str, Any],
+    edges: list[dict],
+) -> dict[str, Any]:
+    """
+    Avalia o valor de um campo em cada linha e distribui entre N branches
+    nomeados (cases).  Linhas que nao casam com nenhum case vao para
+    o branch ``default``.
+
+    Retorna formato ``__branches`` com uma entrada por case + default.
+    """
+    rows = _get_upstream_rows(node_id, upstream, edges)
+    switch_field: str = (data.get("switch_field") or "").strip()
+    cases: list[dict] = data.get("cases", [])
+
+    columns = list(rows[0].keys()) if rows else []
+
+    if not switch_field or not cases:
+        branch = {"row_count": len(rows), "columns": columns, "rows": rows}
+        branches: dict[str, Any] = {"default": branch}
+        for c in cases:
+            label = c.get("label", "")
+            if label:
+                branches[label] = {"row_count": 0, "columns": columns, "rows": []}
+        return {
+            "__branches": branches,
+            "row_count": len(rows),
+        }
+
+    # Monta mapa valor → label para lookup rapido
+    value_to_label: dict[str, str] = {}
+    for c in cases:
+        label = c.get("label", "")
+        for v in (c.get("values") or []):
+            value_to_label[str(v).strip()] = label
+
+    # Distribui linhas
+    buckets: dict[str, list[dict]] = {c.get("label", ""): [] for c in cases if c.get("label")}
+    buckets["default"] = []
+
+    for row in rows:
+        cell = row.get(switch_field)
+        cell_str = str(cell).strip() if cell is not None else ""
+        target_label = value_to_label.get(cell_str)
+        if target_label and target_label in buckets:
+            buckets[target_label].append(row)
+        else:
+            buckets["default"].append(row)
+
+    branches_out: dict[str, Any] = {}
+    for label, bucket_rows in buckets.items():
+        branches_out[label] = {
+            "row_count": len(bucket_rows),
+            "columns": columns,
+            "rows": bucket_rows,
+        }
+
+    result: dict[str, Any] = {
+        "__branches": branches_out,
+        "row_count": len(rows),
+    }
+    for label, bucket_rows in buckets.items():
+        result[f"{label}_count"] = len(bucket_rows)
+
+    return result
+
+
 # ─── Helpers ───────────────────────────────────────────────────────────────────
 
 def _get_upstream_rows(
@@ -958,12 +1304,31 @@ def _get_upstream_rows(
     """
     Retorna as linhas do primeiro nó upstream que produziu dados tabulares.
     Segue a ordem dos edges para preservar a topologia do grafo.
+
+    Suporta nós com múltiplas saídas (IF/Switch): se o output contem
+    ``__branches``, usa o ``sourceHandle`` da edge para escolher o branch.
     """
-    source_ids = [e["source"] for e in edges if e.get("target") == node_id]
-    for src_id in source_ids:
+    incoming = [e for e in edges if e.get("target") == node_id]
+    for edge in incoming:
+        src_id = edge["source"]
+        source_handle = edge.get("sourceHandle")
         output = upstream.get(src_id, {})
-        if isinstance(output, dict) and isinstance(output.get("rows"), list):
+
+        if not isinstance(output, dict):
+            continue
+
+        # Nó com múltiplas saídas (IF, Switch)
+        branches = output.get("__branches")
+        if isinstance(branches, dict) and source_handle:
+            branch_data = branches.get(source_handle, {})
+            if isinstance(branch_data, dict) and isinstance(branch_data.get("rows"), list):
+                return branch_data["rows"]
+            continue
+
+        # Nó normal com saída única
+        if isinstance(output.get("rows"), list):
             return output["rows"]
+
     return []
 
 

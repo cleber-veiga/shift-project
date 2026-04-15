@@ -3,7 +3,7 @@
  * Mirrors backend node types from app/schemas/workflow.py.
  */
 
-export type NodeCategory = "trigger" | "input" | "transform" | "output" | "ai"
+export type NodeCategory = "trigger" | "input" | "transform" | "output" | "decision" | "ai"
 
 export interface NodeDefinition {
   type: string
@@ -23,6 +23,7 @@ export const NODE_CATEGORIES: { key: NodeCategory; label: string; color: string 
   { key: "input", label: "Entrada", color: "text-blue-500" },
   { key: "transform", label: "Transformação", color: "text-violet-500" },
   { key: "output", label: "Saída", color: "text-emerald-500" },
+  { key: "decision", label: "Decisão", color: "text-orange-500" },
   { key: "ai", label: "IA", color: "text-pink-500" },
 ]
 
@@ -166,6 +167,26 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     icon: "Code",
     color: "violet",
     defaultData: { type: "code", code: "", result_variable: "result" },
+  },
+
+  // --- Decision ---
+  {
+    type: "if_node",
+    label: "IF",
+    description: "Dividir fluxo por condição (verdadeiro/falso)",
+    category: "decision",
+    icon: "GitBranch",
+    color: "orange",
+    defaultData: { type: "if_node", conditions: [], logic: "and" },
+  },
+  {
+    type: "switch_node",
+    label: "Switch",
+    description: "Dividir fluxo por valor de campo (múltiplas saídas)",
+    category: "decision",
+    icon: "Signpost",
+    color: "orange",
+    defaultData: { type: "switch_node", switch_field: "", cases: [] },
   },
 
   // --- Output ---

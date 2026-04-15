@@ -66,6 +66,13 @@ const themes: Record<
     handleColor: "!bg-pink-500",
     ring:        "ring-pink-400/50",
   },
+  orange: {
+    iconBg:      "bg-orange-100 dark:bg-orange-500/20",
+    iconColor:   "text-orange-600 dark:text-orange-400",
+    border:      "border-orange-200 dark:border-orange-500/30",
+    handleColor: "!bg-orange-500",
+    ring:        "ring-orange-400/50",
+  },
 }
 
 // ─── Config summary helper ─────────────────────────────────────────────────────
@@ -126,6 +133,18 @@ function getNodeSummaryRows(type: string, data: Record<string, unknown>): Summar
     case "mapper": {
       const n = Array.isArray(data.mappings) ? data.mappings.length : 0
       return n > 0 ? [{ label: "Campos", value: `${n} mapeamento${n !== 1 ? "s" : ""}`, badge: true }] : []
+    }
+    case "if_node": {
+      const n = Array.isArray(data.conditions) ? data.conditions.length : 0
+      return n > 0 ? [{ label: "Condições", value: `${n} regra${n !== 1 ? "s" : ""}`, badge: true }] : []
+    }
+    case "switch_node": {
+      const field = s(data.switch_field)
+      const nc = Array.isArray(data.cases) ? data.cases.length : 0
+      const rows: SummaryRow[] = []
+      if (field) rows.push({ label: "Campo", value: field, badge: true })
+      if (nc > 0) rows.push({ label: "Cases", value: `${nc} saída${nc !== 1 ? "s" : ""}`, badge: true })
+      return rows
     }
     case "aiNode":
       return s(data.model_name) ? [{ label: "Modelo", value: s(data.model_name)!, badge: true }] : []
@@ -410,17 +429,97 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
         </div>
       )}
 
-      {/* ── Source handle (right) ── */}
-      {(definition?.category !== "output" || definition?.type === "truncate_table") && (
-        <Handle
-          type="source"
-          position={Position.Right}
-          className={cn(
-            "!size-3.5 !-right-2 !rounded-full !border-2 !border-background !transition-transform hover:!scale-125",
-            theme.handleColor,
-          )}
-        />
-      )}
+      {/* ── Source handle(s) (right) ── */}
+      {(() => {
+        const isOutput = definition?.category === "output" && definition?.type !== "truncate_table"
+        if (isOutput) return null
+
+        // IF node: two handles (true / false)
+        if (definition?.type === "if_node") {
+          return (
+            <>
+              <Handle
+                type="source"
+                position={Position.Right}
+                id="true"
+                style={{ top: "35%" }}
+                className={cn(
+                  "!size-3 !-right-2 !rounded-full !border-2 !border-background !transition-transform hover:!scale-125",
+                  "!bg-emerald-500",
+                )}
+              />
+              <span
+                className="pointer-events-none absolute text-[9px] font-bold text-emerald-500"
+                style={{ right: 10, top: "35%", transform: "translateY(-50%)" }}
+              >
+                V
+              </span>
+              <Handle
+                type="source"
+                position={Position.Right}
+                id="false"
+                style={{ top: "65%" }}
+                className={cn(
+                  "!size-3 !-right-2 !rounded-full !border-2 !border-background !transition-transform hover:!scale-125",
+                  "!bg-red-500",
+                )}
+              />
+              <span
+                className="pointer-events-none absolute text-[9px] font-bold text-red-500"
+                style={{ right: 10, top: "65%", transform: "translateY(-50%)" }}
+              >
+                F
+              </span>
+            </>
+          )
+        }
+
+        // Switch node: dynamic handles from cases + default
+        if (definition?.type === "switch_node") {
+          const cases: { label: string }[] = Array.isArray(nodeData.cases) ? (nodeData.cases as { label: string }[]) : []
+          const handleIds = [...cases.map((c) => c.label).filter(Boolean), "default"]
+          const count = handleIds.length || 1
+          return (
+            <>
+              {handleIds.map((hId, idx) => {
+                const pct = count === 1 ? 50 : 20 + (idx * 60) / (count - 1)
+                return (
+                  <Fragment key={hId}>
+                    <Handle
+                      type="source"
+                      position={Position.Right}
+                      id={hId}
+                      style={{ top: `${pct}%` }}
+                      className={cn(
+                        "!size-3 !-right-2 !rounded-full !border-2 !border-background !transition-transform hover:!scale-125",
+                        hId === "default" ? "!bg-gray-400" : theme.handleColor,
+                      )}
+                    />
+                    <span
+                      className="pointer-events-none absolute text-[8px] font-semibold text-muted-foreground"
+                      style={{ right: 10, top: `${pct}%`, transform: "translateY(-50%)" }}
+                    >
+                      {hId.length > 6 ? hId.slice(0, 6) + "…" : hId}
+                    </span>
+                  </Fragment>
+                )
+              })}
+            </>
+          )
+        }
+
+        // Default: single handle
+        return (
+          <Handle
+            type="source"
+            position={Position.Right}
+            className={cn(
+              "!size-3.5 !-right-2 !rounded-full !border-2 !border-background !transition-transform hover:!scale-125",
+              theme.handleColor,
+            )}
+          />
+        )
+      })()}
     </div>
   )
 }

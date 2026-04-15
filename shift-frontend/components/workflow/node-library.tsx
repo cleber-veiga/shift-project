@@ -15,6 +15,7 @@ const categoryColorMap: Record<string, string> = {
   input: "text-blue-500",
   transform: "text-violet-500",
   output: "text-emerald-500",
+  decision: "text-orange-500",
   ai: "text-pink-500",
 }
 
@@ -23,6 +24,7 @@ const categoryBgMap: Record<string, string> = {
   input: "bg-blue-500/10",
   transform: "bg-violet-500/10",
   output: "bg-emerald-500/10",
+  decision: "bg-orange-500/10",
   ai: "bg-pink-500/10",
 }
 

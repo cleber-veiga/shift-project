@@ -53,6 +53,7 @@ const iconBgMap: Record<string, string> = {
   blue:    "bg-blue-100 dark:bg-blue-500/20",
   violet:  "bg-violet-100 dark:bg-violet-500/20",
   emerald: "bg-emerald-100 dark:bg-emerald-500/20",
+  orange:  "bg-orange-100 dark:bg-orange-500/20",
   pink:    "bg-pink-100 dark:bg-pink-500/20",
 }
 
@@ -61,6 +62,7 @@ const iconColorMap: Record<string, string> = {
   blue:    "text-blue-600 dark:text-blue-400",
   violet:  "text-violet-600 dark:text-violet-400",
   emerald: "text-emerald-600 dark:text-emerald-400",
+  orange:  "text-orange-600 dark:text-orange-400",
   pink:    "text-pink-600 dark:text-pink-400",
 }
 
@@ -143,13 +145,15 @@ export function NodeConfigModal({
     return []
   }, [upstreamOutputs])
 
-  // Compute which source fields are already mapped (used by this node's mappings)
+  // Compute which source fields are already used (mappings, conditions, switch_field)
   const usedSources = useMemo(() => {
     const data = node.data as Record<string, unknown>
+    const sources = new Set<string>()
+
+    // Mapper mappings
     const mappings = Array.isArray(data?.mappings)
       ? (data.mappings as Array<{ source?: string; valueType?: string; exprTemplate?: string }>)
       : []
-    const sources = new Set<string>()
     for (const m of mappings) {
       if (m.valueType === "field" && m.source) {
         sources.add(m.source)
@@ -161,6 +165,19 @@ export function NodeConfigModal({
         }
       }
     }
+
+    // IF / Filter conditions
+    const conditions = Array.isArray(data?.conditions)
+      ? (data.conditions as Array<{ field?: string }>)
+      : []
+    for (const c of conditions) {
+      if (c.field) sources.add(c.field)
+    }
+
+    // Switch field
+    const switchField = data?.switch_field as string | undefined
+    if (switchField) sources.add(switchField)
+
     return sources
   }, [node.data])
 
@@ -723,7 +740,7 @@ function SchemaView({
     )
   }
 
-  // Fallback: show raw output as a schema-like key/value tree
+  // Fallback: show raw output as a schema-like key/value tree (also draggable)
   const entries = Object.entries(output)
   if (entries.length === 0) {
     return (
@@ -737,15 +754,43 @@ function SchemaView({
     <div className="py-2">
       {entries.map(([key, value]) => {
         const type = detectFieldType(value)
+        const isUsed = usedSources.has(key)
         return (
           <div
             key={key}
-            className="flex items-center gap-2 py-1.5 pl-4 pr-3 transition-colors hover:bg-muted/30"
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData("application/x-shift-field", key)
+              e.dataTransfer.effectAllowed = "copyMove"
+              const ghost = document.createElement("div")
+              ghost.textContent = key
+              ghost.style.cssText =
+                "position:fixed;top:-100px;left:-100px;padding:4px 12px;border-radius:6px;font-size:11px;font-weight:600;background:#3b82f6;color:#fff;white-space:nowrap;pointer-events:none;z-index:9999"
+              document.body.appendChild(ghost)
+              e.dataTransfer.setDragImage(ghost, 0, 0)
+              requestAnimationFrame(() => ghost.remove())
+            }}
+            className={cn(
+              "group flex cursor-grab items-center gap-2 py-1.5 pl-4 pr-3 transition-colors active:cursor-grabbing",
+              isUsed
+                ? "bg-primary/[0.05] hover:bg-primary/[0.09]"
+                : "hover:bg-muted/30",
+            )}
           >
+            <GripVertical className="size-3 shrink-0 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground/40" />
             <TypeIcon type={type} />
-            <span className="shrink-0 text-[11px] font-medium text-foreground">
+            <span className={cn(
+              "shrink-0 text-[11px] font-medium",
+              isUsed ? "text-primary" : "text-foreground",
+            )}>
               {key}
             </span>
+            {isUsed && (
+              <span
+                title="Campo já usado"
+                className="ml-1 size-1.5 shrink-0 rounded-full bg-primary/60"
+              />
+            )}
             <span className="ml-auto max-w-[60%] truncate text-right text-[11px] text-muted-foreground">
               {value == null ? (
                 <span className="italic text-muted-foreground/40">null</span>

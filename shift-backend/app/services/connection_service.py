@@ -315,22 +315,39 @@ class ConnectionService:
         project_id: UUID | None,
         workspace_id: UUID | None,
     ) -> dict[str, str]:
-        connection_ids = _collect_connection_ids(definition)
-        resolved: dict[str, str] = {}
+        """Resolve todas as connection_ids do workflow em 1 query batch com IN clause."""
+        connection_id_strs = _collect_connection_ids(definition)
+        if not connection_id_strs:
+            return {}
 
-        for conn_id_str in connection_ids:
-            conn_str = await self.get_connection_string_by_id(
-                db,
-                UUID(conn_id_str),
-                project_id=project_id,
-                workspace_id=workspace_id,
+        connection_uuids = [UUID(cid) for cid in connection_id_strs]
+
+        scope_filters = []
+        if workspace_id is not None:
+            scope_filters.append(Connection.workspace_id == workspace_id)
+        if project_id is not None:
+            scope_filters.append(Connection.project_id == project_id)
+
+        if not scope_filters:
+            raise ValueError("Nenhum escopo (workspace ou project) informado para resolver conexoes.")
+
+        result = await db.execute(
+            select(Connection).where(
+                Connection.id.in_(connection_uuids),
+                or_(*scope_filters),
             )
-            if conn_str is None:
+        )
+        connections = {str(conn.id): conn for conn in result.scalars().all()}
+
+        resolved: dict[str, str] = {}
+        for conn_id_str in connection_id_strs:
+            conn = connections.get(conn_id_str)
+            if conn is None:
                 raise ValueError(
                     f"Conexao '{conn_id_str}' nao encontrada no escopo autorizado. "
                     "Verifique se o conector existe e pertence ao projeto ou workspace."
                 )
-            resolved[conn_id_str] = conn_str
+            resolved[conn_id_str] = self.build_connection_string(conn)
 
         return resolved
 

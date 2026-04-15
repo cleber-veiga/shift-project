@@ -61,23 +61,23 @@ class B2BService:
         db: AsyncSession,
         user_id: UUID,
     ) -> list[tuple[Organization, str | None]]:
-        """Retorna organizações visíveis ao usuário junto com o papel direto dele em cada uma."""
-        orgs = await self.list_organizations_for_user(db, user_id)
-        if not orgs:
-            return []
-
-        org_ids = [org.id for org in orgs]
-        membership_stmt = select(
-            OrganizationMember.organization_id,
-            OrganizationMember.role,
-        ).where(
-            OrganizationMember.user_id == user_id,
-            OrganizationMember.organization_id.in_(org_ids),
+        """Retorna organizações visíveis ao usuário junto com o papel direto dele em cada uma.
+        Usa LEFT JOIN para buscar entidades e roles em 1 query."""
+        stmt = (
+            select(Organization, OrganizationMember.role)
+            .outerjoin(
+                OrganizationMember,
+                (OrganizationMember.organization_id == Organization.id)
+                & (OrganizationMember.user_id == user_id),
+            )
+            .where(self._organization_visibility_condition(user_id))
+            .order_by(Organization.name)
         )
-        membership_result = await db.execute(membership_stmt)
-        role_by_org_id: dict = {row.organization_id: row.role.value for row in membership_result.all()}
-
-        return [(org, role_by_org_id.get(org.id)) for org in orgs]
+        result = await db.execute(stmt)
+        return [
+            (org, role.value if role is not None else None)
+            for org, role in result.all()
+        ]
 
     async def create_organization(
         self,
@@ -217,18 +217,25 @@ class B2BService:
         user_id: UUID,
         role_raw: str,
     ) -> MemberResponse | None:
-        membership = await self._get_organization_member(db, org_id, user_id)
-        if membership is None:
+        result = await db.execute(
+            select(OrganizationMember, User)
+            .join(User, User.id == OrganizationMember.user_id)
+            .where(
+                OrganizationMember.organization_id == org_id,
+                OrganizationMember.user_id == user_id,
+            )
+        )
+        row = result.one_or_none()
+        if row is None:
             return None
 
+        membership, user = row[0], row[1]
         new_role = self._parse_role(OrganizationRole, role_raw)
         if membership.role == OrganizationRole.OWNER and new_role != OrganizationRole.OWNER:
             await self._ensure_not_last_owner(db, org_id, user_id)
 
         membership.role = new_role
         await db.flush()
-        user = await db.get(User, user_id)
-        self._ensure_found(user, "Usuario nao encontrado.")
         return MemberResponse(
             user_id=user.id,
             email=user.email,
@@ -277,37 +284,42 @@ class B2BService:
         org_id: UUID,
         user_id: UUID,
     ) -> list[tuple[Workspace, str | None]]:
-        """Retorna workspaces visíveis junto com o papel direto do usuário em cada um.
-        Para workspaces sem membership direta, usa o papel do usuário na organização como fallback."""
-        workspaces = await self.list_workspaces_for_user(db, org_id, user_id)
-        if not workspaces:
-            return []
-
-        ws_ids = [ws.id for ws in workspaces]
-        membership_stmt = select(
-            WorkspaceMember.workspace_id,
-            WorkspaceMember.role,
-        ).where(
-            WorkspaceMember.user_id == user_id,
-            WorkspaceMember.workspace_id.in_(ws_ids),
-        )
-        membership_result = await db.execute(membership_stmt)
-        role_by_ws_id: dict = {row.workspace_id: row.role.value for row in membership_result.all()}
-
-        # Fallback: usuários sem membership direta no workspace podem ter acesso via papel na org.
-        if len(role_by_ws_id) < len(workspaces):
-            org_membership_stmt = select(OrganizationMember.role).where(
-                OrganizationMember.organization_id == org_id,
-                OrganizationMember.user_id == user_id,
+        """Retorna workspaces visíveis junto com o papel efetivo do usuário em cada um.
+        Busca workspace role direto + org role (fallback) em 1 query via LEFT JOINs."""
+        stmt = (
+            select(
+                Workspace,
+                WorkspaceMember.role,
+                OrganizationMember.role,
             )
-            org_result = await db.execute(org_membership_stmt)
-            org_role_row = org_result.scalar_one_or_none()
-            if org_role_row is not None:
-                for ws in workspaces:
-                    if ws.id not in role_by_ws_id:
-                        role_by_ws_id[ws.id] = org_role_row.value
+            .outerjoin(
+                WorkspaceMember,
+                (WorkspaceMember.workspace_id == Workspace.id)
+                & (WorkspaceMember.user_id == user_id),
+            )
+            .outerjoin(
+                OrganizationMember,
+                (OrganizationMember.organization_id == Workspace.organization_id)
+                & (OrganizationMember.user_id == user_id),
+            )
+            .where(
+                Workspace.organization_id == org_id,
+                self._workspace_visibility_condition(user_id),
+            )
+            .order_by(Workspace.name)
+        )
+        result = await db.execute(stmt)
 
-        return [(ws, role_by_ws_id.get(ws.id)) for ws in workspaces]
+        items: list[tuple[Workspace, str | None]] = []
+        for ws, ws_role, org_role in result.all():
+            if ws_role is not None:
+                effective = ws_role.value
+            elif org_role is not None:
+                effective = org_role.value
+            else:
+                effective = None
+            items.append((ws, effective))
+        return items
 
     async def create_workspace(
         self,
@@ -450,14 +462,21 @@ class B2BService:
         user_id: UUID,
         role_raw: str,
     ) -> MemberResponse | None:
-        membership = await self._get_workspace_member(db, ws_id, user_id)
-        if membership is None:
+        result = await db.execute(
+            select(WorkspaceMember, User)
+            .join(User, User.id == WorkspaceMember.user_id)
+            .where(
+                WorkspaceMember.workspace_id == ws_id,
+                WorkspaceMember.user_id == user_id,
+            )
+        )
+        row = result.one_or_none()
+        if row is None:
             return None
 
+        membership, user = row[0], row[1]
         membership.role = self._parse_role(WorkspaceRole, role_raw)
         await db.flush()
-        user = await db.get(User, user_id)
-        self._ensure_found(user, "Usuario nao encontrado.")
         return MemberResponse(
             user_id=user.id,
             email=user.email,
@@ -945,14 +964,21 @@ class B2BService:
         user_id: UUID,
         role_raw: str,
     ) -> MemberResponse | None:
-        membership = await self._get_project_member(db, proj_id, user_id)
-        if membership is None:
+        result = await db.execute(
+            select(ProjectMember, User)
+            .join(User, User.id == ProjectMember.user_id)
+            .where(
+                ProjectMember.project_id == proj_id,
+                ProjectMember.user_id == user_id,
+            )
+        )
+        row = result.one_or_none()
+        if row is None:
             return None
 
+        membership, user = row[0], row[1]
         membership.role = self._parse_role(ProjectRole, role_raw)
         await db.flush()
-        user = await db.get(User, user_id)
-        self._ensure_found(user, "Usuario nao encontrado.")
         return MemberResponse(
             user_id=user.id,
             email=user.email,
@@ -1071,6 +1097,7 @@ class B2BService:
                     ]
                 ),
             )
+            .correlate(Organization)
         )
         workspace_member = exists(
             select(1)
@@ -1080,6 +1107,7 @@ class B2BService:
                 Workspace.organization_id == Organization.id,
                 WorkspaceMember.user_id == user_id,
             )
+            .correlate(Organization)
         )
         project_member = exists(
             select(1)
@@ -1090,6 +1118,7 @@ class B2BService:
                 Workspace.organization_id == Organization.id,
                 ProjectMember.user_id == user_id,
             )
+            .correlate(Organization)
         )
         return or_(internal_org_member, workspace_member, project_member)
 
@@ -1108,6 +1137,7 @@ class B2BService:
                     ]
                 ),
             )
+            .correlate(Workspace)
         )
         workspace_member = exists(
             select(1)
@@ -1116,6 +1146,7 @@ class B2BService:
                 WorkspaceMember.workspace_id == Workspace.id,
                 WorkspaceMember.user_id == user_id,
             )
+            .correlate(Workspace)
         )
         project_member = exists(
             select(1)
@@ -1125,6 +1156,7 @@ class B2BService:
                 Project.workspace_id == Workspace.id,
                 ProjectMember.user_id == user_id,
             )
+            .correlate(Workspace)
         )
         return or_(internal_org_member, workspace_member, project_member)
 
@@ -1143,6 +1175,7 @@ class B2BService:
                     ]
                 ),
             )
+            .correlate(Workspace)
         )
         workspace_member = exists(
             select(1)
@@ -1151,6 +1184,7 @@ class B2BService:
                 WorkspaceMember.workspace_id == Project.workspace_id,
                 WorkspaceMember.user_id == user_id,
             )
+            .correlate(Project)
         )
         project_member = exists(
             select(1)
@@ -1159,6 +1193,7 @@ class B2BService:
                 ProjectMember.project_id == Project.id,
                 ProjectMember.user_id == user_id,
             )
+            .correlate(Project)
         )
         return or_(internal_org_member, workspace_member, project_member)
 

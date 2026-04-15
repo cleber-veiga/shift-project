@@ -21,17 +21,21 @@ class InputModelRowService:
     async def list_rows(
         self, db: AsyncSession, input_model_id: UUID
     ) -> tuple[list[InputModelRow], int]:
-        count_result = await db.execute(
-            select(func.count()).where(InputModelRow.input_model_id == input_model_id)
-        )
-        total = count_result.scalar_one()
-
+        """Lista rows com count em 1 query usando window function."""
         result = await db.execute(
-            select(InputModelRow)
+            select(
+                InputModelRow,
+                func.count().over().label("total"),
+            )
             .where(InputModelRow.input_model_id == input_model_id)
             .order_by(InputModelRow.row_order)
         )
-        return list(result.scalars().all()), total
+        rows_with_total = result.all()
+        if not rows_with_total:
+            return [], 0
+        total = rows_with_total[0][1]
+        rows = [row[0] for row in rows_with_total]
+        return rows, total
 
     async def add_row(
         self, db: AsyncSession, input_model_id: UUID, data: dict
@@ -74,8 +78,8 @@ class InputModelRowService:
             rows.append(row)
 
         await db.flush()
-        for row in rows:
-            await db.refresh(row)
+        # Os campos gerados pelo server (id, created_at) ja estao disponiveis
+        # apos flush com expire_on_commit=False — sem necessidade de refresh individual.
         return rows
 
     async def update_row(

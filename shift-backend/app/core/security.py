@@ -140,37 +140,20 @@ class AuthorizationService:
         scope_id: UUID,
     ) -> bool:
         if scope == "organization":
-            role = await self._get_organization_role(db, user_id, scope_id)
+            role = await self._get_effective_org_role(db, user_id, scope_id)
             return self._role_meets_threshold(scope, role, required_role)
 
         if scope == "workspace":
-            workspace = await db.get(Workspace, scope_id)
-            if workspace is None:
-                return False
-            role = await self._get_effective_workspace_role(
-                db, user_id, workspace.id, workspace.organization_id
-            )
+            role = await self._get_effective_workspace_role(db, user_id, scope_id)
             return self._role_meets_threshold(scope, role, required_role)
 
         if scope == "project":
-            project = await db.get(Project, scope_id)
-            if project is None:
-                return False
-            workspace = await db.get(Workspace, project.workspace_id)
-            if workspace is None:
-                return False
-            role = await self._get_effective_project_role(
-                db=db,
-                user_id=user_id,
-                project_id=project.id,
-                workspace_id=workspace.id,
-                organization_id=workspace.organization_id,
-            )
+            role = await self._get_effective_project_role(db, user_id, scope_id)
             return self._role_meets_threshold(scope, role, required_role)
 
         raise ValueError(f"Escopo desconhecido: {scope}")
 
-    async def _get_organization_role(
+    async def _get_effective_org_role(
         self,
         db: AsyncSession,
         user_id: UUID,
@@ -184,43 +167,36 @@ class AuthorizationService:
         )
         return result.scalar_one_or_none()
 
-    async def _get_workspace_role(
-        self,
-        db: AsyncSession,
-        user_id: UUID,
-        workspace_id: UUID,
-    ) -> WorkspaceRole | None:
-        result = await db.execute(
-            select(WorkspaceMember.role).where(
-                WorkspaceMember.user_id == user_id,
-                WorkspaceMember.workspace_id == workspace_id,
-            )
-        )
-        return result.scalar_one_or_none()
-
-    async def _get_project_role(
-        self,
-        db: AsyncSession,
-        user_id: UUID,
-        project_id: UUID,
-    ) -> ProjectRole | None:
-        result = await db.execute(
-            select(ProjectMember.role).where(
-                ProjectMember.user_id == user_id,
-                ProjectMember.project_id == project_id,
-            )
-        )
-        return result.scalar_one_or_none()
-
     async def _get_effective_workspace_role(
         self,
         db: AsyncSession,
         user_id: UUID,
         workspace_id: UUID,
-        organization_id: UUID,
     ) -> WorkspaceRole | None:
-        explicit_role = await self._get_workspace_role(db, user_id, workspace_id)
-        org_role = await self._get_organization_role(db, user_id, organization_id)
+        """Busca papel direto no workspace + papel na org em 1 query via JOIN."""
+        result = await db.execute(
+            select(
+                WorkspaceMember.role,
+                OrganizationMember.role,
+            )
+            .select_from(Workspace)
+            .outerjoin(
+                WorkspaceMember,
+                (WorkspaceMember.workspace_id == Workspace.id)
+                & (WorkspaceMember.user_id == user_id),
+            )
+            .outerjoin(
+                OrganizationMember,
+                (OrganizationMember.organization_id == Workspace.organization_id)
+                & (OrganizationMember.user_id == user_id),
+            )
+            .where(Workspace.id == workspace_id)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+
+        explicit_role, org_role = row[0], row[1]
 
         inherited_role: WorkspaceRole | None = None
         if org_role in {OrganizationRole.OWNER, OrganizationRole.MANAGER}:
@@ -235,20 +211,52 @@ class AuthorizationService:
         db: AsyncSession,
         user_id: UUID,
         project_id: UUID,
-        workspace_id: UUID,
-        organization_id: UUID,
     ) -> ProjectRole | None:
-        explicit_role = await self._get_project_role(db, user_id, project_id)
-        workspace_role = await self._get_effective_workspace_role(
-            db, user_id, workspace_id, organization_id
+        """Busca papeis diretos no project, workspace e org em 1 query via JOINs."""
+        result = await db.execute(
+            select(
+                ProjectMember.role,
+                WorkspaceMember.role,
+                OrganizationMember.role,
+            )
+            .select_from(Project)
+            .join(Workspace, Workspace.id == Project.workspace_id)
+            .outerjoin(
+                ProjectMember,
+                (ProjectMember.project_id == Project.id)
+                & (ProjectMember.user_id == user_id),
+            )
+            .outerjoin(
+                WorkspaceMember,
+                (WorkspaceMember.workspace_id == Workspace.id)
+                & (WorkspaceMember.user_id == user_id),
+            )
+            .outerjoin(
+                OrganizationMember,
+                (OrganizationMember.organization_id == Workspace.organization_id)
+                & (OrganizationMember.user_id == user_id),
+            )
+            .where(Project.id == project_id)
         )
-        org_role = await self._get_organization_role(db, user_id, organization_id)
+        row = result.one_or_none()
+        if row is None:
+            return None
 
-        inherited_roles: list[ProjectRole] = [role for role in [explicit_role] if role]
+        explicit_role, ws_role, org_role = row[0], row[1], row[2]
 
-        if workspace_role in {WorkspaceRole.MANAGER, WorkspaceRole.CONSULTANT}:
+        # Calcula workspace_role herdado da org
+        inherited_ws: WorkspaceRole | None = None
+        if org_role in {OrganizationRole.OWNER, OrganizationRole.MANAGER}:
+            inherited_ws = WorkspaceRole.MANAGER
+        elif org_role == OrganizationRole.MEMBER:
+            inherited_ws = WorkspaceRole.VIEWER
+        effective_ws = self._max_workspace_role(ws_role, inherited_ws)
+
+        inherited_roles: list[ProjectRole] = [r for r in [explicit_role] if r]
+
+        if effective_ws in {WorkspaceRole.MANAGER, WorkspaceRole.CONSULTANT}:
             inherited_roles.append(ProjectRole.EDITOR)
-        elif workspace_role == WorkspaceRole.VIEWER:
+        elif effective_ws == WorkspaceRole.VIEWER:
             inherited_roles.append(ProjectRole.CLIENT)
 
         if org_role in {OrganizationRole.OWNER, OrganizationRole.MANAGER}:

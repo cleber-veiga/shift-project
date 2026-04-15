@@ -43,7 +43,16 @@
       "Bash(python -m alembic upgrade head)",
       "Bash(python -m alembic revision --autogenerate -m \"add input_model_rows\")",
       "Bash(find \"D:\\\\Labs\\\\shift-project\\\\shift-frontend\\\\components\" -name \"*.tsx\" -type f -exec grep -l \"\\\\.map.*col\\\\|\\\\.map.*column\\\\|\\\\.map.*field\" {} \\\\;)",
-      "Bash(python -c \"import py_compile; py_compile.compile\\('app/services/workflow_test_service.py', doraise=True\\); print\\('OK'\\)\")"
+      "Bash(python -c \"import py_compile; py_compile.compile\\('app/services/workflow_test_service.py', doraise=True\\); print\\('OK'\\)\")",
+      "Bash(python -m py_compile app/core/security.py)",
+      "Bash(python -m py_compile app/services/b2b_service.py)",
+      "Bash(python -m py_compile app/services/workflow_service.py)",
+      "Bash(python -m py_compile app/services/connection_service.py)",
+      "Bash(python -m py_compile app/services/input_model_row_service.py)",
+      "Bash(python -m py_compile app/db/session.py)",
+      "Bash(python -m py_compile alembic/versions/2026_04_15_b5c6d7e8f9a0_add_performance_indexes.py)",
+      "Bash(python -c \"from app.core.security import authorization_service, require_permission; print\\('OK: security imports'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/workflow_test_service.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }
