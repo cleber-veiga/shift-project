@@ -10,6 +10,33 @@ Nos de transformacao (math, filter, mapper, aggregator) materializam
 seus resultados em DuckDB, que e passado adiante como referencia.
 O no de carga (loadNode) le o DuckDB e escreve no destino final via dlt.
 
+Emissao de eventos (opcional)
+-----------------------------
+``run_workflow`` aceita um ``event_sink: Callable[[dict], Awaitable[None]]``
+opcional para observabilidade em tempo real. Quando fornecido, o runner
+emite eventos de ciclo de vida (execution_start, node_start, node_complete,
+node_error, node_skipped, execution_end) para o sink — usado pelo
+``workflow_test_service`` para transformar em SSE. Quando ``None``
+(padrao em execucoes cron), nao ha overhead.
+
+Excecoes do sink NAO derrubam a execucao: sao capturadas e logadas
+como warning.
+
+Flags por no (``data.pinnedOutput``, ``data.enabled``)
+------------------------------------------------------
+Dois flags sao avaliados ANTES de despachar cada no:
+
+- ``pinnedOutput``: quando ``data.pinnedOutput`` e um dict truthy, seu
+  conteudo vira diretamente o resultado do no (passthrough) — o processor
+  NAO e chamado. O evento ``node_complete`` inclui ``is_pinned=True`` e
+  o ``WorkflowNodeExecution`` e gravado como ``status="skipped"``
+  com ``output_summary={"is_pinned": True}``. Downstream recebe o
+  pinnedOutput como se fosse saida real.
+
+- ``enabled is False``: o no e pulado e propaga skip em cascata para
+  os descendentes (mesma mecanica de ``skipped_by_branch``). Emite
+  ``node_skipped`` com ``reason="disabled"``.
+
 Ramificacao condicional
 -----------------------
 Nos de condicao (ifElse, switch, if_node, switch_node) retornam um marcador
@@ -47,7 +74,7 @@ import asyncio
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Awaitable, Callable
 from uuid import UUID
 
 from sqlalchemy import select
@@ -63,6 +90,9 @@ from app.services.workflow.nodes.exceptions import (
     NodeProcessingError,
     NodeProcessingSkipped,
 )
+
+
+EventSink = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 DEFAULT_NODE_TIMEOUT_SECONDS = 300
@@ -380,6 +410,79 @@ async def _resolve_workflow_payload(
     return await _load_workflow_payload_from_db(UUID(workflow_id))
 
 
+def _filter_payload_to_ancestors(
+    definition: dict[str, Any],
+    target_node_id: str | None,
+) -> dict[str, Any]:
+    """Reduz o payload aos ancestrais (inclusive) de ``target_node_id``.
+
+    Usado pelo botao "testar ate aqui" do frontend: quando o usuario quer
+    executar apenas uma parcela do grafo que termina em um no especifico,
+    recortamos antes de construir o grafo para que o runner nao veja nos
+    a jusante do alvo.
+
+    Se ``target_node_id`` e None ou nao existe no payload, retorna o
+    original sem copia.
+    """
+    if not target_node_id:
+        return definition
+
+    nodes = definition.get("nodes", [])
+    edges = definition.get("edges", [])
+    node_ids = {str(n["id"]) for n in nodes if "id" in n}
+    if target_node_id not in node_ids:
+        return definition
+
+    required: set[str] = {target_node_id}
+    stack = [target_node_id]
+    while stack:
+        current = stack.pop()
+        for edge in edges:
+            if str(edge.get("target")) == current:
+                src = str(edge.get("source"))
+                if src in node_ids and src not in required:
+                    required.add(src)
+                    stack.append(src)
+
+    filtered_nodes = [n for n in nodes if str(n.get("id")) in required]
+    filtered_edges = [
+        e for e in edges
+        if str(e.get("source")) in required and str(e.get("target")) in required
+    ]
+    return {**definition, "nodes": filtered_nodes, "edges": filtered_edges}
+
+
+async def _safe_emit(
+    event_sink: EventSink | None,
+    event: dict[str, Any],
+    logger: Any,
+) -> None:
+    """Chama o event_sink protegido por try/except.
+
+    O sink e observabilidade — exceptions dele NAO devem derrubar a
+    execucao do workflow. Apenas logamos warning.
+    """
+    if event_sink is None:
+        return
+    try:
+        await event_sink(event)
+    except Exception as exc:  # noqa: BLE001 — sink e codigo externo
+        logger.warning("event_sink.failed", error=f"{type(exc).__name__}: {exc}")
+
+
+def _event_node_meta(node: dict[str, Any]) -> tuple[str, str | None]:
+    """Extrai ``(node_type, label)`` usados nos payloads de evento."""
+    node_type = _get_node_type(node)
+    node_data = node.get("data", {}) if isinstance(node, dict) else {}
+    label = node_data.get("label") if isinstance(node_data, dict) else None
+    label_str = str(label)[:255] if label is not None else None
+    return node_type, label_str
+
+
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 async def run_workflow(
     workflow_payload: dict[str, Any] | None = None,
     workflow_id: str | None = None,
@@ -387,6 +490,10 @@ async def run_workflow(
     input_data: dict[str, Any] | None = None,
     execution_id: str | None = None,
     resolved_connections: dict[str, str] | None = None,
+    *,
+    event_sink: EventSink | None = None,
+    mode: str = "production",
+    target_node_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Entrypoint principal que orquestra a execucao dinamica de um workflow.
@@ -400,14 +507,28 @@ async def run_workflow(
     Pode receber o payload completo do workflow ou apenas o ID — permite
     que execucoes manuais/webhook e agendamentos cron compartilhem o
     mesmo entrypoint.
+
+    Parametros de observabilidade
+    -----------------------------
+    - ``event_sink``: async callable que recebe um dict por evento de
+      ciclo de vida. Quando ``None``, zero overhead (padrao para cron).
+      Ver shape dos eventos no modulo-docstring.
+    - ``mode``: ``"production"`` | ``"test"``, propagado para
+      ``context["mode"]`` dos processadores. Ainda nao altera logica aqui;
+      sera usado em Fase 2 (pinnedOutput/enabled).
+    - ``target_node_id``: quando informado, o payload e recortado para
+      conter apenas o no alvo e seus ancestrais antes da construcao do
+      grafo. Usado pelo botao "testar ate aqui" do frontend.
     """
     logger = get_logger(__name__)
     resolved_payload = await _resolve_workflow_payload(workflow_payload, workflow_id)
+    resolved_payload = _filter_payload_to_ancestors(resolved_payload, target_node_id)
     execution_context: dict[str, Any] = {
         "execution_id": execution_id,
         "workflow_id": workflow_id,
         "triggered_by": triggered_by,
         "input_data": input_data or {},
+        "mode": mode,
     }
 
     nodes = resolved_payload.get("nodes", [])
@@ -419,6 +540,7 @@ async def run_workflow(
             node_count=len(nodes),
             edge_count=len(edges),
             triggered_by=triggered_by,
+            mode=mode,
         )
 
         adjacency, reverse_adj, in_degree, node_map, edge_handle_map, target_handle_map = _build_graph(
@@ -431,6 +553,11 @@ async def run_workflow(
         results: dict[str, dict[str, Any]] = {}
         node_executions: list[dict[str, Any]] = []
         node_timing: dict[str, dict[str, Any]] = {}
+
+        # Estado acumulado para o evento ``execution_end`` — default
+        # ``completed`` e sobrescrito em early-returns (failed/aborted) ou
+        # no ``except CancelledError`` abaixo.
+        final_status: str = "completed"
 
         def _record_event(
             node_id: str,
@@ -471,251 +598,468 @@ async def run_workflow(
         skipped_nodes: set[str] = set()
         inactive_edges: set[tuple[str, str]] = set()
 
-        for level_index, level in enumerate(levels):
-            logger.info("workflow.level_start", level=level_index + 1, nodes=level)
-            coros: list[tuple[str, Any]] = []
+        try:
+            await _safe_emit(
+                event_sink,
+                {
+                    "type": "execution_start",
+                    "execution_id": execution_id,
+                    "timestamp": _iso_now(),
+                    "node_count": len(nodes),
+                    "mode": mode,
+                },
+                logger,
+            )
 
-            for node_id in level:
-                node = node_map[node_id]
+            for level_index, level in enumerate(levels):
+                logger.info("workflow.level_start", level=level_index + 1, nodes=level)
+                coros: list[tuple[str, Any]] = []
 
-                # --- Verificacao de branch condicional ---
-                if _is_node_skipped(node_id, reverse_adj, skipped_nodes, inactive_edges):
+                for node_id in level:
+                    node = node_map[node_id]
+                    node_type_for_event, label_for_event = _event_node_meta(node)
+
+                    # --- Verificacao de branch condicional ---
+                    if _is_node_skipped(node_id, reverse_adj, skipped_nodes, inactive_edges):
+                        with bind_context(node_id=node_id):
+                            logger.info("node.skipped_by_branch")
+                        skipped_nodes.add(node_id)
+                        results[node_id] = {"node_id": node_id, "status": "skipped_by_branch"}
+                        _record_event(
+                            node_id,
+                            node,
+                            "skipped",
+                            output_summary={"reason": "skipped_by_branch"},
+                        )
+                        await _safe_emit(
+                            event_sink,
+                            {
+                                "type": "node_skipped",
+                                "execution_id": execution_id,
+                                "timestamp": _iso_now(),
+                                "node_id": node_id,
+                                "node_type": node_type_for_event,
+                                "label": label_for_event,
+                                "reason": "skipped_by_branch",
+                            },
+                            logger,
+                        )
+                        continue
+
+                    node_data = node.get("data", {}) if isinstance(node.get("data"), dict) else {}
+
+                    # --- pinnedOutput: usa output fixado, nao chama processor ---
+                    pinned_output = node_data.get("pinnedOutput")
+                    if isinstance(pinned_output, dict) and pinned_output:
+                        with bind_context(node_id=node_id):
+                            logger.info("node.pinned_output")
+                        results[node_id] = pinned_output
+                        row_in, row_out = _extract_row_counts(pinned_output)
+                        _record_event(
+                            node_id,
+                            node,
+                            "skipped",
+                            row_count_in=row_in,
+                            row_count_out=row_out,
+                            output_summary={"is_pinned": True},
+                        )
+                        await _safe_emit(
+                            event_sink,
+                            {
+                                "type": "node_complete",
+                                "execution_id": execution_id,
+                                "timestamp": _iso_now(),
+                                "node_id": node_id,
+                                "node_type": node_type_for_event,
+                                "label": label_for_event,
+                                "output": pinned_output,
+                                "duration_ms": 0,
+                                "is_pinned": True,
+                                "row_count_in": row_in,
+                                "row_count_out": row_out,
+                            },
+                            logger,
+                        )
+                        continue
+
+                    # --- enabled=False: pula execucao e propaga skip downstream ---
+                    if node_data.get("enabled") is False:
+                        with bind_context(node_id=node_id):
+                            logger.info("node.disabled")
+                        skipped_nodes.add(node_id)
+                        results[node_id] = {
+                            "node_id": node_id,
+                            "status": "skipped",
+                            "reason": "disabled",
+                            "message": "No desativado.",
+                        }
+                        _record_event(
+                            node_id,
+                            node,
+                            "skipped",
+                            output_summary={"reason": "disabled"},
+                        )
+                        await _safe_emit(
+                            event_sink,
+                            {
+                                "type": "node_skipped",
+                                "execution_id": execution_id,
+                                "timestamp": _iso_now(),
+                                "node_id": node_id,
+                                "node_type": node_type_for_event,
+                                "label": label_for_event,
+                                "reason": "disabled",
+                            },
+                            logger,
+                        )
+                        continue
+
+                    node_type = _get_node_type(node)
+                    registered_processor_type = _get_registered_processor_type(node)
+
+                    # Apenas upstream ativos sao passados ao processador.
+                    # Nos de juncao recebem somente os resultados dos caminhos ativos.
+                    active_sources = [
+                        source_id
+                        for source_id in reverse_adj.get(node_id, [])
+                        if source_id not in skipped_nodes
+                        and (source_id, node_id) not in inactive_edges
+                    ]
+                    upstream_results = {
+                        source_id: _route_upstream_result(
+                            results.get(source_id, {}),
+                            edge_handle_map.get((source_id, node_id)),
+                        )
+                        for source_id in active_sources
+                    }
+                    # edge_handles: {source_node_id -> targetHandle} para nos com multiplas
+                    # entradas (join, lookup) identificarem qual upstream chegou em qual porta.
+                    edge_handles = {
+                        source_id: target_handle_map.get((source_id, node_id))
+                        for source_id in active_sources
+                    }
+
+                    node_timeout = _resolve_node_timeout(node_data)
+
+                    if registered_processor_type is not None:
+                        with bind_context(node_id=node_id):
+                            logger.info(
+                                "node.dispatch_registered",
+                                processor_type=registered_processor_type,
+                                timeout_seconds=node_timeout,
+                            )
+                        # Injeta connection_string no config quando o no usa connection_id.
+                        effective_config = _inject_connection_string(
+                            node_data, resolved_connections or {}
+                        )
+                        processor_context = {
+                            **execution_context,
+                            "upstream_results": upstream_results,
+                            "edge_handles": edge_handles,
+                        }
+                        node_timing[node_id] = {
+                            "started_at": datetime.now(timezone.utc),
+                            "t0": time.monotonic(),
+                        }
+                        await _safe_emit(
+                            event_sink,
+                            {
+                                "type": "node_start",
+                                "execution_id": execution_id,
+                                "timestamp": _iso_now(),
+                                "node_id": node_id,
+                                "node_type": node_type_for_event,
+                                "label": label_for_event,
+                            },
+                            logger,
+                        )
+                        coros.append((
+                            node_id,
+                            _run_with_timeout(
+                                node_id=node_id,
+                                coro=execute_registered_node(
+                                    node_id=node_id,
+                                    node_type=registered_processor_type,
+                                    config=effective_config,
+                                    context=processor_context,
+                                ),
+                                timeout=node_timeout,
+                                logger=logger,
+                            ),
+                        ))
+                        continue
+
+                    if node_type == "aiNode":
+                        with bind_context(node_id=node_id):
+                            logger.info(
+                                "node.dispatch_llm",
+                                timeout_seconds=node_timeout,
+                            )
+                        node_timing[node_id] = {
+                            "started_at": datetime.now(timezone.utc),
+                            "t0": time.monotonic(),
+                        }
+                        await _safe_emit(
+                            event_sink,
+                            {
+                                "type": "node_start",
+                                "execution_id": execution_id,
+                                "timestamp": _iso_now(),
+                                "node_id": node_id,
+                                "node_type": node_type_for_event,
+                                "label": label_for_event,
+                            },
+                            logger,
+                        )
+                        coros.append((
+                            node_id,
+                            _run_with_timeout(
+                                node_id=node_id,
+                                coro=execute_llm_node(
+                                    node_id=node_id,
+                                    config=node_data,
+                                    input_data=upstream_results or None,
+                                ),
+                                timeout=node_timeout,
+                                logger=logger,
+                            ),
+                        ))
+                        continue
+
                     with bind_context(node_id=node_id):
-                        logger.info("node.skipped_by_branch")
-                    skipped_nodes.add(node_id)
-                    results[node_id] = {"node_id": node_id, "status": "skipped_by_branch"}
+                        logger.warning("node.unknown_type", node_type=node_type)
+                    # Registra como skipped para manter rastreabilidade em DB.
                     _record_event(
                         node_id,
                         node,
                         "skipped",
-                        output_summary={"reason": "skipped_by_branch"},
+                        output_summary={
+                            "reason": "unknown_type",
+                            "node_type": node_type,
+                        },
                     )
+                    await _safe_emit(
+                        event_sink,
+                        {
+                            "type": "node_skipped",
+                            "execution_id": execution_id,
+                            "timestamp": _iso_now(),
+                            "node_id": node_id,
+                            "node_type": node_type_for_event,
+                            "label": label_for_event,
+                            "reason": "unknown_type",
+                        },
+                        logger,
+                    )
+
+                if not coros:
                     continue
 
-                node_data = node.get("data", {})
-                node_type = _get_node_type(node)
-                registered_processor_type = _get_registered_processor_type(node)
-
-                # Apenas upstream ativos sao passados ao processador.
-                # Nos de juncao recebem somente os resultados dos caminhos ativos.
-                active_sources = [
-                    source_id
-                    for source_id in reverse_adj.get(node_id, [])
-                    if source_id not in skipped_nodes
-                    and (source_id, node_id) not in inactive_edges
-                ]
-                upstream_results = {
-                    source_id: _route_upstream_result(
-                        results.get(source_id, {}),
-                        edge_handle_map.get((source_id, node_id)),
-                    )
-                    for source_id in active_sources
-                }
-                # edge_handles: {source_node_id -> targetHandle} para nos com multiplas
-                # entradas (join, lookup) identificarem qual upstream chegou em qual porta.
-                edge_handles = {
-                    source_id: target_handle_map.get((source_id, node_id))
-                    for source_id in active_sources
-                }
-
-                node_timeout = _resolve_node_timeout(node_data)
-
-                if registered_processor_type is not None:
-                    with bind_context(node_id=node_id):
-                        logger.info(
-                            "node.dispatch_registered",
-                            processor_type=registered_processor_type,
-                            timeout_seconds=node_timeout,
-                        )
-                    # Injeta connection_string no config quando o no usa connection_id.
-                    effective_config = _inject_connection_string(
-                        node_data, resolved_connections or {}
-                    )
-                    processor_context = {
-                        **execution_context,
-                        "upstream_results": upstream_results,
-                        "edge_handles": edge_handles,
-                    }
-                    node_timing[node_id] = {
-                        "started_at": datetime.now(timezone.utc),
-                        "t0": time.monotonic(),
-                    }
-                    coros.append((
-                        node_id,
-                        _run_with_timeout(
-                            node_id=node_id,
-                            coro=execute_registered_node(
-                                node_id=node_id,
-                                node_type=registered_processor_type,
-                                config=effective_config,
-                                context=processor_context,
-                            ),
-                            timeout=node_timeout,
-                            logger=logger,
-                        ),
-                    ))
-                    continue
-
-                if node_type == "aiNode":
-                    with bind_context(node_id=node_id):
-                        logger.info(
-                            "node.dispatch_llm",
-                            timeout_seconds=node_timeout,
-                        )
-                    node_timing[node_id] = {
-                        "started_at": datetime.now(timezone.utc),
-                        "t0": time.monotonic(),
-                    }
-                    coros.append((
-                        node_id,
-                        _run_with_timeout(
-                            node_id=node_id,
-                            coro=execute_llm_node(
-                                node_id=node_id,
-                                config=node_data,
-                                input_data=upstream_results or None,
-                            ),
-                            timeout=node_timeout,
-                            logger=logger,
-                        ),
-                    ))
-                    continue
-
-                with bind_context(node_id=node_id):
-                    logger.warning("node.unknown_type", node_type=node_type)
-                # Registra como skipped para manter rastreabilidade em DB.
-                _record_event(
-                    node_id,
-                    node,
-                    "skipped",
-                    output_summary={
-                        "reason": "unknown_type",
-                        "node_type": node_type,
-                    },
+                # Executa nos do nivel em paralelo; cada excecao retorna como valor.
+                node_ids = [nid for nid, _ in coros]
+                gathered = await asyncio.gather(
+                    *(c for _, c in coros), return_exceptions=True
                 )
 
-            if not coros:
-                continue
+                for node_id, outcome in zip(node_ids, gathered):
+                    timing = node_timing.get(node_id, {})
+                    started_at = timing.get("started_at") or datetime.now(timezone.utc)
+                    t0 = timing.get("t0")
+                    duration_ms = (
+                        int((time.monotonic() - t0) * 1000) if t0 is not None else 0
+                    )
+                    completed_at = datetime.now(timezone.utc)
+                    node_for_event = node_map[node_id]
+                    node_type_for_event, label_for_event = _event_node_meta(
+                        node_for_event
+                    )
 
-            # Executa nos do nivel em paralelo; cada excecao retorna como valor.
-            node_ids = [nid for nid, _ in coros]
-            gathered = await asyncio.gather(
-                *(c for _, c in coros), return_exceptions=True
+                    with bind_context(node_id=node_id):
+                        if isinstance(outcome, NodeProcessingSkipped):
+                            logger.info(
+                                "workflow.aborted_gracefully", reason=str(outcome)
+                            )
+                            _record_event(
+                                node_id,
+                                node_for_event,
+                                "skipped",
+                                duration_ms=duration_ms,
+                                started_at=started_at,
+                                completed_at=completed_at,
+                                error_message=str(outcome),
+                                output_summary={"reason": "aborted_gracefully"},
+                            )
+                            await _safe_emit(
+                                event_sink,
+                                {
+                                    "type": "node_skipped",
+                                    "execution_id": execution_id,
+                                    "timestamp": _iso_now(),
+                                    "node_id": node_id,
+                                    "node_type": node_type_for_event,
+                                    "label": label_for_event,
+                                    "reason": "aborted_gracefully",
+                                    "duration_ms": duration_ms,
+                                },
+                                logger,
+                            )
+                            final_status = "aborted"
+                            return {
+                                "status": "aborted",
+                                "aborted_by": node_id,
+                                "reason": str(outcome),
+                                "node_results": results,
+                                "node_executions": node_executions,
+                            }
+                        if isinstance(outcome, NodeProcessingError):
+                            logger.error("node.failed", error=str(outcome))
+                            _record_event(
+                                node_id,
+                                node_for_event,
+                                "error",
+                                duration_ms=duration_ms,
+                                started_at=started_at,
+                                completed_at=completed_at,
+                                error_message=str(outcome),
+                            )
+                            await _safe_emit(
+                                event_sink,
+                                {
+                                    "type": "node_error",
+                                    "execution_id": execution_id,
+                                    "timestamp": _iso_now(),
+                                    "node_id": node_id,
+                                    "node_type": node_type_for_event,
+                                    "label": label_for_event,
+                                    "error": str(outcome),
+                                    "duration_ms": duration_ms,
+                                },
+                                logger,
+                            )
+                            final_status = "failed"
+                            return {
+                                "status": "failed",
+                                "failed_by": node_id,
+                                "error": str(outcome),
+                                "node_results": results,
+                                "node_executions": node_executions,
+                            }
+                        if isinstance(outcome, BaseException):
+                            # Erros inesperados — registra evento antes de propagar
+                            # para que _persist_final_state ainda tenha contexto
+                            # minimo (via caller que captura node_executions do
+                            # result parcial, se disponivel). O re-raise mantem o
+                            # comportamento atual: a execucao e marcada como
+                            # FAILED/CANCELLED pelo workflow_service.
+                            _record_event(
+                                node_id,
+                                node_for_event,
+                                "error",
+                                duration_ms=duration_ms,
+                                started_at=started_at,
+                                completed_at=completed_at,
+                                error_message=f"{type(outcome).__name__}: {outcome}",
+                            )
+                            await _safe_emit(
+                                event_sink,
+                                {
+                                    "type": "node_error",
+                                    "execution_id": execution_id,
+                                    "timestamp": _iso_now(),
+                                    "node_id": node_id,
+                                    "node_type": node_type_for_event,
+                                    "label": label_for_event,
+                                    "error": f"{type(outcome).__name__}: {outcome}",
+                                    "duration_ms": duration_ms,
+                                },
+                                logger,
+                            )
+                            final_status = "failed"
+                            raise outcome
+
+                        result = outcome
+                        results[node_id] = result
+
+                        row_in, row_out = _extract_row_counts(result)
+                        output_summary = _summarize_result(result)
+                        _record_event(
+                            node_id,
+                            node_for_event,
+                            "success",
+                            duration_ms=duration_ms,
+                            started_at=started_at,
+                            completed_at=completed_at,
+                            row_count_in=row_in,
+                            row_count_out=row_out,
+                            output_summary=output_summary,
+                        )
+                        await _safe_emit(
+                            event_sink,
+                            {
+                                "type": "node_complete",
+                                "execution_id": execution_id,
+                                "timestamp": _iso_now(),
+                                "node_id": node_id,
+                                "node_type": node_type_for_event,
+                                "label": label_for_event,
+                                "output": output_summary,
+                                "duration_ms": duration_ms,
+                                "row_count_in": row_in,
+                                "row_count_out": row_out,
+                            },
+                            logger,
+                        )
+
+                        # Se o no retornou active_handle(s) (no de condicao), marca como
+                        # inativas todas as arestas de saida cujo sourceHandle nao esta
+                        # no conjunto ativo. Suporta duas formas:
+                        #   - ``active_handle``  (str):     all-or-nothing (ifElse/switch)
+                        #   - ``active_handles`` (list):    row-partition (if_node/switch_node)
+                        active_handles_set: set[str] | None = None
+                        active_handles_raw = result.get("active_handles")
+                        if isinstance(active_handles_raw, (list, tuple, set)):
+                            active_handles_set = {str(h) for h in active_handles_raw}
+                        else:
+                            active_handle = result.get("active_handle")
+                            if active_handle is not None:
+                                active_handles_set = {str(active_handle)}
+
+                        if active_handles_set is not None:
+                            for target_id in adjacency.get(node_id, []):
+                                edge_handle = edge_handle_map.get((node_id, target_id))
+                                if edge_handle is not None and edge_handle not in active_handles_set:
+                                    inactive_edges.add((node_id, target_id))
+                                    logger.info(
+                                        "edge.inactivated",
+                                        target=target_id,
+                                        handle=edge_handle,
+                                        active_handles=sorted(active_handles_set),
+                                    )
+
+            logger.info("workflow.completed", node_count=len(results))
+            final_status = "completed"
+            return {
+                "status": "completed",
+                "node_results": results,
+                "node_executions": node_executions,
+            }
+        except asyncio.CancelledError:
+            final_status = "cancelled"
+            raise
+        except BaseException:
+            # Excecao inesperada nao tratada nos ramos acima — garante que
+            # execution_end reflita "failed".
+            if final_status == "completed":
+                final_status = "failed"
+            raise
+        finally:
+            await _safe_emit(
+                event_sink,
+                {
+                    "type": "execution_end",
+                    "execution_id": execution_id,
+                    "timestamp": _iso_now(),
+                    "status": final_status,
+                },
+                logger,
             )
-
-            for node_id, outcome in zip(node_ids, gathered):
-                timing = node_timing.get(node_id, {})
-                started_at = timing.get("started_at") or datetime.now(timezone.utc)
-                t0 = timing.get("t0")
-                duration_ms = (
-                    int((time.monotonic() - t0) * 1000) if t0 is not None else 0
-                )
-                completed_at = datetime.now(timezone.utc)
-                node_for_event = node_map[node_id]
-
-                with bind_context(node_id=node_id):
-                    if isinstance(outcome, NodeProcessingSkipped):
-                        logger.info(
-                            "workflow.aborted_gracefully", reason=str(outcome)
-                        )
-                        _record_event(
-                            node_id,
-                            node_for_event,
-                            "skipped",
-                            duration_ms=duration_ms,
-                            started_at=started_at,
-                            completed_at=completed_at,
-                            error_message=str(outcome),
-                            output_summary={"reason": "aborted_gracefully"},
-                        )
-                        return {
-                            "status": "aborted",
-                            "aborted_by": node_id,
-                            "reason": str(outcome),
-                            "node_results": results,
-                            "node_executions": node_executions,
-                        }
-                    if isinstance(outcome, NodeProcessingError):
-                        logger.error("node.failed", error=str(outcome))
-                        _record_event(
-                            node_id,
-                            node_for_event,
-                            "error",
-                            duration_ms=duration_ms,
-                            started_at=started_at,
-                            completed_at=completed_at,
-                            error_message=str(outcome),
-                        )
-                        return {
-                            "status": "failed",
-                            "failed_by": node_id,
-                            "error": str(outcome),
-                            "node_results": results,
-                            "node_executions": node_executions,
-                        }
-                    if isinstance(outcome, BaseException):
-                        # Erros inesperados — registra evento antes de propagar
-                        # para que _persist_final_state ainda tenha contexto
-                        # minimo (via caller que captura node_executions do
-                        # result parcial, se disponivel). O re-raise mantem o
-                        # comportamento atual: a execucao e marcada como
-                        # FAILED/CANCELLED pelo workflow_service.
-                        _record_event(
-                            node_id,
-                            node_for_event,
-                            "error",
-                            duration_ms=duration_ms,
-                            started_at=started_at,
-                            completed_at=completed_at,
-                            error_message=f"{type(outcome).__name__}: {outcome}",
-                        )
-                        raise outcome
-
-                    result = outcome
-                    results[node_id] = result
-
-                    row_in, row_out = _extract_row_counts(result)
-                    _record_event(
-                        node_id,
-                        node_for_event,
-                        "success",
-                        duration_ms=duration_ms,
-                        started_at=started_at,
-                        completed_at=completed_at,
-                        row_count_in=row_in,
-                        row_count_out=row_out,
-                        output_summary=_summarize_result(result),
-                    )
-
-                    # Se o no retornou active_handle(s) (no de condicao), marca como
-                    # inativas todas as arestas de saida cujo sourceHandle nao esta
-                    # no conjunto ativo. Suporta duas formas:
-                    #   - ``active_handle``  (str):     all-or-nothing (ifElse/switch)
-                    #   - ``active_handles`` (list):    row-partition (if_node/switch_node)
-                    active_handles_set: set[str] | None = None
-                    active_handles_raw = result.get("active_handles")
-                    if isinstance(active_handles_raw, (list, tuple, set)):
-                        active_handles_set = {str(h) for h in active_handles_raw}
-                    else:
-                        active_handle = result.get("active_handle")
-                        if active_handle is not None:
-                            active_handles_set = {str(active_handle)}
-
-                    if active_handles_set is not None:
-                        for target_id in adjacency.get(node_id, []):
-                            edge_handle = edge_handle_map.get((node_id, target_id))
-                            if edge_handle is not None and edge_handle not in active_handles_set:
-                                inactive_edges.add((node_id, target_id))
-                                logger.info(
-                                    "edge.inactivated",
-                                    target=target_id,
-                                    handle=edge_handle,
-                                    active_handles=sorted(active_handles_set),
-                                )
-
-        logger.info("workflow.completed", node_count=len(results))
-        return {
-            "status": "completed",
-            "node_results": results,
-            "node_executions": node_executions,
-        }

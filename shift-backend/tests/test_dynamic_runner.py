@@ -8,6 +8,7 @@ regrediu a logica de grafo, ordenacao topologica ou branch skipping.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -377,3 +378,409 @@ class TestRunWorkflowNodeExecutions:
             execution_id="exec-no-label",
         )
         assert result["node_executions"][0]["label"] == "mysteryType"
+
+
+# ---------------------------------------------------------------------------
+# run_workflow — event_sink (observabilidade em tempo real)
+# ---------------------------------------------------------------------------
+
+class TestRunWorkflowEventSink:
+    """Verifica a superficie de eventos emitida pelo runner quando
+    ``event_sink`` e fornecido. Usada pelo ``workflow_test_service`` para
+    alimentar a stream SSE."""
+
+    @staticmethod
+    def _make_sink() -> tuple[list[dict[str, Any]], Any]:
+        collected: list[dict[str, Any]] = []
+
+        async def sink(evt: dict[str, Any]) -> None:
+            collected.append(evt)
+
+        return collected, sink
+
+    @pytest.mark.asyncio
+    async def test_no_sink_means_backward_compat(self) -> None:
+        """Sem ``event_sink``, o runner nao deve ter overhead nem mudar shape."""
+        result = await run_workflow(
+            workflow_payload={"nodes": [], "edges": []},
+            workflow_id="wf-bc",
+            execution_id="exec-bc",
+        )
+        assert result["status"] == "completed"
+        assert "node_results" in result
+        assert "node_executions" in result
+
+    @pytest.mark.asyncio
+    async def test_empty_workflow_emits_start_and_end(self) -> None:
+        events, sink = self._make_sink()
+        await run_workflow(
+            workflow_payload={"nodes": [], "edges": []},
+            workflow_id="wf-empty",
+            execution_id="exec-empty",
+            event_sink=sink,
+        )
+        types = [e["type"] for e in events]
+        assert types == ["execution_start", "execution_end"]
+        assert events[0]["execution_id"] == "exec-empty"
+        assert events[0]["node_count"] == 0
+        assert events[0]["mode"] == "production"
+        assert events[-1]["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_mode_propagated_to_start_event(self) -> None:
+        events, sink = self._make_sink()
+        await run_workflow(
+            workflow_payload={"nodes": [], "edges": []},
+            workflow_id="wf-mode",
+            execution_id="exec-mode",
+            event_sink=sink,
+            mode="test",
+        )
+        assert events[0]["mode"] == "test"
+
+    @pytest.mark.asyncio
+    async def test_unknown_node_emits_node_skipped(self) -> None:
+        """No sem processor dispara ``node_skipped`` com reason=unknown_type."""
+        events, sink = self._make_sink()
+        payload = {
+            "nodes": [
+                {"id": "n1", "type": "inexistente", "data": {"label": "X"}},
+            ],
+            "edges": [],
+        }
+        await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-skip",
+            execution_id="exec-skip",
+            event_sink=sink,
+        )
+        types = [e["type"] for e in events]
+        assert "node_skipped" in types
+        skipped = next(e for e in events if e["type"] == "node_skipped")
+        assert skipped["node_id"] == "n1"
+        assert skipped["node_type"] == "inexistente"
+        assert skipped["label"] == "X"
+        assert skipped["reason"] == "unknown_type"
+        # execution_end deve vir por ultimo
+        assert events[-1]["type"] == "execution_end"
+
+    @pytest.mark.asyncio
+    async def test_event_payload_shape_is_consistent(self) -> None:
+        events, sink = self._make_sink()
+        await run_workflow(
+            workflow_payload={"nodes": [], "edges": []},
+            workflow_id="wf-shape",
+            execution_id="exec-shape",
+            event_sink=sink,
+        )
+        # Toda mensagem tem as chaves minimas.
+        for evt in events:
+            assert "type" in evt
+            assert "timestamp" in evt
+            assert evt.get("execution_id") == "exec-shape"
+
+    @pytest.mark.asyncio
+    async def test_sink_exception_does_not_kill_workflow(self) -> None:
+        """Exceptions do sink sao capturadas — observabilidade nao derruba execucao."""
+
+        async def bad_sink(evt: dict[str, Any]) -> None:
+            raise RuntimeError("sink boom")
+
+        result = await run_workflow(
+            workflow_payload={"nodes": [], "edges": []},
+            workflow_id="wf-bad-sink",
+            execution_id="exec-bad-sink",
+            event_sink=bad_sink,
+        )
+        assert result["status"] == "completed"
+
+    @pytest.mark.asyncio
+    async def test_end_status_reflects_cancel(self) -> None:
+        """CancelledError faz execution_end ser ``cancelled`` (via finally)."""
+        captured: list[dict[str, Any]] = []
+        started = asyncio.Event()
+
+        async def sink(evt: dict[str, Any]) -> None:
+            captured.append(evt)
+            # Bloqueia o primeiro emit (execution_start) para dar janela
+            # a task ser cancelada antes de completar naturalmente.
+            if evt["type"] == "execution_start":
+                started.set()
+                await asyncio.sleep(10)
+
+        task = asyncio.create_task(
+            run_workflow(
+                workflow_payload={"nodes": [], "edges": []},
+                workflow_id="wf-cancel",
+                execution_id="exec-cancel",
+                event_sink=sink,
+            )
+        )
+        await started.wait()  # garante que entramos no sink antes de cancelar
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # execution_end deve ter sido emitido no finally com status=cancelled.
+        assert any(
+            e["type"] == "execution_end" and e.get("status") == "cancelled"
+            for e in captured
+        )
+
+
+# ---------------------------------------------------------------------------
+# run_workflow — pinnedOutput / enabled=False
+# ---------------------------------------------------------------------------
+
+class TestRunWorkflowPinnedOutput:
+    """``data.pinnedOutput`` faz passthrough sem chamar processor."""
+
+    @pytest.mark.asyncio
+    async def test_pinned_output_short_circuits_processor(self) -> None:
+        """O runner nao deve tentar executar um no com pinnedOutput.
+
+        Usamos ``type=inexistente`` sem processor registrado — se o runner
+        tentasse rodar, emitiria ``node_skipped`` com reason=unknown_type.
+        Com pinnedOutput, o resultado deve ser o dict fixado.
+        """
+        pinned = {"row_count": 2, "rows": [{"a": 1}, {"a": 2}], "columns": ["a"]}
+        payload = {
+            "nodes": [{
+                "id": "n1",
+                "type": "inexistente",
+                "data": {"label": "Pinned", "pinnedOutput": pinned},
+            }],
+            "edges": [],
+        }
+        result = await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-pin",
+            execution_id="exec-pin",
+        )
+        assert result["status"] == "completed"
+        assert result["node_results"]["n1"] == pinned
+
+    @pytest.mark.asyncio
+    async def test_pinned_output_records_node_execution_as_skipped(self) -> None:
+        """Registro em DB: status=skipped, output_summary={is_pinned: True}."""
+        pinned = {"row_count": 1, "rows": [{"x": 1}]}
+        payload = {
+            "nodes": [{
+                "id": "n1",
+                "type": "whatever",
+                "data": {"label": "P", "pinnedOutput": pinned},
+            }],
+            "edges": [],
+        }
+        result = await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-pin2",
+            execution_id="exec-pin2",
+        )
+        events = result["node_executions"]
+        assert len(events) == 1
+        evt = events[0]
+        assert evt["status"] == "skipped"
+        assert evt["output_summary"] == {"is_pinned": True}
+        assert evt["row_count_out"] == 1
+
+    @pytest.mark.asyncio
+    async def test_pinned_output_emits_node_complete_with_is_pinned(self) -> None:
+        """SSE: evento node_complete leva is_pinned=True e o output cru."""
+        pinned = {"row_count": 3, "rows": [{"i": i} for i in range(3)]}
+        collected: list[dict[str, Any]] = []
+
+        async def sink(evt: dict[str, Any]) -> None:
+            collected.append(evt)
+
+        payload = {
+            "nodes": [{
+                "id": "n1",
+                "type": "whatever",
+                "data": {"pinnedOutput": pinned},
+            }],
+            "edges": [],
+        }
+        await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-pin3",
+            execution_id="exec-pin3",
+            event_sink=sink,
+        )
+        complete = next(e for e in collected if e["type"] == "node_complete")
+        assert complete["is_pinned"] is True
+        assert complete["output"] == pinned
+        # Pinned nao emite node_start — so node_complete.
+        assert not any(
+            e["type"] == "node_start" and e["node_id"] == "n1" for e in collected
+        )
+
+    @pytest.mark.asyncio
+    async def test_pinned_output_flows_to_downstream(self) -> None:
+        """Downstream deve receber o pinnedOutput como upstream real."""
+        pinned = {"row_count": 1, "rows": [{"a": 42}]}
+        payload = {
+            "nodes": [
+                {"id": "n1", "type": "whatever", "data": {"pinnedOutput": pinned}},
+                {"id": "n2", "type": "inexistente", "data": {}},
+            ],
+            "edges": [{"source": "n1", "target": "n2"}],
+        }
+        result = await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-pin-down",
+            execution_id="exec-pin-down",
+        )
+        # n1 tem o pinnedOutput, n2 (sem processor) e skipped por unknown_type
+        # mas NAO por skipped_by_branch — seu upstream esta ativo.
+        assert result["node_results"]["n1"] == pinned
+        # n2 nao e registrado em node_results (sem processor), mas aparece em
+        # node_executions com status=skipped e reason=unknown_type (nao disabled).
+        n2_evt = next(e for e in result["node_executions"] if e["node_id"] == "n2")
+        assert n2_evt["status"] == "skipped"
+        assert n2_evt["output_summary"]["reason"] == "unknown_type"
+
+    @pytest.mark.asyncio
+    async def test_empty_pinned_output_not_used(self) -> None:
+        """``pinnedOutput = {}`` (falsy) nao curto-circuita — deve executar."""
+        payload = {
+            "nodes": [{
+                "id": "n1",
+                "type": "inexistente",
+                "data": {"pinnedOutput": {}},
+            }],
+            "edges": [],
+        }
+        result = await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-pin-empty",
+            execution_id="exec-pin-empty",
+        )
+        # Sem pinnedOutput efetivo, cai no caminho unknown_type.
+        evt = result["node_executions"][0]
+        assert evt["output_summary"]["reason"] == "unknown_type"
+
+
+class TestRunWorkflowDisabledNode:
+    """``data.enabled is False`` pula o no e propaga skip downstream."""
+
+    @pytest.mark.asyncio
+    async def test_disabled_node_is_not_executed(self) -> None:
+        """No desativado nao gera entrada em ``node_results`` (exceto o skip)."""
+        payload = {
+            "nodes": [{
+                "id": "n1",
+                "type": "inexistente",
+                "data": {"label": "Off", "enabled": False},
+            }],
+            "edges": [],
+        }
+        result = await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-off",
+            execution_id="exec-off",
+        )
+        assert result["status"] == "completed"
+        n1_result = result["node_results"]["n1"]
+        assert n1_result["status"] == "skipped"
+        assert n1_result["reason"] == "disabled"
+
+    @pytest.mark.asyncio
+    async def test_disabled_records_as_skipped(self) -> None:
+        payload = {
+            "nodes": [{
+                "id": "n1",
+                "type": "whatever",
+                "data": {"enabled": False},
+            }],
+            "edges": [],
+        }
+        result = await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-off2",
+            execution_id="exec-off2",
+        )
+        evt = result["node_executions"][0]
+        assert evt["status"] == "skipped"
+        assert evt["output_summary"] == {"reason": "disabled"}
+
+    @pytest.mark.asyncio
+    async def test_disabled_emits_node_skipped_event(self) -> None:
+        collected: list[dict[str, Any]] = []
+
+        async def sink(evt: dict[str, Any]) -> None:
+            collected.append(evt)
+
+        payload = {
+            "nodes": [{
+                "id": "n1",
+                "type": "whatever",
+                "data": {"label": "X", "enabled": False},
+            }],
+            "edges": [],
+        }
+        await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-off3",
+            execution_id="exec-off3",
+            event_sink=sink,
+        )
+        skipped = next(e for e in collected if e["type"] == "node_skipped")
+        assert skipped["node_id"] == "n1"
+        assert skipped["reason"] == "disabled"
+        assert skipped["label"] == "X"
+
+    @pytest.mark.asyncio
+    async def test_disabled_propagates_skip_to_downstream(self) -> None:
+        """Descendente de no desativado recebe ``skipped_by_branch``."""
+        payload = {
+            "nodes": [
+                {"id": "n1", "type": "whatever", "data": {"enabled": False}},
+                {"id": "n2", "type": "whatever", "data": {}},
+            ],
+            "edges": [{"source": "n1", "target": "n2"}],
+        }
+        result = await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-off-down",
+            execution_id="exec-off-down",
+        )
+        assert result["node_results"]["n1"]["reason"] == "disabled"
+        # n2 deve ter sido pulado em cascata (todas as entradas inativas).
+        n2_evt = next(e for e in result["node_executions"] if e["node_id"] == "n2")
+        assert n2_evt["status"] == "skipped"
+        assert n2_evt["output_summary"]["reason"] == "skipped_by_branch"
+
+    @pytest.mark.asyncio
+    async def test_enabled_true_executes_normally(self) -> None:
+        """``enabled=True`` (explicito) nao deve pular."""
+        payload = {
+            "nodes": [{
+                "id": "n1",
+                "type": "inexistente",
+                "data": {"enabled": True},
+            }],
+            "edges": [],
+        }
+        result = await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-on",
+            execution_id="exec-on",
+        )
+        # Sem processor, cai em unknown_type (nao em disabled).
+        evt = result["node_executions"][0]
+        assert evt["output_summary"]["reason"] == "unknown_type"
+
+    @pytest.mark.asyncio
+    async def test_enabled_missing_defaults_to_enabled(self) -> None:
+        """``data.enabled`` ausente deve tratar como habilitado."""
+        payload = {
+            "nodes": [{"id": "n1", "type": "inexistente", "data": {}}],
+            "edges": [],
+        }
+        result = await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-default",
+            execution_id="exec-default",
+        )
+        evt = result["node_executions"][0]
+        assert evt["output_summary"]["reason"] == "unknown_type"

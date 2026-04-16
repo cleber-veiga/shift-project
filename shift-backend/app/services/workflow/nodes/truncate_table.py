@@ -21,10 +21,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.data_pipelines.duckdb_storage import (
-    find_duckdb_reference,
-    get_primary_input_reference,
-)
+from app.data_pipelines.duckdb_storage import find_duckdb_reference
 from app.services.load_service import load_service
 from app.services.workflow.nodes import BaseNodeProcessor, register_processor
 from app.services.workflow.nodes.exceptions import NodeProcessingError
@@ -123,24 +120,21 @@ def _infer_conn_type(connection_string: str) -> str:
 
 def _find_upstream_duckdb_reference(context: dict[str, Any]) -> dict[str, Any] | None:
     """
-    Retorna a referencia DuckDB primaria upstream, se houver.
+    Retorna a referencia DuckDB primaria upstream, se JA EXISTIR.
 
-    Diferente de ``get_primary_input_reference``, esta funcao nao materializa
-    nenhum dado — o no de truncate e pass-through e nao deve falhar quando
-    nenhum dado chega (ex: truncate executado como primeiro passo).
+    Diferente de ``get_primary_input_reference``, esta funcao NAO materializa
+    nada: se o upstream e so metadata (ex: output de um trigger ou do proprio
+    truncate anterior), retornamos None e o truncate nao expoe chave ``data``
+    no resultado. Isso e essencial para que um ``if_node`` downstream entre em
+    gate mode avaliando o ``status`` do truncate, em vez de cair em
+    row-partition sobre uma tabela artificialmente materializada a partir do
+    dict do trigger (o que causaria avaliacao incorreta da condicao).
     """
     upstream_results = context.get("upstream_results") or {}
-    if isinstance(upstream_results, dict) and upstream_results:
-        for upstream_value in reversed(list(upstream_results.values())):
-            ref = find_duckdb_reference(upstream_value)
-            if ref is not None:
-                return ref
-
-    # Sem referencia pronta — tenta materializar apenas se houver dados upstream
-    # concretos. Caso contrario retorna None (truncate-only, sem dados a repassar).
-    if isinstance(upstream_results, dict) and upstream_results:
-        try:
-            return get_primary_input_reference(context, "truncate_pass_through")
-        except NodeProcessingError:
-            return None
+    if not isinstance(upstream_results, dict):
+        return None
+    for upstream_value in reversed(list(upstream_results.values())):
+        ref = find_duckdb_reference(upstream_value)
+        if ref is not None:
+            return ref
     return None

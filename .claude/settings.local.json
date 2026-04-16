@@ -97,7 +97,21 @@
       "Bash(python -m pip show pytest-asyncio)",
       "Bash(python -m pip install \"pytest-asyncio>=0.24,<1.0\")",
       "Bash(python -m pytest tests/ -q --no-header)",
-      "Bash(python -m pytest tests/test_dynamic_runner.py tests/test_truncate_bulk_status_flatten.py tests/test_workflow_service_persistence.py -v --no-header)"
+      "Bash(python -m pytest tests/test_dynamic_runner.py tests/test_truncate_bulk_status_flatten.py tests/test_workflow_service_persistence.py -v --no-header)",
+      "Bash(python -m pytest tests/test_if_switch_gate_mode.py -x -v)",
+      "Bash(python -m pytest)",
+      "Bash(python -m ruff check app/services/workflow/nodes/if_node.py app/services/workflow/nodes/switch_node.py tests/test_if_switch_gate_mode.py)",
+      "Bash(python -m pytest tests/test_dynamic_runner.py -x --tb=short)",
+      "Bash(python -c \"from app.services.workflow_test_service import workflow_test_service; print\\('OK'\\)\")",
+      "Bash(python -m pytest tests/ -x --tb=short -q)",
+      "Bash(python -m pytest tests/test_workflow_test_service_streaming.py -x --tb=short)",
+      "Bash(python -m pytest tests/ --tb=short -q)",
+      "Bash(python -m pytest tests/test_dynamic_runner.py --tb=short -q)",
+      "Bash(python -c \"from app.services.workflow_test_service import workflow_test_service, _transform_for_sse, _trim_for_sse; from app.services.workflow_service import workflow_service; from app.orchestration.flows.dynamic_runner import run_workflow, _filter_payload_to_ancestors; print\\('OK'\\)\")",
+      "Bash(python -m pytest tests/test_workflow_integration_parity.py tests/test_workflow_test_service_streaming.py -x --tb=short -q)",
+      "Bash(python -m pytest tests/ -q --tb=short)",
+      "Bash(python -m pytest tests/test_if_switch_gate_mode.py tests/test_workflow_integration_parity.py tests/test_workflow_test_service_streaming.py tests/test_dynamic_runner.py -v)",
+      "Bash(python -c \"from app.services.workflow_service import workflow_service; from app.services.workflow_test_service import workflow_test_service; from app.orchestration.flows.dynamic_runner import run_workflow, EventSink; print\\('imports OK'\\)\")"
     ]
   }
 }

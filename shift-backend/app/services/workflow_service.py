@@ -14,7 +14,7 @@ from app.core.logging import bind_context, get_logger
 from app.db.session import async_session_factory
 from app.models import Project
 from app.models.workflow import Workflow, WorkflowExecution, WorkflowNodeExecution
-from app.orchestration.flows.dynamic_runner import run_workflow
+from app.orchestration.flows.dynamic_runner import EventSink, run_workflow
 from app.schemas.workflow import ExecutionResponse, ExecutionStatusResponse
 from app.services import execution_registry
 from app.services.connection_service import connection_service
@@ -31,10 +31,38 @@ class WorkflowExecutionService:
         self,
         db: AsyncSession,
         workflow_id: UUID,
+        *,
         triggered_by: str = "manual",
         input_data: dict[str, Any] | None = None,
+        event_sink: EventSink | None = None,
+        mode: str | None = None,
+        wait: bool = False,
+        target_node_id: str | None = None,
     ) -> ExecutionResponse:
-        """Cria um registro de execucao e dispara o workflow localmente."""
+        """Unico entrypoint de execucao de workflow deste servico.
+
+        Faz todo o preflight (lookup do workflow, resolucao de conexoes,
+        criacao da ``WorkflowExecution``) na sessao recebida, comita, e
+        dispara o runner:
+
+        - ``wait=False`` (padrao): agenda ``_run_and_persist`` como task
+          em background e registra no ``execution_registry``. Usado pela
+          rota HTTP de execucao manual e pelo cron scheduler.
+        - ``wait=True``: executa ``_run_and_persist`` inline e so retorna
+          apos o termino. Usado pela rota SSE (workflow_test_service),
+          que precisa consumir eventos sincronamente.
+
+        Parametros de observabilidade/apresentacao:
+
+        - ``event_sink``: callback async que recebe cada evento do runner
+          (repassado direto a ``run_workflow``). Tipico uso e empurrar
+          para uma ``asyncio.Queue`` que e drenada para SSE.
+        - ``mode``: ``"production"`` | ``"test"`` | ``None``. Quando
+          ``None``, deriva de ``workflow.status`` (``"published"`` ->
+          production, outros -> test).
+        - ``target_node_id``: recorta o grafo aos ancestrais (inclusive)
+          do alvo antes de executar. Usado pelo botao "testar ate aqui".
+        """
         # 1 query: busca workflow + workspace_id via LEFT JOIN com project
         result = await db.execute(
             select(
@@ -65,6 +93,10 @@ class WorkflowExecutionService:
             workspace_id=workspace_id,
         )
 
+        effective_mode = mode or (
+            "production" if workflow.status == "published" else "test"
+        )
+
         execution = WorkflowExecution(
             workflow_id=workflow.id,
             status="RUNNING",
@@ -74,22 +106,65 @@ class WorkflowExecutionService:
         await db.flush()
 
         # Captura dados antes de liberar a sessao — a execucao roda em background
-        # e vai abrir sua propria sessao para persistir o resultado.
+        # (ou inline) e abre sua propria sessao para persistir o resultado.
         execution_id = execution.id
         definition = workflow.definition
+        exec_status = execution.status
+        await db.commit()
 
-        await self._dispatch_local(
+        run_coro = self._run_and_persist(
             execution_id=execution_id,
             workflow_id=workflow.id,
             workflow_definition=definition,
             triggered_by=triggered_by,
             input_data=input_data or {},
             resolved_connections=resolved_connections,
+            event_sink=event_sink,
+            mode=effective_mode,
+            target_node_id=target_node_id,
         )
+
+        if wait:
+            # Roda inline — quem chamou (SSE) ja esta consumindo eventos
+            # em paralelo via event_sink/queue.
+            await run_coro
+        else:
+            task = asyncio.create_task(
+                run_coro,
+                name=f"workflow-execution-{execution_id}",
+            )
+            await execution_registry.register(execution_id, task)
 
         return ExecutionResponse(
             execution_id=execution_id,
-            status=execution.status,
+            status=exec_status,
+        )
+
+    async def run_with_events(
+        self,
+        db: AsyncSession,
+        workflow_id: UUID,
+        *,
+        event_sink: EventSink,
+        triggered_by: str = "test",
+        input_data: dict[str, Any] | None = None,
+        mode: str | None = None,
+        target_node_id: str | None = None,
+    ) -> ExecutionResponse:
+        """Acucar para a rota SSE: ``run(..., wait=True, event_sink=...)``.
+
+        Um ``event_sink`` nao faz sentido com ``wait=False`` na pratica
+        (quem consumiria?), entao consolidamos ambos aqui.
+        """
+        return await self.run(
+            db=db,
+            workflow_id=workflow_id,
+            triggered_by=triggered_by,
+            input_data=input_data,
+            event_sink=event_sink,
+            mode=mode,
+            wait=True,
+            target_node_id=target_node_id,
         )
 
     async def execute_workflow(
@@ -104,36 +179,8 @@ class WorkflowExecutionService:
             workflow_id=workflow_id,
             triggered_by="manual",
             input_data=input_data,
+            mode="production",
         )
-
-    async def _dispatch_local(
-        self,
-        execution_id: UUID,
-        workflow_id: UUID,
-        workflow_definition: dict[str, Any],
-        triggered_by: str,
-        input_data: dict[str, Any],
-        resolved_connections: dict[str, str] | None = None,
-    ) -> None:
-        """
-        Dispara ``run_workflow`` como asyncio.Task em background e registra
-        no ``execution_registry`` para permitir cancelamento.
-
-        O ``register`` ja instala o ``add_done_callback`` que limpa a
-        entrada e cancela o heartbeat quando a task termina.
-        """
-        task = asyncio.create_task(
-            self._run_and_persist(
-                execution_id=execution_id,
-                workflow_id=workflow_id,
-                workflow_definition=workflow_definition,
-                triggered_by=triggered_by,
-                input_data=input_data,
-                resolved_connections=resolved_connections,
-            ),
-            name=f"workflow-execution-{execution_id}",
-        )
-        await execution_registry.register(execution_id, task)
 
     async def _run_and_persist(
         self,
@@ -143,11 +190,15 @@ class WorkflowExecutionService:
         triggered_by: str,
         input_data: dict[str, Any],
         resolved_connections: dict[str, str] | None,
+        event_sink: EventSink | None = None,
+        mode: str = "production",
+        target_node_id: str | None = None,
     ) -> None:
         """
         Roda o workflow e persiste o estado final em uma sessao propria —
-        nao compartilhamos a sessao do request HTTP. A limpeza do registry
-        e feita via ``add_done_callback`` em ``_dispatch_local``.
+        nao compartilhamos a sessao do request HTTP. Quando disparado em
+        task, a limpeza do registry e feita via ``add_done_callback`` em
+        ``run()``.
         """
         result: dict[str, Any] | None = None
         error: str | None = None
@@ -162,6 +213,9 @@ class WorkflowExecutionService:
                     input_data=input_data,
                     execution_id=str(execution_id),
                     resolved_connections=resolved_connections,
+                    event_sink=event_sink,
+                    mode=mode,
+                    target_node_id=target_node_id,
                 )
             except asyncio.CancelledError:
                 cancelled = True
