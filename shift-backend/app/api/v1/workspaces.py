@@ -12,6 +12,7 @@ from app.api.dependencies import get_current_user, get_db
 from app.core.security import require_permission
 from app.models import User
 from app.schemas import (
+    AccessMatrixResponse,
     AddMemberRequest,
     MemberResponse,
     UpdateMemberRoleRequest,
@@ -216,6 +217,15 @@ async def delete_workspace_member(
     deleted = await b2b_service.remove_workspace_member(db, ws_id, user_id)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Membro nao encontrado.")
+
+
+@router.get("/workspaces/{ws_id}/access-matrix", response_model=AccessMatrixResponse)
+async def get_access_matrix(
+    ws_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_permission("workspace", "MANAGER")),
+) -> AccessMatrixResponse:
+    return await b2b_service.get_workspace_access_matrix(db, ws_id)
 
 
 @router.get("/workspaces/{ws_id}/players", response_model=list[WorkspacePlayerResponse])

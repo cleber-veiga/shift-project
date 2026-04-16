@@ -2,6 +2,12 @@
 Exports centralizados dos schemas Pydantic.
 """
 
+from .access_matrix import (
+    AccessMatrixProjectEntry,
+    AccessMatrixResponse,
+    AccessMatrixUserEntry,
+    AccessMatrixUserProjectRole,
+)
 from .connection import ConnectionCreate, ConnectionResponse, ConnectionType, ConnectionUpdate, TestConnectionResult
 from .lookup import CEPResponse, CNPJResponse
 from .economic_group import (
@@ -58,6 +64,10 @@ from .workspace import (
 
 __all__ = [
     "AcceptInvitationResponse",
+    "AccessMatrixProjectEntry",
+    "AccessMatrixResponse",
+    "AccessMatrixUserEntry",
+    "AccessMatrixUserProjectRole",
     "AddMemberRequest",
     "CEPResponse",
     "CNPJResponse",

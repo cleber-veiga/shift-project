@@ -67,6 +67,17 @@ export function Sidebar() {
 
   const canManageWorkspace = hasWorkspacePermission(selectedWorkspace?.my_role, "MANAGER")
 
+  useEffect(() => {
+    if (!projectMenuOpen) return
+    function handleClickOutside(event: MouseEvent) {
+      if (projectMenuRef.current && !projectMenuRef.current.contains(event.target as Node)) {
+        setProjectMenuOpen(false)
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside)
+    return () => document.removeEventListener("mousedown", handleClickOutside)
+  }, [projectMenuOpen])
+
   const handleProjectSelect = (projectId: string) => {
     setSelectedProjectId(projectId)
     setProjectMenuOpen(false)
@@ -277,7 +288,7 @@ export function Sidebar() {
         </button>
 
         {projectMenuOpen ? (
-          <div className="absolute left-4 right-4 top-[calc(100%-2px)] z-40 mt-2 rounded-xl border border-border bg-card p-2 shadow-lg">
+          <div className="absolute left-4 top-[calc(100%-2px)] z-50 mt-2 min-w-[calc(100%-2rem)] w-max max-w-xs rounded-xl border border-border bg-card p-2 shadow-lg">
             <p className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Projetos
             </p>
@@ -345,6 +356,9 @@ export function Sidebar() {
             </p>
             <div className="space-y-1">
               {group.items.map((item) => {
+                if (group.key === "space" && item.minWorkspaceRole && !hasWorkspacePermission(selectedWorkspace?.my_role, item.minWorkspaceRole)) {
+                  return null
+                }
                 const disabled = group.key === "project" && !hasSelectedProject
                 const active = isItemActive(item.href)
                 const itemClassName = cn(
@@ -444,7 +458,7 @@ export function Sidebar() {
               <div className="grid gap-3 sm:grid-cols-2">
                 <div>
                   <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-foreground">
-                    Conglomerado
+                    Grupo Econômico
                   </label>
                   <Select
                     value={projectConglomerateId}
@@ -530,12 +544,12 @@ export function Sidebar() {
               </div>
 
               {isLoadingProjectDependencies ? (
-                <p className="text-xs text-muted-foreground">Carregando conglomerados e sistemas...</p>
+                <p className="text-xs text-muted-foreground">Carregando grupos econômicos e sistemas...</p>
               ) : null}
 
               {!isLoadingProjectDependencies && availableConglomerates.length === 0 ? (
                 <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-100">
-                  Cadastre ao menos um conglomerado antes de criar projeto.
+                  Cadastre ao menos um grupo econômico antes de criar projeto.
                 </div>
               ) : null}
 

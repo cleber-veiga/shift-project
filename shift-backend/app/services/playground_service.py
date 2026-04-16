@@ -209,6 +209,10 @@ class PlaygroundService:
             raise ValueError(
                 f"Timeout: a consulta excedeu {int(_QUERY_TIMEOUT_SECONDS)}s."
             )
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(str(exc)) from exc
 
         return result
 

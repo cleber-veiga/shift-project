@@ -5,9 +5,10 @@ Servico de negocio para Organization, Workspace, Project e memberships.
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import exists, func, or_, select
+from sqlalchemy import exists, func, or_, select, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import compute_effective_project_role, compute_effective_ws_role
 from app.models import (
     EconomicGroup,
     Establishment,
@@ -24,6 +25,10 @@ from app.models import (
     WorkspaceRole,
 )
 from app.schemas import (
+    AccessMatrixProjectEntry,
+    AccessMatrixResponse,
+    AccessMatrixUserEntry,
+    AccessMatrixUserProjectRole,
     AddMemberRequest,
     EconomicGroupCreate,
     EconomicGroupUpdate,
@@ -312,12 +317,8 @@ class B2BService:
 
         items: list[tuple[Workspace, str | None]] = []
         for ws, ws_role, org_role in result.all():
-            if ws_role is not None:
-                effective = ws_role.value
-            elif org_role is not None:
-                effective = org_role.value
-            else:
-                effective = None
+            effective_role, _source = compute_effective_ws_role(org_role, ws_role)
+            effective = effective_role.value if effective_role is not None else None
             items.append((ws, effective))
         return items
 
@@ -1000,6 +1001,131 @@ class B2BService:
         await db.flush()
         return True
 
+    async def get_workspace_access_matrix(
+        self,
+        db: AsyncSession,
+        ws_id: UUID,
+    ) -> AccessMatrixResponse:
+        """Retorna a matriz de acessos consolidada de um workspace."""
+
+        # Busca workspace + org_id
+        ws_result = await db.execute(
+            select(Workspace.id, Workspace.name, Workspace.organization_id)
+            .where(Workspace.id == ws_id)
+        )
+        ws_row = ws_result.one_or_none()
+        if ws_row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workspace nao encontrado.",
+            )
+        ws_id, ws_name, org_id = ws_row
+
+        # Query C: projetos do workspace
+        proj_result = await db.execute(
+            select(Project.id, Project.name)
+            .where(Project.workspace_id == ws_id)
+            .order_by(Project.name)
+        )
+        projects = proj_result.all()
+
+        # Query A: todos os usuarios com qualquer acesso + papeis org/ws
+        org_uids = select(OrganizationMember.user_id).where(
+            OrganizationMember.organization_id == org_id
+        )
+        ws_uids = select(WorkspaceMember.user_id).where(
+            WorkspaceMember.workspace_id == ws_id
+        )
+        proj_uids = (
+            select(ProjectMember.user_id)
+            .join(Project, Project.id == ProjectMember.project_id)
+            .where(Project.workspace_id == ws_id)
+        )
+        all_uids = union(org_uids, ws_uids, proj_uids).subquery()
+
+        users_result = await db.execute(
+            select(
+                User.id,
+                User.email,
+                User.full_name,
+                User.is_active,
+                OrganizationMember.role,
+                WorkspaceMember.role,
+            )
+            .join(all_uids, User.id == all_uids.c.user_id)
+            .outerjoin(
+                OrganizationMember,
+                (OrganizationMember.user_id == User.id)
+                & (OrganizationMember.organization_id == org_id),
+            )
+            .outerjoin(
+                WorkspaceMember,
+                (WorkspaceMember.user_id == User.id)
+                & (WorkspaceMember.workspace_id == ws_id),
+            )
+            .order_by(User.email)
+        )
+        users_rows = users_result.all()
+
+        # Query B: memberships de projetos deste workspace
+        proj_members_result = await db.execute(
+            select(ProjectMember.user_id, ProjectMember.project_id, ProjectMember.role)
+            .join(Project, Project.id == ProjectMember.project_id)
+            .where(Project.workspace_id == ws_id)
+        )
+        proj_members_map: dict[UUID, dict[UUID, ProjectRole]] = {}
+        for pm_row in proj_members_result.all():
+            uid, pid, prole = pm_row
+            proj_members_map.setdefault(uid, {})[pid] = prole
+
+        # Montar resposta
+        user_entries: list[AccessMatrixUserEntry] = []
+        for row in users_rows:
+            uid, email, full_name, is_active, org_role, ws_explicit = row
+
+            ws_effective, ws_source = compute_effective_ws_role(org_role, ws_explicit)
+
+            user_proj_roles: list[AccessMatrixUserProjectRole] = []
+            user_proj_map = proj_members_map.get(uid, {})
+            for proj_id, proj_name in projects:
+                proj_explicit = user_proj_map.get(proj_id)
+                proj_effective, proj_source = compute_effective_project_role(
+                    org_role, ws_effective, proj_explicit,
+                )
+                user_proj_roles.append(
+                    AccessMatrixUserProjectRole(
+                        project_id=proj_id,
+                        explicit_role=proj_explicit.value if proj_explicit else None,
+                        effective_role=proj_effective.value if proj_effective else None,
+                        source=proj_source,
+                    )
+                )
+
+            user_entries.append(
+                AccessMatrixUserEntry(
+                    user_id=uid,
+                    email=email,
+                    full_name=full_name,
+                    is_active=is_active,
+                    org_role=org_role.value if org_role else None,
+                    ws_explicit_role=ws_explicit.value if ws_explicit else None,
+                    ws_effective_role=ws_effective.value if ws_effective else None,
+                    ws_role_source=ws_source,
+                    project_roles=user_proj_roles,
+                )
+            )
+
+        return AccessMatrixResponse(
+            workspace_id=ws_id,
+            workspace_name=ws_name,
+            organization_id=org_id,
+            projects=[
+                AccessMatrixProjectEntry(project_id=pid, project_name=pname)
+                for pid, pname in projects
+            ],
+            users=user_entries,
+        )
+
     async def _get_user_by_email(self, db: AsyncSession, email: str) -> User | None:
         result = await db.execute(select(User).where(User.email == email))
         return result.scalar_one_or_none()
@@ -1161,28 +1287,26 @@ class B2BService:
         return or_(internal_org_member, workspace_member, project_member)
 
     def _project_visibility_condition(self, user_id: UUID):
-        internal_org_member = exists(
+        """Somente MANAGER+ vê todos os projetos. CONSULTANT/VIEWER precisam de membership explicita."""
+        org_manager_or_owner = exists(
             select(1)
             .select_from(OrganizationMember)
             .where(
                 OrganizationMember.organization_id == Workspace.organization_id,
                 OrganizationMember.user_id == user_id,
                 OrganizationMember.role.in_(
-                    [
-                        OrganizationRole.OWNER,
-                        OrganizationRole.MANAGER,
-                        OrganizationRole.MEMBER,
-                    ]
+                    [OrganizationRole.OWNER, OrganizationRole.MANAGER]
                 ),
             )
             .correlate(Workspace)
         )
-        workspace_member = exists(
+        ws_manager = exists(
             select(1)
             .select_from(WorkspaceMember)
             .where(
                 WorkspaceMember.workspace_id == Project.workspace_id,
                 WorkspaceMember.user_id == user_id,
+                WorkspaceMember.role == WorkspaceRole.MANAGER,
             )
             .correlate(Project)
         )
@@ -1195,7 +1319,7 @@ class B2BService:
             )
             .correlate(Project)
         )
-        return or_(internal_org_member, workspace_member, project_member)
+        return or_(org_manager_or_owner, ws_manager, project_member)
 
 
 b2b_service = B2BService()

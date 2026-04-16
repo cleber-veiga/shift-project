@@ -1534,10 +1534,58 @@ export async function clearInputModelRows(inputModelId: string): Promise<{ delet
   return authorizedRequest<{ deleted: number }>(`/input-models/${inputModelId}/rows`, { method: "DELETE" })
 }
 
+// ─── Access Matrix API ───────────────────────────────────────────────────────
+
+export type AccessMatrixProjectEntry = {
+  project_id: string
+  project_name: string
+}
+
+export type AccessMatrixUserProjectRole = {
+  project_id: string
+  explicit_role: string | null
+  effective_role: string | null
+  source: "explicit" | "inherited_ws" | "inherited_org" | "none"
+}
+
+export type AccessMatrixUserEntry = {
+  user_id: string
+  email: string
+  full_name: string | null
+  is_active: boolean
+  org_role: string | null
+  ws_explicit_role: string | null
+  ws_effective_role: string | null
+  ws_role_source: "explicit" | "inherited_org" | "none"
+  project_roles: AccessMatrixUserProjectRole[]
+}
+
+export type AccessMatrixResponse = {
+  workspace_id: string
+  workspace_name: string
+  organization_id: string
+  projects: AccessMatrixProjectEntry[]
+  users: AccessMatrixUserEntry[]
+}
+
+export async function getWorkspaceAccessMatrix(workspaceId: string): Promise<AccessMatrixResponse> {
+  return authorizedRequest<AccessMatrixResponse>(`/workspaces/${workspaceId}/access-matrix`, { method: "GET" })
+}
+
 // ─── Workspace Members API ────────────────────────────────────────────────────
 
 export async function listWorkspaceMembers(workspaceId: string): Promise<Member[]> {
   return authorizedRequest<Member[]>(`/workspaces/${workspaceId}/members`, { method: "GET" })
+}
+
+export async function addWorkspaceMember(
+  workspaceId: string,
+  payload: { email: string; role: string },
+): Promise<Member> {
+  return authorizedRequest<Member>(`/workspaces/${workspaceId}/members`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
 }
 
 export async function updateWorkspaceMemberRole(
@@ -1559,6 +1607,16 @@ export async function removeWorkspaceMember(workspaceId: string, userId: string)
 
 export async function listProjectMembers(projectId: string): Promise<Member[]> {
   return authorizedRequest<Member[]>(`/projects/${projectId}/members`, { method: "GET" })
+}
+
+export async function addProjectMember(
+  projectId: string,
+  payload: { email: string; role: string },
+): Promise<Member> {
+  return authorizedRequest<Member>(`/projects/${projectId}/members`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
 }
 
 export async function updateProjectMemberRole(

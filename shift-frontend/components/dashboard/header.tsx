@@ -18,7 +18,8 @@ import {
 import { cn } from "@/lib/utils"
 import { roleLabel, roleTextClass } from "@/components/dashboard/role-badge"
 import { getHeaderMetaFromPathname } from "@/lib/dashboard-navigation"
-import { listErps, logout, type ERP } from "@/lib/auth"
+import { hasOrgPermission } from "@/lib/permissions"
+import { logout } from "@/lib/auth"
 import { useDashboard } from "@/lib/context/dashboard-context"
 import { useToast } from "@/lib/context/toast-context"
 import { useDashboardHeader } from "@/lib/context/header-context"
@@ -27,7 +28,6 @@ import { usePathname, useRouter } from "next/navigation"
 import { PreferencesModal } from "@/components/dashboard/preferences-modal"
 import { MorphLoader } from "@/components/ui/morph-loader"
 import { Tooltip } from "@/components/ui/tooltip"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import Link from "next/link"
 
 
@@ -131,9 +131,6 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
   const [isCreatingOrg, setIsCreatingOrg] = useState(false)
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false)
   const [workspaceName, setWorkspaceName] = useState("")
-  const [workspaceErpId, setWorkspaceErpId] = useState<string>("")
-  const [availableErps, setAvailableErps] = useState<ERP[]>([])
-  const [isLoadingErps, setIsLoadingErps] = useState(false)
   const [isCreatingWorkspace, setIsCreatingWorkspace] = useState(false)
 
   const {
@@ -206,27 +203,6 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
     }
   }, [createWorkspaceOpen])
 
-  useEffect(() => {
-    if (!createWorkspaceOpen) return
-    let active = true
-    setIsLoadingErps(true)
-    listErps()
-      .then((items) => {
-        if (!active) return
-        setAvailableErps(items)
-      })
-      .catch(() => {
-        if (!active) return
-        setAvailableErps([])
-      })
-      .finally(() => {
-        if (!active) return
-        setIsLoadingErps(false)
-      })
-    return () => {
-      active = false
-    }
-  }, [createWorkspaceOpen])
 
   const handleLogout = async () => {
     setUserMenuOpen(false)
@@ -246,7 +222,6 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
 
   const openCreateWorkspace = () => {
     setWorkspaceMenuOpen(false)
-    setWorkspaceErpId("")
     setCreateWorkspaceOpen(true)
   }
 
@@ -289,7 +264,7 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
       await createWorkspaceAndSelect({
         organization_id: selectedOrganization.id,
         name: workspaceName.trim(),
-        erp_id: workspaceErpId ? workspaceErpId : null,
+        erp_id: null,
       })
       setWorkspaceName("")
       setCreateWorkspaceOpen(false)
@@ -438,6 +413,7 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
                         setWorkspaceMenuOpen(false)
                     }}
                     trailing={
+                      hasOrgPermission(selectedOrganization?.role, "MANAGER") ? (
                       <button
                         type="button"
                         onClick={() => {
@@ -450,9 +426,11 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
                       >
                         <Edit2 className="size-3.5" />
                       </button>
+                      ) : undefined
                     }
                   />
                 ))}
+                {hasOrgPermission(selectedOrganization?.role, "MANAGER") && (
                 <div className="mt-1 border-t border-border pt-1">
                   <button
                     type="button"
@@ -464,6 +442,7 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
                     Criar novo workspace
                   </button>
                 </div>
+                )}
               </div>
             ) : null}
           </div>
@@ -640,29 +619,6 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
                 />
               </div>
 
-              <div>
-                <label className="mb-1 block text-[10px] font-semibold text-foreground uppercase tracking-wider">
-                  ERP
-                </label>
-                <Select
-                  value={workspaceErpId}
-                  onValueChange={(value) => setWorkspaceErpId(value)}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Nenhum" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {availableErps.map((erp) => (
-                      <SelectItem key={erp.id} value={erp.id}>
-                        {erp.name} ({erp.code})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {isLoadingErps ? (
-                  <p className="mt-1 text-[9px] text-muted-foreground">Carregando ERPs...</p>
-                ) : null}
-              </div>
 
 
               <div className="flex justify-end gap-2 pt-1">

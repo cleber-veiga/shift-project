@@ -52,6 +52,71 @@ _PROJECT_RANK: dict[ProjectRole, int] = {
 }
 
 
+def _max_ws_role(
+    left: WorkspaceRole | None,
+    right: WorkspaceRole | None,
+) -> WorkspaceRole | None:
+    roles = [r for r in (left, right) if r is not None]
+    if not roles:
+        return None
+    return max(roles, key=lambda r: _WORKSPACE_RANK[r])
+
+
+def compute_effective_ws_role(
+    org_role: OrganizationRole | None,
+    ws_explicit_role: WorkspaceRole | None,
+) -> tuple[WorkspaceRole | None, str]:
+    """Calcula papel efetivo no workspace a partir do papel explicito e da heranca da org.
+
+    Retorna (effective_role, source) onde source e 'explicit', 'inherited_org' ou 'none'.
+    """
+    inherited: WorkspaceRole | None = None
+    if org_role in {OrganizationRole.OWNER, OrganizationRole.MANAGER}:
+        inherited = WorkspaceRole.MANAGER
+    elif org_role == OrganizationRole.MEMBER:
+        inherited = WorkspaceRole.VIEWER
+
+    effective = _max_ws_role(ws_explicit_role, inherited)
+
+    if effective is None:
+        return None, "none"
+    if ws_explicit_role is not None and _WORKSPACE_RANK[ws_explicit_role] >= _WORKSPACE_RANK.get(inherited, -1):
+        return effective, "explicit"
+    return effective, "inherited_org"
+
+
+def compute_effective_project_role(
+    org_role: OrganizationRole | None,
+    ws_effective_role: WorkspaceRole | None,
+    proj_explicit_role: ProjectRole | None,
+) -> tuple[ProjectRole | None, str]:
+    """Calcula papel efetivo no projeto a partir de heranca org + ws + papel explicito.
+
+    Somente MANAGER+ herda acesso automatico a projetos.
+    CONSULTANT e VIEWER precisam de membership explicita no projeto.
+
+    Retorna (effective_role, source) onde source e 'explicit', 'inherited_ws', 'inherited_org' ou 'none'.
+    """
+    candidates: list[tuple[ProjectRole, str]] = []
+
+    if proj_explicit_role is not None:
+        candidates.append((proj_explicit_role, "explicit"))
+
+    # Somente WS MANAGER herda EDITOR em todos os projetos
+    if ws_effective_role == WorkspaceRole.MANAGER:
+        candidates.append((ProjectRole.EDITOR, "inherited_ws"))
+
+    # Org OWNER/MANAGER herda EDITOR em todos os projetos (supervisao)
+    if org_role in {OrganizationRole.OWNER, OrganizationRole.MANAGER}:
+        candidates.append((ProjectRole.EDITOR, "inherited_org"))
+
+    if not candidates:
+        return None, "none"
+
+    best = max(candidates, key=lambda c: _PROJECT_RANK[c[0]])
+    return best
+
+
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
@@ -197,14 +262,8 @@ class AuthorizationService:
             return None
 
         explicit_role, org_role = row[0], row[1]
-
-        inherited_role: WorkspaceRole | None = None
-        if org_role in {OrganizationRole.OWNER, OrganizationRole.MANAGER}:
-            inherited_role = WorkspaceRole.MANAGER
-        elif org_role == OrganizationRole.MEMBER:
-            inherited_role = WorkspaceRole.VIEWER
-
-        return self._max_workspace_role(explicit_role, inherited_role)
+        effective, _source = compute_effective_ws_role(org_role, explicit_role)
+        return effective
 
     async def _get_effective_project_role(
         self,
@@ -243,30 +302,9 @@ class AuthorizationService:
             return None
 
         explicit_role, ws_role, org_role = row[0], row[1], row[2]
-
-        # Calcula workspace_role herdado da org
-        inherited_ws: WorkspaceRole | None = None
-        if org_role in {OrganizationRole.OWNER, OrganizationRole.MANAGER}:
-            inherited_ws = WorkspaceRole.MANAGER
-        elif org_role == OrganizationRole.MEMBER:
-            inherited_ws = WorkspaceRole.VIEWER
-        effective_ws = self._max_workspace_role(ws_role, inherited_ws)
-
-        inherited_roles: list[ProjectRole] = [r for r in [explicit_role] if r]
-
-        if effective_ws in {WorkspaceRole.MANAGER, WorkspaceRole.CONSULTANT}:
-            inherited_roles.append(ProjectRole.EDITOR)
-        elif effective_ws == WorkspaceRole.VIEWER:
-            inherited_roles.append(ProjectRole.CLIENT)
-
-        if org_role in {OrganizationRole.OWNER, OrganizationRole.MANAGER}:
-            inherited_roles.append(ProjectRole.EDITOR)
-        elif org_role == OrganizationRole.MEMBER:
-            inherited_roles.append(ProjectRole.CLIENT)
-
-        if not inherited_roles:
-            return None
-        return max(inherited_roles, key=lambda role: _PROJECT_RANK[role])
+        effective_ws, _ws_source = compute_effective_ws_role(org_role, ws_role)
+        effective, _source = compute_effective_project_role(org_role, effective_ws, explicit_role)
+        return effective
 
     async def _resolve_organization_id(
         self,
@@ -468,10 +506,7 @@ class AuthorizationService:
         left: WorkspaceRole | None,
         right: WorkspaceRole | None,
     ) -> WorkspaceRole | None:
-        roles = [role for role in (left, right) if role is not None]
-        if not roles:
-            return None
-        return max(roles, key=lambda role: _WORKSPACE_RANK[role])
+        return _max_ws_role(left, right)
 
 
 authorization_service = AuthorizationService()

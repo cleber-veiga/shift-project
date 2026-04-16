@@ -61,7 +61,13 @@
       "Bash(python -m pytest tests/test_migrator.py -v)",
       "Bash(python -m pytest tests/ -v)",
       "Bash(python -m pytest tests/ -x -q)",
-      "Bash(python -c \"from alembic.config import Config; from alembic.script import ScriptDirectory; c = Config\\('alembic.ini'\\); sd = ScriptDirectory.from_config\\(c\\); heads = sd.get_heads\\(\\); print\\('Heads:', heads\\)\")"
+      "Bash(python -c \"from alembic.config import Config; from alembic.script import ScriptDirectory; c = Config\\('alembic.ini'\\); sd = ScriptDirectory.from_config\\(c\\); heads = sd.get_heads\\(\\); print\\('Heads:', heads\\)\")",
+      "Bash(xargs cat:*)",
+      "Bash(python -c \"from app.schemas.access_matrix import AccessMatrixResponse; print\\('Schema OK'\\)\")",
+      "Bash(python -c \"from app.core.security import compute_effective_ws_role, compute_effective_project_role; print\\('Security OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('D:/Labs/shift-project/shift-backend/app/core/security.py'\\).read\\(\\)\\); print\\('security.py: OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('D:/Labs/shift-project/shift-backend/app/services/b2b_service.py'\\).read\\(\\)\\); print\\('b2b_service.py: OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('D:/Labs/shift-project/shift-backend/app/api/v1/workspaces.py'\\).read\\(\\)\\); print\\('workspaces.py: OK'\\)\")"
     ]
   }
 }

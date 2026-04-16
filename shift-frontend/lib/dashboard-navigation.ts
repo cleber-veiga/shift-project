@@ -1,7 +1,7 @@
-import { Building2, FileSpreadsheet, GitBranch, Home, Plug2, Users, type LucideIcon } from "lucide-react"
+import { Building2, FileSpreadsheet, GitBranch, Home, Plug2, ShieldCheck, Users, type LucideIcon } from "lucide-react"
 
 export type DashboardScope = "space" | "project"
-export type DashboardSection = "visao-geral" | "grupo-economico" | "conexoes" | "fluxos" | "modelos-entrada" | "membros"
+export type DashboardSection = "visao-geral" | "grupo-economico" | "conexoes" | "fluxos" | "modelos-entrada" | "membros" | "controle-acesso"
 
 type SectionDefinition = {
   slug: DashboardSection
@@ -24,6 +24,7 @@ export type DashboardNavigationItem = {
   description: string
   href: string
   icon: LucideIcon
+  minWorkspaceRole?: "VIEWER" | "CONSULTANT" | "MANAGER"
 }
 
 const sectionDefinitions: SectionDefinition[] = [
@@ -32,6 +33,7 @@ const sectionDefinitions: SectionDefinition[] = [
     label: "Visão Geral",
     description: "Resumo do contexto atual e dos principais atalhos deste escopo.",
     icon: Home,
+    minWorkspaceRole: "MANAGER",
   },
   {
     slug: "grupo-economico",
@@ -44,24 +46,35 @@ const sectionDefinitions: SectionDefinition[] = [
     label: "Conexões",
     description: "Visualize e organize as conexões disponíveis neste escopo.",
     icon: Plug2,
+    minWorkspaceRole: "MANAGER",
   },
   {
     slug: "fluxos",
     label: "Fluxos",
     description: "Acompanhe e mantenha os fluxos configurados neste escopo.",
     icon: GitBranch,
+    minWorkspaceRole: "MANAGER",
   },
   {
     slug: "modelos-entrada",
     label: "Modelos de Entrada",
     description: "Defina templates de Excel/CSV para padronizar a importação de dados.",
     icon: FileSpreadsheet,
+    minWorkspaceRole: "MANAGER",
   },
   {
     slug: "membros",
     label: "Membros",
     description: "Gerencie os acessos e participantes vinculados a este escopo.",
     icon: Users,
+    minWorkspaceRole: "MANAGER",
+  },
+  {
+    slug: "controle-acesso",
+    label: "Controle de Acesso",
+    description: "Matriz de acessos consolidada: veja e gerencie quem pode acessar cada projeto.",
+    icon: ShieldCheck,
+    minWorkspaceRole: "MANAGER",
   },
 ]
 
@@ -89,13 +102,14 @@ export function getDashboardSectionMeta(scope: DashboardScope, section: Dashboar
     description: definition.description,
     href: getDashboardHref(scope, section),
     icon: definition.icon,
+    minWorkspaceRole: definition.minWorkspaceRole,
   }
 }
 
 function buildNavigationItems(scope: DashboardScope) {
   if (scope === "project") {
     return sectionDefinitions
-      .filter((section) => section.slug !== "grupo-economico" && section.slug !== "modelos-entrada")
+      .filter((section) => section.slug !== "grupo-economico" && section.slug !== "modelos-entrada" && section.slug !== "controle-acesso")
       .map((section) => getDashboardSectionMeta(scope, section.slug))
   }
 

@@ -12,6 +12,7 @@ import {
 } from "@/lib/dashboard-navigation"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { hasWorkspacePermission } from "@/lib/permissions"
+import { AccessMatrixSection } from "@/components/dashboard/access-matrix-section"
 import { ConnectionsSection } from "@/components/dashboard/connections-section"
 import { EconomicGroupSection } from "@/components/dashboard/economic-group-section"
 import { InputModelsSection } from "@/components/dashboard/input-models-section"
@@ -351,6 +352,26 @@ export function ContextSectionPage({ scope, section }: ContextSectionPageProps) 
   const scopeName =
     scope === "space" ? selectedWorkspace?.name ?? "Nenhum espaço selecionado" : selectedProject?.name ?? "Nenhum projeto selecionado"
 
+  if (scope === "space" && meta.minWorkspaceRole && !hasWorkspacePermission(selectedWorkspace?.my_role, meta.minWorkspaceRole)) {
+    return (
+      <div className="flex h-64 flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-border bg-card/60 p-6 text-center">
+        <div className="flex size-12 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+          <Icon className="size-5" />
+        </div>
+        <p className="text-base font-semibold text-foreground">Acesso restrito</p>
+        <p className="max-w-md text-sm text-muted-foreground">
+          Você não tem permissão para acessar esta seção. Fale com o gestor do workspace para solicitar acesso.
+        </p>
+        <Link
+          href="/espaco/grupo-economico"
+          className="mt-2 inline-flex h-9 items-center justify-center rounded-lg border border-border bg-background px-4 text-sm font-medium text-foreground transition hover:bg-accent"
+        >
+          Ir para Grupo Econômico
+        </Link>
+      </div>
+    )
+  }
+
   if (scope === "project" && !selectedProject) {
     return (
       <div className="space-y-6">
@@ -399,6 +420,10 @@ export function ContextSectionPage({ scope, section }: ContextSectionPageProps) 
 
   if (section === "membros") {
     return <MembersSection scope={scope} />
+  }
+
+  if (section === "controle-acesso") {
+    return <AccessMatrixSection />
   }
 
   return (
