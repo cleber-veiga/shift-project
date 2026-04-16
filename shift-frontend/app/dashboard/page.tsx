@@ -12,10 +12,8 @@ import {
 } from "lucide-react"
 import {
   createOrganization,
-  fetchMe,
   getSelectedOrganizationId,
   getValidSession,
-  listOrganizationMembers,
   listOrganizations,
   listOrganizationWorkspaces,
   logout,
@@ -71,26 +69,12 @@ export default function DashboardPage() {
       return
     }
 
-    const me = await fetchMe(session.accessToken)
     const orgs = await listOrganizations()
 
-    const orgsWithRoles = await Promise.all(
-      orgs.map(async (org) => {
-        try {
-          const members = await listOrganizationMembers(org.id)
-          const myMembership = members.find((member) => member.user_id === me.id)
-          return {
-            ...org,
-            role: (myMembership?.role ?? "MEMBER") as OrganizationRole | "MEMBER",
-          } satisfies OrganizationWithRole
-        } catch {
-          return {
-            ...org,
-            role: "MEMBER",
-          } satisfies OrganizationWithRole
-        }
-      })
-    )
+    const orgsWithRoles = orgs.map((org) => ({
+      ...org,
+      role: (org.my_role ?? "MEMBER") as OrganizationRole | "MEMBER",
+    } satisfies OrganizationWithRole))
 
     setOrganizations(orgsWithRoles)
     setSelectedOrganizationId((currentId) => {

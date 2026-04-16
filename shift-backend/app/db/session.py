@@ -8,12 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.core.config import settings
 
-# Engine assíncrono — pool configurado para uso em produção
+# Engine assíncrono — pool dimensionado para limites de conexão do Neon/cloud
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
-    pool_size=30,
-    max_overflow=20,
+    pool_size=10,
+    max_overflow=5,
     pool_pre_ping=True,
     pool_recycle=3600,
 )

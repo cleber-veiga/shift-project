@@ -9,6 +9,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import user_cache
 from app.db.session import get_async_session
 from app.models import User
 from app.services.auth_service import auth_service
@@ -49,8 +50,13 @@ async def get_current_user(
     except (jwt.PyJWTError, ValueError):
         raise credentials_exception
 
+    cached = user_cache.get(user_id)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+
     user = await auth_service.get_user_by_id(db, user_id)
     if user is None:
         raise credentials_exception
 
+    user_cache.set(user_id, user)
     return user

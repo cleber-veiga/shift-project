@@ -4,17 +4,21 @@ import { useState } from "react"
 import { useRouter } from "next/navigation"
 import {
   ArrowLeft,
+  Clock,
+  Download,
   Loader2,
   Pencil,
   Play,
   Save,
   Undo2,
   Redo2,
+  Upload,
   ZoomIn,
   ZoomOut,
   Maximize2,
 } from "lucide-react"
 import { useReactFlow } from "@xyflow/react"
+import type { WorkflowScheduleStatus } from "@/lib/auth"
 
 interface WorkflowToolbarProps {
   name: string
@@ -29,6 +33,9 @@ interface WorkflowToolbarProps {
   onIsPublishedChange: (value: boolean) => void
   onSave: () => void
   onExecute: () => void
+  onExport: () => void
+  onImport: () => void
+  scheduleStatus?: WorkflowScheduleStatus | null
   isSaving?: boolean
   isExecuting?: boolean
   canUndo?: boolean
@@ -50,6 +57,9 @@ export function WorkflowToolbar({
   onIsPublishedChange,
   onSave,
   onExecute,
+  onExport,
+  onImport,
+  scheduleStatus,
   isSaving = false,
   isExecuting = false,
   canUndo = false,
@@ -173,6 +183,25 @@ export function WorkflowToolbar({
 
       {/* Right section: toggles + save + execute */}
       <div className="flex items-center gap-2">
+        {/* Schedule badge (cron ativo no Prefect) */}
+        {scheduleStatus?.has_cron_node ? (
+          <div
+            className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-xs font-medium ${
+              scheduleStatus.is_active
+                ? "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-400"
+                : "border-border bg-muted/40 text-muted-foreground"
+            }`}
+            title={
+              scheduleStatus.is_active
+                ? `Agendamento ativo: ${scheduleStatus.cron_expression} (${scheduleStatus.timezone})`
+                : "Cron configurado, mas inativo. Mude para Produção para agendar."
+            }
+          >
+            <Clock className="size-3.5" />
+            {scheduleStatus.is_active ? "Agendado" : "Inativo"}
+          </div>
+        ) : null}
+
         {/* Toggle: Teste / Produção */}
         <button
           type="button"
@@ -213,6 +242,28 @@ export function WorkflowToolbar({
         >
           <span className={`size-2 rounded-full ${isPublished ? "bg-sky-500" : "bg-muted-foreground/40"}`} />
           Publicado
+        </button>
+
+        <div className="h-5 w-px bg-border" />
+
+        <button
+          type="button"
+          onClick={onImport}
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+          aria-label="Importar fluxo"
+        >
+          <Upload className="size-3.5" />
+          Importar
+        </button>
+
+        <button
+          type="button"
+          onClick={onExport}
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+          aria-label="Exportar fluxo"
+        >
+          <Download className="size-3.5" />
+          Exportar
         </button>
 
         <div className="h-5 w-px bg-border" />

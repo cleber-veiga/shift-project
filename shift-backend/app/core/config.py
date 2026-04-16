@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     # --- Prefect ---
     PREFECT_FLOW_NAME: str = "dynamic-runner"
     PREFECT_DEPLOYMENT_NAME: str = "dynamic-runner/shift-workflow-runner"
+    # Work pool usado pelo worker. Serve de fallback para deployments cron quando o
+    # deployment base nao for encontrado ou nao tiver work_pool_name configurado.
+    PREFECT_WORK_POOL_NAME: str = ""
 
     # --- dlt ---
     DLT_DEFAULT_DESTINATION: str = "postgres"

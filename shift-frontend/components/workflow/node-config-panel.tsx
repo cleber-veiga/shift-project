@@ -12,6 +12,7 @@ import { IfConfig } from "@/components/workflow/nodes/if-config"
 import { SwitchConfig } from "@/components/workflow/nodes/switch-config"
 import { TruncateTableConfig } from "@/components/workflow/nodes/truncate-table-config"
 import { BulkInsertConfig } from "@/components/workflow/nodes/bulk-insert-config"
+import { CronConfig } from "@/components/workflow/nodes/cron-config"
 
 interface NodeConfigPanelProps {
   node: Node
@@ -173,23 +174,10 @@ export function NodeConfigFields({
 
     case "cron":
       return (
-        <div className="space-y-4">
-
-          <ConfigField label="Expressão Cron">
-            <TextInput
-              value={(data.cron_expression as string) ?? ""}
-              onChange={(v) => update("cron_expression", v)}
-              placeholder="0 0 * * *"
-            />
-          </ConfigField>
-          <ConfigField label="Timezone">
-            <TextInput
-              value={(data.timezone as string) ?? "UTC"}
-              onChange={(v) => update("timezone", v)}
-              placeholder="America/Sao_Paulo"
-            />
-          </ConfigField>
-        </div>
+        <CronConfig
+          data={data}
+          onUpdate={(patch) => onUpdate(node.id, { ...data, ...patch })}
+        />
       )
 
     case "webhook":

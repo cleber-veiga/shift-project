@@ -1317,6 +1317,26 @@ export async function executeWorkflow(
   )
 }
 
+// ─── Workflow Schedule (Cron) ────────────────────────────────────────────
+
+export type WorkflowScheduleStatus = {
+  workflow_id: string
+  is_active: boolean
+  is_published: boolean
+  has_cron_node: boolean
+  cron_expression: string | null
+  timezone: string | null
+}
+
+export async function getWorkflowSchedule(
+  workflowId: string,
+): Promise<WorkflowScheduleStatus> {
+  return authorizedRequest<WorkflowScheduleStatus>(
+    `/workflows/${workflowId}/schedule`,
+    { method: "GET" },
+  )
+}
+
 export async function getExecutionStatus(
   executionId: string
 ): Promise<ExecutionStatusResponse> {

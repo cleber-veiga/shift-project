@@ -30,9 +30,11 @@ import { NodeActionsContext } from "@/lib/workflow/node-actions-context"
 import { Loader2, Plus } from "lucide-react"
 import {
   getWorkflow,
+  getWorkflowSchedule,
   updateWorkflow,
   testWorkflowStream,
   type Workflow,
+  type WorkflowScheduleStatus,
   type WorkflowTestEvent,
 } from "@/lib/auth"
 import { useDashboard } from "@/lib/context/dashboard-context"
@@ -105,6 +107,19 @@ function WorkflowEditorInner({
   // Workflow metadata (player_id, workflow_type, …)
   const [workflowMeta, setWorkflowMeta] = useState<Record<string, unknown>>({})
 
+  // ── Schedule state (cron agendado no Prefect) ───────────────────────────
+  const [scheduleStatus, setScheduleStatus] = useState<WorkflowScheduleStatus | null>(null)
+
+  const refreshScheduleStatus = useCallback(async () => {
+    if (workflowId === "new") return
+    try {
+      const data = await getWorkflowSchedule(workflowId)
+      setScheduleStatus(data)
+    } catch {
+      // Silencioso: status do schedule e opcional na UI
+    }
+  }, [workflowId])
+
   // ── Execution state ──────────────────────────────────────────────────────
   const [nodeExecStates, setNodeExecStates] = useState<Record<string, NodeExecState>>({})
   const [execEvents, setExecEvents] = useState<WorkflowTestEvent[]>([])
@@ -145,10 +160,12 @@ function WorkflowEditorInner({
       .finally(() => {
         if (!cancelled) setIsLoading(false)
       })
+    // Busca status atual do schedule (cron) — silencioso em caso de erro
+    refreshScheduleStatus()
     return () => {
       cancelled = true
     }
-  }, [workflowId, setNodes, setEdges])
+  }, [workflowId, setNodes, setEdges, refreshScheduleStatus])
 
   // ── Edge connections ─────────────────────────────────────────────────────
   const onConnect = useCallback(
@@ -249,6 +266,68 @@ function WorkflowEditorInner({
     }
   }
 
+  // ── Export workflow as JSON file ─────────────────────────────────────────
+  const handleExport = useCallback(() => {
+    const payload = {
+      name,
+      description: description || null,
+      status,
+      is_template: isTemplate,
+      is_published: isPublished,
+      definition: buildDefinition(),
+      exported_at: new Date().toISOString(),
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "")
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `workflow-${slug || "export"}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    setStatusMessage("Workflow exportado!")
+    setTimeout(() => setStatusMessage(null), 2500)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name, description, status, isTemplate, isPublished, nodes, edges, workflowMeta])
+
+  // ── Import workflow from JSON file ──────────────────────────────────────
+  const handleImport = useCallback(() => {
+    const input = document.createElement("input")
+    input.type = "file"
+    input.accept = ".json"
+    input.onchange = async () => {
+      const file = input.files?.[0]
+      if (!file) return
+      try {
+        const text = await file.text()
+        const data = JSON.parse(text)
+        const def = data.definition
+        if (!def || !Array.isArray(def.nodes) || !Array.isArray(def.edges)) {
+          setStatusMessage("Arquivo JSON invalido: estrutura de workflow nao encontrada.")
+          setTimeout(() => setStatusMessage(null), 4000)
+          return
+        }
+        // Apply to canvas
+        setNodes(def.nodes as Node[])
+        setEdges(def.edges as Edge[])
+        if (def.meta) setWorkflowMeta(def.meta as Record<string, unknown>)
+        if (typeof data.name === "string" && data.name) setName(data.name)
+        if (typeof data.description === "string") setDescription(data.description)
+        if (data.status === "draft" || data.status === "published") setStatus(data.status)
+        if (typeof data.is_template === "boolean") setIsTemplate(data.is_template)
+        if (typeof data.is_published === "boolean") setIsPublished(data.is_published)
+        // Clear execution states (imported flow hasn't been run)
+        setNodeExecStates({})
+        setStatusMessage("Workflow importado! Clique em Salvar para persistir.")
+        setTimeout(() => setStatusMessage(null), 4000)
+      } catch {
+        setStatusMessage("Erro ao ler o arquivo JSON.")
+        setTimeout(() => setStatusMessage(null), 4000)
+      }
+    }
+    input.click()
+  }, [setNodes, setEdges])
+
   // ── Save ─────────────────────────────────────────────────────────────────
   const handleSave = useCallback(async () => {
     if (workflowId === "new") return
@@ -262,13 +341,15 @@ function WorkflowEditorInner({
       })
       setStatusMessage("Salvo com sucesso!")
       setTimeout(() => setStatusMessage(null), 2500)
+      // Reflete eventuais mudancas no agendamento (adicao/remocao de no cron)
+      refreshScheduleStatus()
     } catch (err: unknown) {
       setStatusMessage(err instanceof Error ? err.message : "Erro ao salvar")
     } finally {
       setIsSaving(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workflowId, name, description, nodes, edges, workflowMeta])
+  }, [workflowId, name, description, nodes, edges, workflowMeta, refreshScheduleStatus])
 
   // ── Settings changes (persist immediately) ───────────────────────────────
   const handleStatusChange = useCallback(async (newStatus: "draft" | "published") => {
@@ -276,10 +357,12 @@ function WorkflowEditorInner({
     setStatus(newStatus)
     try {
       await updateWorkflow(workflowId, { status: newStatus })
+      // Mudanca de Teste <-> Producao ativa/desativa o schedule
+      refreshScheduleStatus()
     } catch (err: unknown) {
       setStatusMessage(err instanceof Error ? err.message : "Erro ao alterar status")
     }
-  }, [workflowId])
+  }, [workflowId, refreshScheduleStatus])
 
   const handleIsTemplateChange = useCallback(async (value: boolean) => {
     if (workflowId === "new") return
@@ -463,6 +546,9 @@ function WorkflowEditorInner({
           onIsPublishedChange={handleIsPublishedChange}
           onSave={handleSave}
           onExecute={handleExecute}
+          onExport={handleExport}
+          onImport={handleImport}
+          scheduleStatus={scheduleStatus}
           isSaving={isSaving}
           isExecuting={isExecuting}
         />

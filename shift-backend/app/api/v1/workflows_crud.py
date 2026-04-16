@@ -18,6 +18,11 @@ from app.schemas.workflow import (
     WorkflowUpdate,
 )
 from app.services.workflow_crud_service import workflow_crud_service
+from app.services.workflow_cron_sync import (
+    extract_cron_trigger,
+    remove_workflow_schedule,
+    sync_workflow_schedule,
+)
 
 router = APIRouter(tags=["workflows"])
 
@@ -129,10 +134,17 @@ async def update_workflow(
     db: AsyncSession = Depends(get_db),
     _=Depends(require_permission("workspace", "CONSULTANT")),
 ) -> WorkflowResponse:
-    """Atualiza metadados ou a definicao JSON de um workflow."""
+    """Atualiza metadados ou a definicao JSON de um workflow.
+
+    Apos salvar, sincroniza o agendamento no Prefect seguindo a regra:
+      - status=published + definition contem no cron -> cria/atualiza schedule
+      - caso contrario -> remove schedule (idempotente)
+    """
     try:
         workflow = await workflow_crud_service.update(db, workflow_id, payload)
         await db.commit()
+        # Sync agnostico: nunca quebra o save. Erros do Prefect vao para log.
+        await sync_workflow_schedule(workflow)
         return WorkflowResponse.model_validate(workflow)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
@@ -147,10 +159,15 @@ async def delete_workflow(
     db: AsyncSession = Depends(get_db),
     _=Depends(require_permission("workspace", "MANAGER")),
 ) -> None:
-    """Remove um workflow."""
+    """Remove um workflow.
+
+    Tambem remove qualquer deployment cron associado no Prefect (cleanup).
+    """
     try:
         await workflow_crud_service.delete(db, workflow_id)
         await db.commit()
+        # Limpa deployment orfao no Prefect (idempotente)
+        await remove_workflow_schedule(workflow_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -180,6 +197,43 @@ async def publish_template(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
+
+
+@router.get(
+    "/workflows/{workflow_id}/schedule",
+)
+async def get_workflow_schedule(
+    workflow_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_permission("workspace", "VIEWER")),
+) -> dict:
+    """Retorna o estado de agendamento cron do workflow.
+
+    O schedule esta ATIVO quando:
+      - workflow.status == 'published'
+      - definition contem um no cron com cron_expression
+
+    Fora desses casos, o schedule esta INATIVO (sem deployment no Prefect).
+    """
+    workflow = await workflow_crud_service.get(db, workflow_id)
+    if workflow is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_id}' nao encontrado.",
+        )
+
+    cron = extract_cron_trigger(workflow.definition)
+    is_published = getattr(workflow, "status", "draft") == "published"
+    is_active = is_published and cron is not None
+
+    return {
+        "workflow_id": str(workflow_id),
+        "is_active": is_active,
+        "is_published": is_published,
+        "has_cron_node": cron is not None,
+        "cron_expression": cron[0] if cron else None,
+        "timezone": cron[1] if cron else None,
+    }
 
 
 @router.post(

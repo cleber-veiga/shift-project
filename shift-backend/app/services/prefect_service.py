@@ -49,6 +49,7 @@ class PrefectDeploymentService:
         }
         schedule = CronSchedule(cron=cron_expression, timezone=timezone)
         base_deployment = await self._read_base_deployment()
+        work_pool_name = self._safe_attr(base_deployment, "work_pool_name") or settings.PREFECT_WORK_POOL_NAME or None
 
         async with get_client() as client:
             try:
@@ -63,9 +64,7 @@ class PrefectDeploymentService:
                             workflow_id, self._safe_attr(base_deployment, "tags")
                         ),
                         paused=False,
-                        work_pool_name=self._safe_attr(
-                            base_deployment, "work_pool_name"
-                        ),
+                        work_pool_name=work_pool_name,
                         work_queue_name=self._safe_attr(
                             base_deployment, "work_queue_name"
                         ),
@@ -94,9 +93,7 @@ class PrefectDeploymentService:
                         workflow_id, self._safe_attr(base_deployment, "tags")
                     ),
                     paused=False,
-                    work_pool_name=self._safe_attr(
-                        base_deployment, "work_pool_name"
-                    ),
+                    work_pool_name=work_pool_name,
                     work_queue_name=self._safe_attr(
                         base_deployment, "work_queue_name"
                     ),

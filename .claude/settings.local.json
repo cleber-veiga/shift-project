@@ -67,7 +67,12 @@
       "Bash(python -c \"from app.core.security import compute_effective_ws_role, compute_effective_project_role; print\\('Security OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('D:/Labs/shift-project/shift-backend/app/core/security.py'\\).read\\(\\)\\); print\\('security.py: OK'\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('D:/Labs/shift-project/shift-backend/app/services/b2b_service.py'\\).read\\(\\)\\); print\\('b2b_service.py: OK'\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('D:/Labs/shift-project/shift-backend/app/api/v1/workspaces.py'\\).read\\(\\)\\); print\\('workspaces.py: OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('D:/Labs/shift-project/shift-backend/app/api/v1/workspaces.py'\\).read\\(\\)\\); print\\('workspaces.py: OK'\\)\")",
+      "Bash(grep -r \"index=True\\\\|Index\\\\|__table_args__\" /d/Labs/shift-project/shift-backend/app/models/*.py)",
+      "Bash(python -c \"from app.core.cache import user_cache; from app.api.dependencies import get_current_user; print\\('OK'\\)\")",
+      "Bash(python -c \"from app.core.cache import user_cache, TTLCache; c = TTLCache\\(ttl=2\\); import uuid; k = uuid.uuid4\\(\\); c.set\\(k, 'test'\\); assert c.get\\(k\\) == 'test'; c.invalidate\\(k\\); assert c.get\\(k\\) is None; print\\('Cache module OK'\\)\")",
+      "Bash(python -c \"import psycopg2; print\\('psycopg2 available'\\)\")",
+      "Bash(python -c \"import psycopg2cffi; print\\('psycopg2cffi available'\\)\")"
     ]
   }
 }

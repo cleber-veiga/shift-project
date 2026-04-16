@@ -13,6 +13,7 @@ from pwdlib.hashers.argon2 import Argon2Hasher
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import user_cache
 from app.core.config import settings
 from app.db.session import get_async_session
 from app.models.connection import Connection
@@ -560,6 +561,10 @@ async def _resolve_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         ) from None
 
+    cached = user_cache.get(user_id)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
     if user is None:
@@ -568,4 +573,5 @@ async def _resolve_current_user(
             detail="Token invalido ou expirado.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    user_cache.set(user_id, user)
     return user

@@ -60,7 +60,9 @@ class Workflow(Base):
     project: Mapped["Project"] = relationship(back_populates="workflows")
     workspace: Mapped["Workspace"] = relationship(back_populates="workflows")
     executions: Mapped[list["WorkflowExecution"]] = relationship(
-        back_populates="workflow"
+        back_populates="workflow",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
 
 
@@ -75,7 +77,7 @@ class WorkflowExecution(Base):
         server_default=text("gen_random_uuid()"),
     )
     workflow_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("workflows.id"), nullable=False
+        UUID(as_uuid=True), ForeignKey("workflows.id", ondelete="CASCADE"), nullable=False
     )
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="PENDING"

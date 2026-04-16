@@ -25,14 +25,14 @@ indicando qual porta de saida foi ativada. O runner mapeia esse valor contra o
   recebendo apenas os resultados upstream ativos no contexto.
 """
 
-import asyncio
 from collections import defaultdict, deque
 from typing import Any
 from uuid import UUID
 
 from prefect import flow, get_run_logger
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session
 
-from app.db.session import async_session_factory
 from app.models.workflow import Workflow
 from app.orchestration.tasks.llm_task import execute_llm_node
 from app.orchestration.tasks.node_processor import execute_registered_node
@@ -42,20 +42,37 @@ from app.services.workflow.nodes.exceptions import (
     NodeProcessingSkipped,
 )
 
+# Engine síncrono usado apenas pelo flow Prefect para evitar conflito de event loop.
+# asyncio.run() dentro de um flow síncrono falha quando o worker Prefect já possui
+# um loop em execução. Usar psycopg2 (síncrono) resolve o problema sem refatorar o flow.
+_sync_engine = None
 
-async def _load_workflow_payload_from_db(workflow_id: UUID) -> dict[str, Any]:
-    """Carrega a definicao do workflow do banco para execucoes agendadas."""
-    async with async_session_factory() as session:
-        from sqlalchemy import select
-        result = await session.execute(
+
+def _get_sync_engine():
+    global _sync_engine
+    if _sync_engine is None:
+        from app.core.config import settings
+        _sync_engine = create_engine(
+            settings.DATABASE_URL_SYNC,
+            pool_pre_ping=True,
+            pool_size=2,
+            max_overflow=2,
+        )
+    return _sync_engine
+
+
+def _load_workflow_payload_from_db(workflow_id: UUID) -> dict[str, Any]:
+    """Carrega a definicao do workflow do banco para execucoes agendadas (síncrono)."""
+    with Session(_get_sync_engine()) as session:
+        result = session.execute(
             select(Workflow.definition).where(Workflow.id == workflow_id)
         )
         workflow_definition = result.scalar_one_or_none()
 
-        if workflow_definition is None:
-            raise ValueError(f"Workflow '{workflow_id}' nao encontrado.")
+    if workflow_definition is None:
+        raise ValueError(f"Workflow '{workflow_id}' nao encontrado.")
 
-        return dict(workflow_definition)
+    return dict(workflow_definition)
 
 
 def _build_graph(
@@ -228,7 +245,7 @@ def _resolve_workflow_payload(
             "workflow_payload ou workflow_id deve ser informado para executar o flow."
         )
 
-    return asyncio.run(_load_workflow_payload_from_db(UUID(workflow_id)))
+    return _load_workflow_payload_from_db(UUID(workflow_id))
 
 
 @flow(name="dynamic-runner", retries=0, log_prints=True)
