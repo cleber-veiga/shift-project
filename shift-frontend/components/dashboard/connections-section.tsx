@@ -38,6 +38,7 @@ import {
   testConnection,
 } from "@/lib/auth"
 import type { DashboardScope } from "@/lib/dashboard-navigation"
+import { hasWorkspacePermission } from "@/lib/permissions"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 import { MorphLoader } from "@/components/ui/morph-loader"
 import { ConnectionFormModal } from "@/components/dashboard/connection-form-modal"
@@ -67,6 +68,10 @@ export function ConnectionsSection({ scope }: ConnectionsSectionProps) {
   const router = useRouter()
   const toast = useToast()
   const currentUserId = getStoredSession()?.user.id ?? null
+
+  const wsRole = selectedWorkspace?.my_role ?? null
+  const canCreate = scope === "space" ? hasWorkspacePermission(wsRole, "MANAGER") : true
+  const canUsePlayground = scope === "space" ? hasWorkspacePermission(wsRole, "CONSULTANT") : true
 
   const [connections, setConnections] = useState<Connection[]>([])
   const [players, setPlayers] = useState<WorkspacePlayer[]>([])
@@ -135,9 +140,10 @@ export function ConnectionsSection({ scope }: ConnectionsSectionProps) {
     return scope === "project" && conn.workspace_id !== null
   }
 
-  /** Pode editar/excluir: não é herdada E (é pública com permissão OU foi criada pelo user atual) */
+  /** Pode editar/excluir: não é herdada, tem role suficiente, e (é pública OU criada pelo user atual) */
   function canEdit(conn: Connection) {
     if (isInherited(conn)) return false
+    if (!canCreate) return false
     return conn.is_public || conn.created_by_id === currentUserId
   }
 
@@ -268,14 +274,16 @@ export function ConnectionsSection({ scope }: ConnectionsSectionProps) {
             />
           </label>
 
-          <button
-            type="button"
-            onClick={handleOpenCreate}
-            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-foreground px-3.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
-          >
-            <Plus className="size-4" />
-            Nova Conexão
-          </button>
+          {canCreate ? (
+            <button
+              type="button"
+              onClick={handleOpenCreate}
+              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-foreground px-3.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
+            >
+              <Plus className="size-4" />
+              Nova Conexão
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -298,7 +306,7 @@ export function ConnectionsSection({ scope }: ConnectionsSectionProps) {
               ? "Nenhum resultado para os filtros aplicados."
               : "Cadastre sua primeira conexão de banco de dados."}
           </p>
-          {!search && typeFilter === "todos" && (
+          {!search && typeFilter === "todos" && canCreate && (
             <button
               type="button"
               onClick={handleOpenCreate}
@@ -316,7 +324,7 @@ export function ConnectionsSection({ scope }: ConnectionsSectionProps) {
             <span>Conexão</span>
             <span className="text-left">Tipo</span>
             <span className="text-left">Host</span>
-            <span className="text-left">Concorrente</span>
+            <span className="text-left">Sistema</span>
             <span className="text-left">Visibilidade</span>
             <span className="text-right">Ações</span>
           </div>
@@ -401,16 +409,18 @@ export function ConnectionsSection({ scope }: ConnectionsSectionProps) {
                         {testingId === conn.id ? <MorphLoader className="size-4" /> : <Play className="size-4" />}
                       </button>
                     </Tooltip>
-                    <Tooltip text="Playground">
-                      <button
-                        type="button"
-                        onClick={() => router.push(`/playground/${conn.id}`)}
-                        className="rounded p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                        aria-label="Playground"
-                      >
-                        <FlaskConical className="size-4" />
-                      </button>
-                    </Tooltip>
+                    {canUsePlayground ? (
+                      <Tooltip text="Playground">
+                        <button
+                          type="button"
+                          onClick={() => router.push(`/playground/${conn.id}`)}
+                          className="rounded p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                          aria-label="Playground"
+                        >
+                          <FlaskConical className="size-4" />
+                        </button>
+                      </Tooltip>
+                    ) : null}
                     {editable ? (
                       <>
                         <Tooltip text="Editar">
@@ -484,7 +494,7 @@ export function ConnectionsSection({ scope }: ConnectionsSectionProps) {
                   </span>
                 </div>
 
-                {/* Badges: visibilidade + concorrente */}
+                {/* Badges: visibilidade + sistema */}
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   {inherited ? (
                     <span className="inline-flex items-center gap-1 rounded bg-violet-500/10 px-2 py-0.5 text-[10px] font-medium text-violet-500">
@@ -523,16 +533,18 @@ export function ConnectionsSection({ scope }: ConnectionsSectionProps) {
                       {testingId === conn.id ? <MorphLoader className="size-4" /> : <Play className="size-4" />}
                     </button>
                   </Tooltip>
-                  <Tooltip text="Playground">
-                    <button
-                      type="button"
-                      onClick={() => router.push(`/playground/${conn.id}`)}
-                      className="rounded p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                      aria-label="Playground"
-                    >
-                      <FlaskConical className="size-4" />
-                    </button>
-                  </Tooltip>
+                  {canUsePlayground ? (
+                    <Tooltip text="Playground">
+                      <button
+                        type="button"
+                        onClick={() => router.push(`/playground/${conn.id}`)}
+                        className="rounded p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        aria-label="Playground"
+                      >
+                        <FlaskConical className="size-4" />
+                      </button>
+                    </Tooltip>
+                  ) : null}
                   {editable ? (
                     <>
                       <Tooltip text="Editar">

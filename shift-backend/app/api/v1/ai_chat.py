@@ -63,7 +63,7 @@ async def chat_stream(
     connection_id: uuid.UUID,
     body: AiChatRequest,
     db: AsyncSession = Depends(get_db),
-    _=Depends(_require_chat_permission("CLIENT", "VIEWER")),
+    _=Depends(_require_chat_permission("CLIENT", "CONSULTANT")),
 ) -> StreamingResponse:
     # Verificar se LLM esta configurado
     if not settings.LLM_API_KEY:

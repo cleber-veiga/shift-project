@@ -6,6 +6,7 @@ from .connection import Connection
 from .connection_schema import ConnectionSchema
 from .input_model import InputModel
 from .input_model_row import InputModelRow
+from .invitation import Invitation, InvitationScope, InvitationStatus
 from .saved_query import SavedQuery
 from .organization import (
     EconomicGroup,
@@ -30,6 +31,9 @@ __all__ = [
     "ConnectionSchema",
     "InputModel",
     "InputModelRow",
+    "Invitation",
+    "InvitationScope",
+    "InvitationStatus",
     "SavedQuery",
     "EconomicGroup",
     "Establishment",

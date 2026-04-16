@@ -15,6 +15,7 @@ import {
   Trash2,
 } from "lucide-react"
 import { useDashboard } from "@/lib/context/dashboard-context"
+import { hasWorkspacePermission } from "@/lib/permissions"
 import {
   listWorkspaceInputModels,
   deleteInputModel,
@@ -32,6 +33,7 @@ export function InputModelsSection() {
   const { selectedWorkspace } = useDashboard()
   const router = useRouter()
   const toast = useToast()
+  const canManage = hasWorkspacePermission(selectedWorkspace?.my_role, "MANAGER")
 
   const [models, setModels] = useState<InputModel[]>([])
   const [loading, setLoading] = useState(true)
@@ -202,14 +204,16 @@ export function InputModelsSection() {
             />
           </label>
 
-          <button
-            type="button"
-            onClick={handleOpenCreate}
-            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-foreground px-3.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
-          >
-            <Plus className="size-4" />
-            Novo Modelo
-          </button>
+          {canManage ? (
+            <button
+              type="button"
+              onClick={handleOpenCreate}
+              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-foreground px-3.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
+            >
+              <Plus className="size-4" />
+              Novo Modelo
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -232,7 +236,7 @@ export function InputModelsSection() {
               ? "Nenhum resultado para os filtros aplicados."
               : "Crie um modelo para padronizar o formato dos arquivos que os consultores devem enviar."}
           </p>
-          {!search && typeFilter === "todos" && (
+          {!search && typeFilter === "todos" && canManage && (
             <button
               type="button"
               onClick={handleOpenCreate}
@@ -308,26 +312,30 @@ export function InputModelsSection() {
                       </button>
                     </Tooltip>
                   )}
-                  <Tooltip text="Editar">
-                    <button
-                      type="button"
-                      onClick={() => handleOpenEdit(model)}
-                      className="rounded p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                      aria-label="Editar modelo"
-                    >
-                      <Pencil className="size-4" />
-                    </button>
-                  </Tooltip>
-                  <Tooltip text="Excluir">
-                    <button
-                      type="button"
-                      onClick={() => setDeleteTarget(model)}
-                      className="rounded p-2 text-destructive/70 transition-colors hover:bg-muted hover:text-destructive"
-                      aria-label="Excluir modelo"
-                    >
-                      <Trash2 className="size-4" />
-                    </button>
-                  </Tooltip>
+                  {canManage ? (
+                    <>
+                      <Tooltip text="Editar">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEdit(model)}
+                          className="rounded p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                          aria-label="Editar modelo"
+                        >
+                          <Pencil className="size-4" />
+                        </button>
+                      </Tooltip>
+                      <Tooltip text="Excluir">
+                        <button
+                          type="button"
+                          onClick={() => setDeleteTarget(model)}
+                          className="rounded p-2 text-destructive/70 transition-colors hover:bg-muted hover:text-destructive"
+                          aria-label="Excluir modelo"
+                        >
+                          <Trash2 className="size-4" />
+                        </button>
+                      </Tooltip>
+                    </>
+                  ) : null}
                 </div>
               </div>
             ))}
@@ -392,26 +400,30 @@ export function InputModelsSection() {
                     </button>
                   </Tooltip>
                 )}
-                <Tooltip text="Editar">
-                  <button
-                    type="button"
-                    onClick={() => handleOpenEdit(model)}
-                    className="rounded p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                    aria-label="Editar modelo"
-                  >
-                    <Pencil className="size-4" />
-                  </button>
-                </Tooltip>
-                <Tooltip text="Excluir">
-                  <button
-                    type="button"
-                    onClick={() => setDeleteTarget(model)}
-                    className="rounded p-2 text-destructive/70 transition-colors hover:bg-muted hover:text-destructive"
-                    aria-label="Excluir modelo"
-                  >
-                    <Trash2 className="size-4" />
-                  </button>
-                </Tooltip>
+                {canManage ? (
+                  <>
+                    <Tooltip text="Editar">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenEdit(model)}
+                        className="rounded p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        aria-label="Editar modelo"
+                      >
+                        <Pencil className="size-4" />
+                      </button>
+                    </Tooltip>
+                    <Tooltip text="Excluir">
+                      <button
+                        type="button"
+                        onClick={() => setDeleteTarget(model)}
+                        className="rounded p-2 text-destructive/70 transition-colors hover:bg-muted hover:text-destructive"
+                        aria-label="Excluir modelo"
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </Tooltip>
+                  </>
+                ) : null}
               </div>
             </article>
           ))}

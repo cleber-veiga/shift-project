@@ -3,6 +3,7 @@ Exports centralizados dos schemas Pydantic.
 """
 
 from .connection import ConnectionCreate, ConnectionResponse, ConnectionType, ConnectionUpdate, TestConnectionResult
+from .lookup import CEPResponse, CNPJResponse
 from .economic_group import (
     EconomicGroupCreate,
     EconomicGroupResponse,
@@ -10,6 +11,12 @@ from .economic_group import (
     EstablishmentCreate,
     EstablishmentResponse,
     EstablishmentUpdate,
+)
+from .invitation import (
+    AcceptInvitationResponse,
+    CreateInvitationRequest,
+    InvitationDetailResponse,
+    InvitationResponse,
 )
 from .membership import AddMemberRequest, MemberResponse, UpdateMemberRoleRequest
 from .organization import OrganizationCreate, OrganizationResponse, OrganizationUpdate
@@ -50,7 +57,11 @@ from .workspace import (
 )
 
 __all__ = [
+    "AcceptInvitationResponse",
     "AddMemberRequest",
+    "CEPResponse",
+    "CNPJResponse",
+    "CreateInvitationRequest",
     "ConnectionCreate",
     "ConnectionResponse",
     "ConnectionType",
@@ -61,6 +72,8 @@ __all__ = [
     "EstablishmentCreate",
     "EstablishmentResponse",
     "EstablishmentUpdate",
+    "InvitationDetailResponse",
+    "InvitationResponse",
     "ExecutionResponse",
     "ExecutionStatusResponse",
     "ForgotPasswordRequest",

@@ -60,7 +60,7 @@ export function NewWorkflowModal({ open, onOpenChange }: NewWorkflowModalProps) 
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
 
-  // Players (concorrentes)
+  // Players (sistemas)
   const [players, setPlayers] = useState<WorkspacePlayer[]>([])
   const [playersLoading, setPlayersLoading] = useState(false)
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null)
@@ -225,12 +225,12 @@ export function NewWorkflowModal({ open, onOpenChange }: NewWorkflowModalProps) 
             </div>
           </div>
 
-          {/* ── Concorrente de origem (apenas para Migração) ── */}
+          {/* ── Sistema de origem (apenas para Migração) ── */}
           {isMigration && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Concorrente de Origem
+                  Sistema de Origem
                 </p>
                 <span className="text-[10px] text-destructive/80 font-medium">obrigatório</span>
               </div>
@@ -238,21 +238,21 @@ export function NewWorkflowModal({ open, onOpenChange }: NewWorkflowModalProps) 
               {playersLoading ? (
                 <div className="flex h-16 items-center justify-center gap-2 rounded-xl border border-dashed border-border text-xs text-muted-foreground">
                   <Loader2 className="size-3.5 animate-spin" />
-                  Carregando concorrentes...
+                  Carregando sistemas...
                 </div>
               ) : players.length === 0 ? (
                 <div className="flex items-start gap-3 rounded-xl border border-dashed border-border bg-muted/20 p-4">
                   <AlertCircle className="mt-0.5 size-4 shrink-0 text-amber-500" />
                   <div>
                     <p className="text-xs font-medium text-foreground">
-                      Nenhum concorrente cadastrado neste workspace
+                      Nenhum sistema cadastrado neste workspace
                     </p>
                     <p className="mt-0.5 text-[11px] text-muted-foreground">
                       Acesse{" "}
                       <span className="font-medium text-foreground">
                         Espaço → Grupo Econômico
                       </span>{" "}
-                      para adicionar os concorrentes antes de criar este fluxo.
+                      para adicionar os sistemas antes de criar este fluxo.
                     </p>
                   </div>
                 </div>

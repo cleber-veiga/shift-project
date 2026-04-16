@@ -34,7 +34,7 @@ router = APIRouter(tags=["workflows"])
 async def create_workflow(
     payload: WorkflowCreate,
     db: AsyncSession = Depends(get_db),
-    _=Depends(require_permission("workspace", "VIEWER")),
+    _=Depends(require_permission("workspace", "CONSULTANT")),
 ) -> WorkflowResponse:
     """Cria um workflow ou template.
 
@@ -127,7 +127,7 @@ async def update_workflow(
     workflow_id: UUID,
     payload: WorkflowUpdate,
     db: AsyncSession = Depends(get_db),
-    _=Depends(require_permission("workspace", "VIEWER")),
+    _=Depends(require_permission("workspace", "CONSULTANT")),
 ) -> WorkflowResponse:
     """Atualiza metadados ou a definicao JSON de um workflow."""
     try:
@@ -145,7 +145,7 @@ async def update_workflow(
 async def delete_workflow(
     workflow_id: UUID,
     db: AsyncSession = Depends(get_db),
-    _=Depends(require_permission("workspace", "VIEWER")),
+    _=Depends(require_permission("workspace", "MANAGER")),
 ) -> None:
     """Remove um workflow."""
     try:

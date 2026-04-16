@@ -8,6 +8,8 @@ type SectionDefinition = {
   label: string
   description: string
   icon: LucideIcon
+  /** Minimum workspace role required to see this section. Defaults to VIEWER. */
+  minWorkspaceRole?: "VIEWER" | "CONSULTANT" | "MANAGER"
 }
 
 type HeaderMeta = {

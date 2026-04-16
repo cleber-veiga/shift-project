@@ -621,7 +621,13 @@ def _insert_via_sqlalchemy(
     merge_key: list[str],
     batch_size: int,
 ) -> LoadResult:
-    """Insere dados usando SQLAlchemy direto com diagnostico de erros."""
+    """Insere dados usando SQLAlchemy direto com diagnostico de erros.
+
+    Usa SAVEPOINT por batch para evitar que falhas parciais gerem linhas
+    fantasma (Oracle nao invalida a transacao em caso de erro, entao as
+    linhas inseridas antes do erro permaneciam e o fallback linha-a-linha
+    as duplicava).
+    """
     col_names = ", ".join(f'"{c}"' for c in cols)
     placeholders = ", ".join(f":{c}" for c in cols)
     insert_sql = sa.text(
@@ -641,38 +647,73 @@ def _insert_via_sqlalchemy(
             else:
                 db_conn.execute(sa.text(f"TRUNCATE TABLE {target_table}"))
 
-        # Insere em lotes
+        # Detecta suporte a savepoint (SQLite em modo autocommit nao suporta)
+        supports_savepoint = engine.dialect.name.lower() != "sqlite"
+
+        # Insere em lotes com savepoint para rollback preciso
         for i in range(0, len(rows), batch_size):
             batch = rows[i:i + batch_size]
             batch_count += 1
-            try:
-                db_conn.execute(insert_sql, batch)
-                rows_written += len(batch)
-            except Exception:
-                # Batch falhou: tenta linha a linha para identificar o problema
-                for j, single_row in enumerate(batch):
-                    try:
-                        db_conn.execute(insert_sql, [single_row])
-                        rows_written += 1
-                    except Exception as row_exc:
-                        row_num = i + j + 1
-                        # Tenta identificar a coluna problematica
-                        col_hint, val_hint, type_hint = _diagnose_row_error(
-                            single_row, str(row_exc)
-                        )
-                        rejected.append(RejectedRow(
-                            row_number=row_num,
-                            error=str(row_exc),
-                            column=col_hint,
-                            value=val_hint,
-                            expected_type=type_hint,
-                        ))
-                        if len(rejected) >= 10:
-                            # Para apos 10 rejeicoes para nao travar
-                            raise ValueError(
-                                f"Mais de 10 linhas rejeitadas. "
-                                f"Primeira: linha {rejected[0].row_number}: {rejected[0].error}"
-                            ) from row_exc
+
+            if supports_savepoint:
+                # SAVEPOINT antes do batch — se falhar, rollback limpo
+                savepoint = db_conn.begin_nested()
+                try:
+                    db_conn.execute(insert_sql, batch)
+                    savepoint.commit()
+                    rows_written += len(batch)
+                except Exception:
+                    # Rollback do savepoint: DESFAZ linhas parciais do batch
+                    savepoint.rollback()
+                    # Agora reinsere linha a linha com savepoint individual
+                    for j, single_row in enumerate(batch):
+                        sp_row = db_conn.begin_nested()
+                        try:
+                            db_conn.execute(insert_sql, [single_row])
+                            sp_row.commit()
+                            rows_written += 1
+                        except Exception as row_exc:
+                            sp_row.rollback()
+                            row_num = i + j + 1
+                            col_hint, val_hint, type_hint = _diagnose_row_error(
+                                single_row, str(row_exc)
+                            )
+                            rejected.append(RejectedRow(
+                                row_number=row_num,
+                                error=str(row_exc)[:300],
+                                column=col_hint,
+                                value=val_hint,
+                                expected_type=type_hint,
+                            ))
+                            if len(rejected) >= 50:
+                                break
+            else:
+                # Fallback sem savepoint (SQLite)
+                try:
+                    db_conn.execute(insert_sql, batch)
+                    rows_written += len(batch)
+                except Exception:
+                    for j, single_row in enumerate(batch):
+                        try:
+                            db_conn.execute(insert_sql, [single_row])
+                            rows_written += 1
+                        except Exception as row_exc:
+                            row_num = i + j + 1
+                            col_hint, val_hint, type_hint = _diagnose_row_error(
+                                single_row, str(row_exc)
+                            )
+                            rejected.append(RejectedRow(
+                                row_number=row_num,
+                                error=str(row_exc)[:300],
+                                column=col_hint,
+                                value=val_hint,
+                                expected_type=type_hint,
+                            ))
+                            if len(rejected) >= 50:
+                                break
+
+            if len(rejected) >= 50:
+                break
 
     return LoadResult(
         status="success" if not rejected else "partial",

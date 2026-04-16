@@ -22,7 +22,7 @@ from sqlalchemy import or_, select, update
 from app.db.session import async_session_factory
 from app.models import Project
 from app.models.connection import Connection
-from app.models.workflow import Workflow, WorkflowExecution
+from app.models.workflow import Workflow, WorkflowExecution, WorkflowNodeExecution
 from app.services.connection_service import _collect_connection_ids, connection_service
 from app.services.extraction_service import extraction_service
 from app.services.load_service import load_service
@@ -102,6 +102,7 @@ class WorkflowTestService:
 
         upstream: dict[str, Any] = {}
         final_status = "SUCCESS"
+        node_records: list[WorkflowNodeExecution] = []
 
         for node_id in ordered_ids:
             node = node_map.get(node_id)
@@ -110,11 +111,23 @@ class WorkflowTestService:
 
             node_type = node.get("type") or node.get("data", {}).get("type", "unknown")
             label: str = node.get("data", {}).get("label") or node_type
+            now = datetime.now(timezone.utc)
 
             # Nó com dados fixados (Pin Data) — usa output salvo, pula execução
             pinned_output = node.get("data", {}).get("pinnedOutput")
             if pinned_output:
                 upstream[node_id] = pinned_output
+                node_records.append(WorkflowNodeExecution(
+                    execution_id=execution_id,
+                    node_id=node_id,
+                    node_type=node_type,
+                    label=label,
+                    status="skipped",
+                    duration_ms=0,
+                    output_summary={"is_pinned": True},
+                    started_at=now,
+                    completed_at=now,
+                ))
                 yield sse({
                     "type": "node_complete",
                     "node_id": node_id,
@@ -129,6 +142,17 @@ class WorkflowTestService:
             # Nó desativado — pula silenciosamente
             if node.get("data", {}).get("enabled") is False:
                 upstream[node_id] = {"status": "skipped", "message": "Nó desativado."}
+                node_records.append(WorkflowNodeExecution(
+                    execution_id=execution_id,
+                    node_id=node_id,
+                    node_type=node_type,
+                    label=label,
+                    status="skipped",
+                    duration_ms=0,
+                    output_summary={"message": "Nó desativado."},
+                    started_at=now,
+                    completed_at=now,
+                ))
                 yield sse({
                     "type": "node_complete",
                     "node_id": node_id,
@@ -148,10 +172,30 @@ class WorkflowTestService:
             })
 
             t0 = time.monotonic()
+            started_at = datetime.now(timezone.utc)
             try:
                 output = await _execute_node(node, upstream, conn_map, edges, mode)
                 ms = int((time.monotonic() - t0) * 1000)
                 upstream[node_id] = output
+
+                # Persiste resultado do no (sem rows[] para economizar espaco)
+                summary = _strip_rows(output)
+                row_in = output.get("total_input") or output.get("row_count")
+                row_out = output.get("rows_written") or output.get("row_count")
+                node_records.append(WorkflowNodeExecution(
+                    execution_id=execution_id,
+                    node_id=node_id,
+                    node_type=node_type,
+                    label=label,
+                    status="success",
+                    duration_ms=ms,
+                    row_count_in=row_in if isinstance(row_in, int) else None,
+                    row_count_out=row_out if isinstance(row_out, int) else None,
+                    output_summary=summary,
+                    started_at=started_at,
+                    completed_at=datetime.now(timezone.utc),
+                ))
+
                 # Em producao, envia apenas preview para nao sobrecarregar SSE
                 sse_output = _trim_for_sse(output) if mode == "production" else output
                 yield sse({
@@ -165,6 +209,17 @@ class WorkflowTestService:
             except Exception as exc:
                 ms = int((time.monotonic() - t0) * 1000)
                 final_status = "FAILED"
+                node_records.append(WorkflowNodeExecution(
+                    execution_id=execution_id,
+                    node_id=node_id,
+                    node_type=node_type,
+                    label=label,
+                    status="error",
+                    duration_ms=ms,
+                    error_message=str(exc)[:2000],
+                    started_at=started_at,
+                    completed_at=datetime.now(timezone.utc),
+                ))
                 yield sse({
                     "type": "node_error",
                     "node_id": node_id,
@@ -177,13 +232,15 @@ class WorkflowTestService:
 
         total_ms = int((time.monotonic() - total_start) * 1000)
 
-        # ── 3. Persiste status final ──────────────────────────────────────────
+        # ── 3. Persiste status final + registros de cada no ───────────────────
         async with async_session_factory() as db:
             await db.execute(
                 update(WorkflowExecution)
                 .where(WorkflowExecution.id == execution_id)
                 .values(status=final_status, completed_at=datetime.now(timezone.utc))
             )
+            for rec in node_records:
+                db.add(rec)
             await db.commit()
 
         yield sse({
@@ -747,12 +804,7 @@ async def _exec_bulk_insert(
     )
 
     output = result.to_dict()
-    parts = [f"{result.rows_written} registros inseridos em '{target_table}'."]
-    if result.duplicates_removed > 0:
-        parts.append(f"{result.duplicates_removed} duplicatas removidas.")
-    if result.dest_count_after >= 0:
-        parts.append(f"Total na tabela: {result.dest_count_after}.")
-    output["message"] = " ".join(parts)
+    output["message"] = _build_insert_report(result, target_table)
     return output
 
 
@@ -811,9 +863,47 @@ async def _exec_load_node(
         unique_columns=unique_columns if unique_columns else None,
     )
 
-    return result.to_dict()
+    output = result.to_dict()
+    output["message"] = _build_insert_report(result, target_table)
+    return output
 
 
+
+
+# ─── Relatorio de insercao ───────────────────────────────────────────────────
+
+def _build_insert_report(result: Any, target_table: str) -> str:
+    """Monta relatorio textual detalhado da operacao de insert."""
+    lines: list[str] = []
+    lines.append(f"{result.rows_written} linhas gravadas em '{target_table}'.")
+
+    if result.rows_received > 0:
+        lines.append(f"Recebidas: {result.rows_received}")
+
+    if result.duplicates_removed > 0:
+        lines.append(f"Duplicatas removidas: {result.duplicates_removed}")
+        if result.unique_columns:
+            lines.append(f"Chave de dedup: [{', '.join(result.unique_columns)}]")
+
+    if result.rejected_rows:
+        lines.append(f"Rejeitadas: {len(result.rejected_rows)}")
+
+    if result.dest_count_before >= 0 and result.dest_count_after >= 0:
+        lines.append(
+            f"Destino: {result.dest_count_before} antes -> "
+            f"{result.dest_count_after} depois"
+        )
+        expected = result.dest_count_before + result.rows_written
+        if result.write_disposition == "replace":
+            expected = result.rows_written
+        diff = result.dest_count_after - expected
+        if diff != 0:
+            lines.append(
+                f"ALERTA: diferenca de {diff:+d} linhas "
+                f"(esperado {expected}, encontrado {result.dest_count_after})"
+            )
+
+    return " | ".join(lines)
 
 
 # ─── IF Node (decisao binaria) ────────────────────────────────────────────────
@@ -987,6 +1077,28 @@ def _exec_switch_node(
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
+
+def _strip_rows(output: dict[str, Any]) -> dict[str, Any]:
+    """Remove o array 'rows' do output para persistir apenas metricas no DB.
+
+    Linhas podem ter milhares de registros — nao faz sentido gravar no JSONB.
+    Mantém row_count, columns, cast_summary, rejected_rows, message, etc.
+    """
+    if not isinstance(output, dict):
+        return output
+
+    # Branches (IF, Switch)
+    branches = output.get("__branches")
+    if isinstance(branches, dict):
+        stripped = {k: v for k, v in output.items() if k != "__branches"}
+        stripped["__branches"] = {
+            k: _strip_rows(v) for k, v in branches.items()
+        }
+        return stripped
+
+    stripped = {k: v for k, v in output.items() if k != "rows"}
+    return stripped
+
 
 def _trim_for_sse(output: dict[str, Any]) -> dict[str, Any]:
     """Cria uma versao resumida do output para transporte via SSE.

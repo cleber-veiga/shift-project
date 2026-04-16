@@ -373,6 +373,26 @@ class ExecutionResponse(BaseModel):
     status: str
 
 
+class NodeExecutionResponse(BaseModel):
+    """Resultado de execucao de um no individual."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    execution_id: UUID
+    node_id: str
+    node_type: str
+    label: str | None = None
+    status: str
+    duration_ms: int = 0
+    row_count_in: int | None = None
+    row_count_out: int | None = None
+    output_summary: dict[str, Any] | None = None
+    error_message: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
 class ExecutionStatusResponse(BaseModel):
     """Status detalhado de uma execucao de workflow."""
 
@@ -384,6 +404,20 @@ class ExecutionStatusResponse(BaseModel):
     error_message: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
+
+
+class ExecutionDetailResponse(BaseModel):
+    """Status da execucao + historico de cada no."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    execution_id: UUID
+    status: str
+    result: dict[str, Any] | None = None
+    error_message: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    nodes: list[NodeExecutionResponse] = []
 
 
 # --- Schemas de CRUD de Workflow ---

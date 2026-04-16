@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user, get_db
-from app.core.security import require_permission
+from app.core.security import authorization_service, require_permission
 from app.models import User
 from app.schemas.saved_query import (
     SavedQueryCreate,
@@ -40,6 +40,70 @@ async def _get_connection_or_404(db: AsyncSession, connection_id: uuid.UUID):
     return conn
 
 
+def _require_connection_permission(project_role: str, workspace_role: str):
+    """Permissao por conexao — mesmo padrao do playground.py."""
+
+    async def dependency(
+        connection_id: uuid.UUID,
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        current_user: User = Depends(get_current_user),
+    ) -> None:
+        conn = await connection_service.get(db, connection_id)
+        if conn is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Conexão não encontrada.",
+            )
+
+        if conn.project_id is not None:
+            await require_permission("project", project_role)(
+                request=request,
+                db=db,
+                current_user=current_user,
+            )
+            return
+
+        await require_permission("workspace", workspace_role)(
+            request=request,
+            db=db,
+            current_user=current_user,
+        )
+
+    return dependency
+
+
+def _require_query_write_permission():
+    """Permissao de escrita por query_id — resolve workspace_id da query."""
+
+    async def dependency(
+        query_id: uuid.UUID,
+        db: AsyncSession = Depends(get_db),
+        current_user: User = Depends(get_current_user),
+    ) -> None:
+        query = await saved_query_service.get(db, query_id)
+        if query is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Consulta não encontrada.",
+            )
+
+        allowed = await authorization_service.has_permission(
+            db=db,
+            user_id=current_user.id,
+            scope="workspace",
+            required_role="CONSULTANT",
+            scope_id=query.workspace_id,
+        )
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Usuario sem permissao para executar esta operacao.",
+            )
+
+    return dependency
+
+
 @router.get(
     "/connections/{connection_id}/saved-queries",
     response_model=list[SavedQueryResponse],
@@ -49,6 +113,7 @@ async def list_saved_queries(
     connection_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _=Depends(_require_connection_permission("CLIENT", "VIEWER")),
 ) -> list[SavedQueryResponse]:
     conn = await _get_connection_or_404(db, connection_id)
     items = await saved_query_service.list_for_connection(
@@ -70,6 +135,7 @@ async def create_saved_query(
     body: SavedQueryCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _=Depends(_require_connection_permission("EDITOR", "CONSULTANT")),
 ) -> SavedQueryResponse:
     conn = await _get_connection_or_404(db, connection_id)
 
@@ -117,6 +183,7 @@ async def update_saved_query(
     body: SavedQueryUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _=Depends(_require_query_write_permission()),
 ) -> SavedQueryResponse:
     try:
         obj = await saved_query_service.update(
@@ -143,6 +210,7 @@ async def delete_saved_query(
     query_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    _=Depends(_require_query_write_permission()),
 ) -> None:
     try:
         await saved_query_service.delete(db, query_id)

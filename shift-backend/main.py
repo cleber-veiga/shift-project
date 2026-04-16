@@ -13,6 +13,8 @@ from app.api.v1.input_model_rows import router as input_model_rows_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.connections import router as connections_router
 from app.api.v1.economic_groups import router as economic_groups_router
+from app.api.v1.invitations import router as invitations_router
+from app.api.v1.lookups import router as lookups_router
 from app.api.v1.organizations import router as organizations_router
 from app.api.v1.projects import router as projects_router
 from app.api.v1.webhooks import router as webhook_router
@@ -50,6 +52,7 @@ app.add_middleware(
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(connections_router, prefix="/api/v1")
 app.include_router(economic_groups_router, prefix="/api/v1")
+app.include_router(lookups_router, prefix="/api/v1")
 app.include_router(organizations_router, prefix="/api/v1")
 app.include_router(workspaces_router, prefix="/api/v1")
 app.include_router(projects_router, prefix="/api/v1")
@@ -61,6 +64,7 @@ app.include_router(saved_queries_router, prefix="/api/v1")
 app.include_router(ai_chat_router, prefix="/api/v1")
 app.include_router(input_models_router, prefix="/api/v1")
 app.include_router(input_model_rows_router, prefix="/api/v1")
+app.include_router(invitations_router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["sistema"])

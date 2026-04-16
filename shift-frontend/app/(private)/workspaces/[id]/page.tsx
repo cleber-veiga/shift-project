@@ -77,7 +77,7 @@ function WorkspaceEditor({
       const items = await listWorkspacePlayers(workspaceId)
       setPlayers(items)
     } catch (err) {
-      setPlayersError(err instanceof Error ? err.message : "Falha ao carregar concorrentes do workspace.")
+      setPlayersError(err instanceof Error ? err.message : "Falha ao carregar sistemas do workspace.")
     } finally {
       setPlayersLoading(false)
     }
@@ -141,7 +141,7 @@ function WorkspaceEditor({
     event.preventDefault()
     const normalizedName = playerName.trim()
     if (normalizedName.length < 2) {
-      setPlayerFormError("Informe um nome de concorrente com pelo menos 2 caracteres.")
+      setPlayerFormError("Informe um nome de sistema com pelo menos 2 caracteres.")
       return
     }
 
@@ -164,7 +164,7 @@ function WorkspaceEditor({
       closePlayerModal()
       await loadPlayers()
     } catch (err) {
-      setPlayerFormError(err instanceof Error ? err.message : "Falha ao salvar concorrente.")
+      setPlayerFormError(err instanceof Error ? err.message : "Falha ao salvar sistema.")
     } finally {
       setSavingPlayer(false)
     }
@@ -188,7 +188,7 @@ function WorkspaceEditor({
       await loadPlayers()
       await refreshWorkspaces()
     } catch (err) {
-      setPlayersError(err instanceof Error ? err.message : "Falha ao remover concorrente.")
+      setPlayersError(err instanceof Error ? err.message : "Falha ao remover sistema.")
     } finally {
       setDeletingPlayer(false)
     }
@@ -199,11 +199,11 @@ function WorkspaceEditor({
       <ConfirmDialog
         open={deleteDialogOpen}
         onOpenChange={setDeleteDialogOpen}
-        title="Remover concorrente"
+        title="Remover sistema"
         description={
           deletePlayerName
-            ? `Tem certeza que deseja remover o concorrente "${deletePlayerName}" deste workspace?`
-            : "Tem certeza que deseja remover este concorrente deste workspace?"
+            ? `Tem certeza que deseja remover o sistema "${deletePlayerName}" deste workspace?`
+            : "Tem certeza que deseja remover este sistema deste workspace?"
         }
         confirmText="Remover"
         confirmVariant="destructive"
@@ -273,7 +273,7 @@ function WorkspaceEditor({
         <div className="flex items-center gap-2 px-1">
           <div className="h-px flex-1 bg-border/50" />
           <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/60">
-            Concorrentes
+            Sistemas
           </span>
           <div className="h-px flex-1 bg-border/50" />
         </div>
@@ -282,7 +282,7 @@ function WorkspaceEditor({
           <div className="flex items-center justify-between px-1">
             <div className="flex items-center gap-2 text-muted-foreground">
               <Users className="size-4" />
-              <span className="text-[13px] font-medium">{players.length} concorrentes vinculados</span>
+              <span className="text-[13px] font-medium">{players.length} sistemas vinculados</span>
             </div>
             <button
               type="button"
@@ -290,7 +290,7 @@ function WorkspaceEditor({
               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-[13px] font-bold transition-all hover:bg-accent"
             >
               <Plus className="size-3.5" />
-              Novo Concorrente
+              Novo Sistema
             </button>
           </div>
 
@@ -307,7 +307,7 @@ function WorkspaceEditor({
           ) : players.length > 0 ? (
             <div className="overflow-auto rounded-lg border border-border bg-card shadow-sm">
               <div className="grid grid-cols-[1fr_180px_96px] items-center border-b border-border bg-muted/20 px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-                <span>Nome do Concorrente</span>
+                <span>Nome do Sistema</span>
                 <span className="text-center">Tipo de Banco</span>
                 <span className="text-right">Acoes</span>
               </div>
@@ -346,9 +346,9 @@ function WorkspaceEditor({
               <div className="mb-3 flex size-11 items-center justify-center rounded-full bg-muted">
                 <Users className="size-5.5 text-muted-foreground" />
               </div>
-              <p className="text-[13px] font-semibold text-foreground">Nenhum concorrente</p>
+              <p className="text-[13px] font-semibold text-foreground">Nenhum sistema</p>
               <p className="mb-4 text-[11px] text-muted-foreground">
-                Este workspace ainda nao possui concorrentes.
+                Este workspace ainda nao possui sistemas.
               </p>
               <button
                 type="button"
@@ -373,7 +373,7 @@ function WorkspaceEditor({
                   <Users className="size-4 text-muted-foreground" />
                 </div>
                 <h2 className="text-[13px] font-bold uppercase tracking-tight text-foreground">
-                  {isEditingPlayer ? "Editar Concorrente" : "Novo Concorrente"}
+                  {isEditingPlayer ? "Editar Sistema" : "Novo Sistema"}
                 </h2>
               </div>
               <button
@@ -389,13 +389,13 @@ function WorkspaceEditor({
             <form onSubmit={handleSavePlayer} className="space-y-4">
               <div>
                 <label className="mb-1 block text-[10px] font-bold uppercase text-muted-foreground">
-                  Nome do Concorrente *
+                  Nome do Sistema *
                 </label>
                 <input
                   type="text"
                   value={playerName}
                   onChange={(event) => setPlayerName(event.target.value)}
-                  placeholder="Ex.: Concorrente XPTO"
+                  placeholder="Ex.: ERP Legado"
                   className="h-9 w-full rounded-md border border-input bg-background px-3 text-[13px] outline-none focus:ring-1 focus:ring-primary/20"
                   required
                 />

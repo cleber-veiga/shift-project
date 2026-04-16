@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     # Deve ser o mesmo CLIENT_ID configurado no botão do Google no frontend.
     GOOGLE_CLIENT_ID: str = ""
 
+    # --- Convites / Email ---
+    EMAIL_BACKEND: str = "console"  # "console" (dev) ou "resend" (prod)
+    RESEND_API_KEY: str = ""
+    EMAIL_FROM: str = "noreply@shift.app"
+    FRONTEND_BASE_URL: str = "http://localhost:3000"
+    INVITATION_EXPIRE_DAYS: int = 7
+
     # --- AI / LLM (SQL Assistant) ---
     # Identificador LiteLLM do modelo. Prefixo define o provider:
     #   anthropic/claude-sonnet-4-20250514, gpt-4o, gemini/gemini-2.0-flash, ollama/llama3.2

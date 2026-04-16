@@ -11,6 +11,7 @@ import { useDashboard } from "@/lib/context/dashboard-context"
 import { dashboardNavigationGroups } from "@/lib/dashboard-navigation"
 import { cn } from "@/lib/utils"
 import { RoleBadge } from "@/components/dashboard/role-badge"
+import { hasWorkspacePermission } from "@/lib/permissions"
 import {
   Building2,
   Check,
@@ -63,6 +64,8 @@ export function Sidebar() {
     createProjectAndSelect,
     updateProjectAndRefresh,
   } = useDashboard()
+
+  const canManageWorkspace = hasWorkspacePermission(selectedWorkspace?.my_role, "MANAGER")
 
   const handleProjectSelect = (projectId: string) => {
     setSelectedProjectId(projectId)
@@ -245,7 +248,7 @@ export function Sidebar() {
   const hasSelectedProject = !!selectedProject
 
   return (
-    <aside className="hidden w-64 border-r border-border bg-card/88 backdrop-blur-sm lg:flex lg:flex-col">
+    <aside className="hidden w-64 border-r border-border bg-card/88 lg:flex lg:flex-col">
       <div className="border-b border-border px-4 py-3">
         <Link href="/home" className="inline-flex items-center gap-2 rounded-md px-0.5 py-0.5">
           <div className="inline-flex size-8 items-center justify-center rounded-md bg-gradient-to-br from-indigo-500 to-violet-600 shadow-sm">
@@ -297,35 +300,39 @@ export function Sidebar() {
                     </div>
                     {selectedProject?.id === project.id ? <Check className="size-4 text-primary" /> : null}
                   </button>
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      handleProjectEdit(project.id)
-                    }}
-                    className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-background hover:text-foreground"
-                    aria-label={`Editar projeto ${project.name}`}
-                    title="Editar projeto"
-                  >
-                    <Pencil className="size-3.5" />
-                  </button>
+                  {canManageWorkspace ? (
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        handleProjectEdit(project.id)
+                      }}
+                      className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-background hover:text-foreground"
+                      aria-label={`Editar projeto ${project.name}`}
+                      title="Editar projeto"
+                    >
+                      <Pencil className="size-3.5" />
+                    </button>
+                  ) : null}
                 </div>
               ))}
               {availableProjects.length === 0 ? (
                 <p className="px-2 py-2 text-sm text-muted-foreground">Sem projetos neste workspace.</p>
               ) : null}
             </div>
-            <div className="mt-1 border-t border-border pt-1">
-              <button
-                type="button"
-                onClick={openCreateProject}
-                disabled={!selectedWorkspace?.id}
-                className="inline-flex w-full items-center gap-2 rounded-md px-2 py-2 text-sm text-primary hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Plus className="size-4" />
-                Criar novo projeto
-              </button>
-            </div>
+            {canManageWorkspace ? (
+              <div className="mt-1 border-t border-border pt-1">
+                <button
+                  type="button"
+                  onClick={openCreateProject}
+                  disabled={!selectedWorkspace?.id}
+                  className="inline-flex w-full items-center gap-2 rounded-md px-2 py-2 text-sm text-primary hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <Plus className="size-4" />
+                  Criar novo projeto
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -459,7 +466,7 @@ export function Sidebar() {
 
                 <div>
                   <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-foreground">
-                    Concorrente
+                    Sistema
                   </label>
                   <Select
                     value={projectCompetitorId}
@@ -523,7 +530,7 @@ export function Sidebar() {
               </div>
 
               {isLoadingProjectDependencies ? (
-                <p className="text-xs text-muted-foreground">Carregando conglomerados e concorrentes...</p>
+                <p className="text-xs text-muted-foreground">Carregando conglomerados e sistemas...</p>
               ) : null}
 
               {!isLoadingProjectDependencies && availableConglomerates.length === 0 ? (
@@ -534,7 +541,7 @@ export function Sidebar() {
 
               {!isLoadingProjectDependencies && availableCompetitors.length === 0 ? (
                 <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-100">
-                  Cadastre ao menos um concorrente antes de criar projeto.
+                  Cadastre ao menos um sistema antes de criar projeto.
                 </div>
               ) : null}
 

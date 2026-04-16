@@ -89,7 +89,7 @@ async def execute_query(
     connection_id: uuid.UUID,
     body: PlaygroundQueryRequest,
     db: AsyncSession = Depends(get_db),
-    _=Depends(_require_playground_permission("CLIENT", "VIEWER")),
+    _=Depends(_require_playground_permission("CLIENT", "CONSULTANT")),
 ) -> PlaygroundQueryResponse:
     try:
         return await playground_service.execute_query(

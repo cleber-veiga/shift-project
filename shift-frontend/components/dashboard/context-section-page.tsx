@@ -11,8 +11,11 @@ import {
   getDashboardSectionMeta,
 } from "@/lib/dashboard-navigation"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { hasWorkspacePermission } from "@/lib/permissions"
 import { ConnectionsSection } from "@/components/dashboard/connections-section"
+import { EconomicGroupSection } from "@/components/dashboard/economic-group-section"
 import { InputModelsSection } from "@/components/dashboard/input-models-section"
+import { MembersSection } from "@/components/dashboard/members-section"
 import { NewWorkflowModal } from "@/components/workflow/new-workflow-modal"
 import { listWorkspaceWorkflows, deleteWorkflow, listWorkspacePlayers, type Workflow as WorkflowType, type WorkspacePlayer } from "@/lib/auth"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
@@ -31,6 +34,9 @@ function FlowsSection({
 }) {
   const router = useRouter()
   const { selectedWorkspace } = useDashboard()
+  const wsRole = selectedWorkspace?.my_role ?? null
+  const canCreateFlow = hasWorkspacePermission(wsRole, "CONSULTANT")
+  const canDeleteFlow = hasWorkspacePermission(wsRole, "MANAGER")
   const [view, setView] = useState<"list" | "card">("list")
   const [showNewModal, setShowNewModal] = useState(false)
   const [searchTerm, setSearchTerm] = useState("")
@@ -164,14 +170,16 @@ function FlowsSection({
             />
           </label>
 
-          <button
-            type="button"
-            onClick={() => setShowNewModal(true)}
-            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-foreground px-3.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
-          >
-            <Plus className="size-4" />
-            Novo Fluxo
-          </button>
+          {canCreateFlow ? (
+            <button
+              type="button"
+              onClick={() => setShowNewModal(true)}
+              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-foreground px-3.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
+            >
+              <Plus className="size-4" />
+              Novo Fluxo
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -189,7 +197,7 @@ function FlowsSection({
         <div className="overflow-auto rounded-xl border border-border bg-card shadow-sm">
           <div className="grid min-w-[860px] grid-cols-[1fr_180px_140px_120px_120px] items-center border-b border-border px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
             <span>Fluxo</span>
-            <span className="text-left">Concorrente</span>
+            <span className="text-left">Sistema</span>
             <span className="text-left">Status</span>
             <span className="text-left">Atualizado</span>
             <span className="text-right">Ações</span>
@@ -248,14 +256,16 @@ function FlowsSection({
                   >
                     <Play className="size-4" />
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setDeleteTarget(flow)}
-                    className="rounded p-2 text-destructive/70 transition-colors hover:bg-muted hover:text-destructive"
-                    aria-label="Excluir fluxo"
-                  >
-                    <Trash2 className="size-4" />
-                  </button>
+                  {canDeleteFlow ? (
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTarget(flow)}
+                      className="rounded p-2 text-destructive/70 transition-colors hover:bg-muted hover:text-destructive"
+                      aria-label="Excluir fluxo"
+                    >
+                      <Trash2 className="size-4" />
+                    </button>
+                  ) : null}
                 </div>
               </div>
             ))}
@@ -312,14 +322,16 @@ function FlowsSection({
                   >
                     <Play className="size-4" />
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setDeleteTarget(flow)}
-                    className="rounded p-2 text-destructive/70 transition-colors hover:bg-muted hover:text-destructive"
-                    aria-label="Excluir fluxo"
-                  >
-                    <Trash2 className="size-4" />
-                  </button>
+                  {canDeleteFlow ? (
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTarget(flow)}
+                      className="rounded p-2 text-destructive/70 transition-colors hover:bg-muted hover:text-destructive"
+                      aria-label="Excluir fluxo"
+                    >
+                      <Trash2 className="size-4" />
+                    </button>
+                  ) : null}
                 </div>
               </div>
             </article>
@@ -369,6 +381,10 @@ export function ContextSectionPage({ scope, section }: ContextSectionPageProps) 
     )
   }
 
+  if (section === "grupo-economico") {
+    return <EconomicGroupSection />
+  }
+
   if (section === "fluxos") {
     return <FlowsSection scope={scope} scopeName={scopeName} />
   }
@@ -379,6 +395,10 @@ export function ContextSectionPage({ scope, section }: ContextSectionPageProps) 
 
   if (section === "modelos-entrada") {
     return <InputModelsSection />
+  }
+
+  if (section === "membros") {
+    return <MembersSection scope={scope} />
   }
 
   return (

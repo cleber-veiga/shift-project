@@ -60,7 +60,8 @@
       "Bash(pip install:*)",
       "Bash(python -m pytest tests/test_migrator.py -v)",
       "Bash(python -m pytest tests/ -v)",
-      "Bash(python -m pytest tests/ -x -q)"
+      "Bash(python -m pytest tests/ -x -q)",
+      "Bash(python -c \"from alembic.config import Config; from alembic.script import ScriptDirectory; c = Config\\('alembic.ini'\\); sd = ScriptDirectory.from_config\\(c\\); heads = sd.get_heads\\(\\); print\\('Heads:', heads\\)\")"
     ]
   }
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { ArrowRight, Eye, EyeOff, Github } from "lucide-react"
 import { getValidSession, listOrganizations, login } from "@/lib/auth"
 import { cn } from "@/lib/utils"
@@ -10,6 +10,8 @@ import { MorphLoader } from "@/components/ui/morph-loader"
 
 export default function LoginPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const redirect = searchParams.get("redirect")
   const [showPassword, setShowPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState("")
@@ -34,8 +36,12 @@ export default function LoginPage() {
 
     try {
       await login({ email, password })
-      const orgs = await listOrganizations()
-      router.push(orgs.length === 0 ? "/onboarding" : "/dashboard")
+      if (redirect) {
+        router.push(redirect)
+      } else {
+        const orgs = await listOrganizations()
+        router.push(orgs.length === 0 ? "/onboarding" : "/dashboard")
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha ao autenticar.")
     } finally {

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { ArrowRight, Check, Eye, EyeOff, Github } from "lucide-react"
 import { getValidSession, register } from "@/lib/auth"
 import { cn } from "@/lib/utils"
@@ -17,6 +17,8 @@ const passwordRequirements = [
 
 export default function RegisterPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const redirect = searchParams.get("redirect")
   const [showPassword, setShowPassword] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState("")
@@ -46,7 +48,7 @@ export default function RegisterPage() {
         password,
         full_name: name.trim() || undefined,
       })
-      router.push("/onboarding")
+      router.push(redirect || "/onboarding")
     } catch (err) {
       setError(err instanceof Error ? err.message : "Falha ao criar conta.")
     } finally {

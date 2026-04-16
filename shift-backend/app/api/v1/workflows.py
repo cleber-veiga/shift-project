@@ -11,7 +11,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_db
 from app.core.security import require_permission
-from app.schemas.workflow import ExecutionResponse, ExecutionStatusResponse
+from sqlalchemy import select as sa_select
+
+from app.models.workflow import WorkflowExecution, WorkflowNodeExecution
+from app.schemas.workflow import (
+    ExecutionDetailResponse,
+    ExecutionResponse,
+    ExecutionStatusResponse,
+    NodeExecutionResponse,
+)
 from app.services.workflow_service import workflow_service
 from app.services.workflow_test_service import workflow_test_service
 
@@ -27,7 +35,7 @@ async def execute_workflow(
     workflow_id: UUID,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    _=Depends(require_permission("workspace", "VIEWER")),
+    _=Depends(require_permission("workspace", "CONSULTANT")),
 ) -> ExecutionResponse:
     """Submete um workflow para execucao assincrona no Prefect."""
     try:
@@ -53,7 +61,7 @@ async def test_workflow(
     workflow_id: UUID,
     target_node_id: Optional[str] = Query(None, description="Se informado, executa somente ate este no (inclusive)."),
     mode: Optional[str] = Query(None, description="Override do modo: 'test' ou 'production'. Se omitido, usa o status do workflow (draft→test, published→production)."),
-    _=Depends(require_permission("workspace", "VIEWER")),
+    _=Depends(require_permission("workspace", "CONSULTANT")),
 ) -> StreamingResponse:
     """Executa um workflow com streaming SSE por no.
 
@@ -107,6 +115,44 @@ async def get_execution_status(
             detail=f"Execucao '{execution_id}' nao encontrada.",
         )
     return result
+
+
+@router.get(
+    "/executions/{execution_id}/details",
+    response_model=ExecutionDetailResponse,
+)
+async def get_execution_details(
+    execution_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_permission("workspace", "VIEWER")),
+) -> ExecutionDetailResponse:
+    """Retorna detalhes de uma execucao incluindo o historico de cada no."""
+    result = await db.execute(
+        sa_select(WorkflowExecution).where(WorkflowExecution.id == execution_id)
+    )
+    execution = result.scalar_one_or_none()
+    if execution is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execucao '{execution_id}' nao encontrada.",
+        )
+
+    nodes_result = await db.execute(
+        sa_select(WorkflowNodeExecution)
+        .where(WorkflowNodeExecution.execution_id == execution_id)
+        .order_by(WorkflowNodeExecution.started_at.asc())
+    )
+    node_rows = list(nodes_result.scalars().all())
+
+    return ExecutionDetailResponse(
+        execution_id=execution.id,
+        status=execution.status,
+        result=execution.result,
+        error_message=execution.error_message,
+        started_at=execution.started_at,
+        completed_at=execution.completed_at,
+        nodes=[NodeExecutionResponse.model_validate(n) for n in node_rows],
+    )
 
 
 async def _extract_request_payload(request: Request) -> dict[str, Any]:

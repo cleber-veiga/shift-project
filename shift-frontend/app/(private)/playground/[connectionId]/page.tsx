@@ -1019,7 +1019,7 @@ export default function PlaygroundPage({ params }: PageProps) {
                   <div className="px-2 py-6 text-center">
                     <Bookmark className="mx-auto size-8 text-muted-foreground/30" />
                     <p className="mt-2 text-[11px] text-muted-foreground">
-                      Vincule um concorrente a esta conexão para salvar consultas.
+                      Vincule um sistema a esta conexão para salvar consultas.
                     </p>
                   </div>
                 ) : savedQueries.length === 0 ? (
@@ -1137,7 +1137,7 @@ export default function PlaygroundPage({ params }: PageProps) {
               </span>
 
               {/* Save button */}
-              <Tooltip text={connection?.player_id ? "Salvar consulta" : "Vincule um concorrente para salvar"} side="bottom">
+              <Tooltip text={connection?.player_id ? "Salvar consulta" : "Vincule um sistema para salvar"} side="bottom">
                 <button
                   type="button"
                   onClick={() => setSaveDialogOpen(true)}

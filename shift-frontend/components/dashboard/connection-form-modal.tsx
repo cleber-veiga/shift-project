@@ -40,7 +40,7 @@ const DEFAULT_PORTS: Record<ConnectionType, number> = {
   firebird: 3050,
 }
 
-/** Mapeia o database_type do concorrente para o ConnectionType da conexão */
+/** Mapeia o database_type do sistema para o ConnectionType da conexão */
 const PLAYER_DB_TYPE_MAP: Partial<Record<WorkspacePlayerDatabaseType, ConnectionType>> = {
   POSTGRESQL: "postgresql",
   MYSQL: "mysql",
@@ -163,7 +163,7 @@ export function ConnectionFormModal({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
 
-  // ── Concorrente (player) ──
+  // ── Sistema (player) ──
   const [players, setPlayers] = useState<WorkspacePlayer[]>([])
   const [playersLoading, setPlayersLoading] = useState(false)
   const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null)
@@ -271,7 +271,7 @@ export function ConnectionFormModal({
     const player = players.find((p) => p.id === playerId)
     if (!player) return
     setSelectedPlayerId(playerId)
-    // Sugere o tipo de banco do concorrente (usuário pode alterar)
+    // Sugere o tipo de banco do sistema (usuário pode alterar)
     const mappedType = PLAYER_DB_TYPE_MAP[player.database_type]
     if (mappedType && !isEditing) {
       setType(mappedType)
@@ -534,16 +534,16 @@ export function ConnectionFormModal({
               />
             </div>
 
-            {/* Concorrente */}
+            {/* Sistema */}
             <div className="space-y-1.5">
               <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                 <Building2 className="size-3.5" />
-                Concorrente
+                Sistema
               </label>
               {playersLoading ? (
                 <div className="flex h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm text-muted-foreground">
                   <MorphLoader className="size-3.5" />
-                  Carregando concorrentes…
+                  Carregando sistemas…
                 </div>
               ) : (
                 <Select
@@ -552,11 +552,11 @@ export function ConnectionFormModal({
                   disabled={loading}
                 >
                   <SelectTrigger className="w-full bg-background">
-                    <SelectValue placeholder="Selecione um concorrente (opcional)" />
+                    <SelectValue placeholder="Selecione um sistema (opcional)" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="__none__">
-                      <span className="text-muted-foreground">Sem concorrente</span>
+                      <span className="text-muted-foreground">Sem sistema</span>
                     </SelectItem>
                     {players.map((p) => (
                       <SelectItem key={p.id} value={p.id}>
@@ -577,8 +577,8 @@ export function ConnectionFormModal({
               )}
               {players.length === 0 && !playersLoading && (
                 <p className="text-[11px] text-muted-foreground">
-                  Nenhum concorrente cadastrado no workspace. Cadastre em{" "}
-                  <span className="font-medium">Configurações → Concorrentes</span>.
+                  Nenhum sistema cadastrado no workspace. Cadastre em{" "}
+                  <span className="font-medium">Configurações → Sistemas</span>.
                 </p>
               )}
             </div>

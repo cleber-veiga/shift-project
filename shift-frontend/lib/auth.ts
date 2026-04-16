@@ -144,6 +144,50 @@ export type Conglomerate = {
   updated_at: string
 }
 
+export type EconomicGroup = Conglomerate
+
+export type CreateEconomicGroupPayload = {
+  name: string
+  description?: string | null
+  is_active?: boolean
+}
+
+export type UpdateEconomicGroupPayload = Partial<CreateEconomicGroupPayload>
+
+export type Establishment = {
+  id: string
+  economic_group_id: string
+  corporate_name: string
+  trade_name: string | null
+  cnpj: string
+  erp_code: number | null
+  cnae: string
+  state_registration: string | null
+  cep: string | null
+  city: string | null
+  state: string | null
+  notes: string | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export type CreateEstablishmentPayload = {
+  corporate_name: string
+  trade_name?: string | null
+  cnpj: string
+  erp_code?: number | null
+  cnae: string
+  state_registration?: string | null
+  cep?: string | null
+  city?: string | null
+  state?: string | null
+  notes?: string | null
+  is_active?: boolean
+}
+
+export type UpdateEstablishmentPayload = Partial<CreateEstablishmentPayload>
+
 // ─── Input Models ─────────────────────────────────────────────────────────────
 
 export type InputModelColumnType = "text" | "number" | "integer" | "date" | "datetime" | "boolean"
@@ -208,6 +252,49 @@ export type InputModelRowsResponse = {
   rows: InputModelRow[]
 }
 
+// ─── Invitations ──────────────────────────────────────────────────────────────
+
+export type InvitationStatus = "PENDING" | "ACCEPTED" | "CANCELLED" | "EXPIRED"
+
+export type Invitation = {
+  id: string
+  email: string
+  scope: string
+  role: string
+  status: InvitationStatus
+  invited_by_name: string | null
+  invited_by_email: string
+  expires_at: string
+  created_at: string
+}
+
+export type InvitationDetail = {
+  id: string
+  email: string
+  scope: string
+  scope_name: string
+  role: string
+  invited_by_name: string | null
+  is_expired: boolean
+  is_accepted: boolean
+}
+
+export type AcceptInvitationResult = {
+  success: boolean
+  message: string
+  scope: string
+  scope_id: string
+}
+
+export type Member = {
+  user_id: string
+  email: string
+  full_name?: string | null
+  is_active: boolean
+  role: string
+  created_at: string
+}
+
 export type ConnectionType = "oracle" | "postgresql" | "firebird" | "sqlserver" | "mysql"
 
 export type Connection = {
@@ -233,7 +320,7 @@ export type CreateConnectionPayload = {
   name: string
   workspace_id?: string | null
   project_id?: string | null
-  /** UUID do concorrente. Quando informado, 'database' é resolvido automaticamente. */
+  /** UUID do sistema. Quando informado, 'database' é resolvido automaticamente. */
   player_id?: string | null
   type: ConnectionType
   host: string
@@ -627,7 +714,7 @@ export async function listErps(params?: { q?: string }): Promise<ERP[]> {
   return authorizedRequest<ERP[]>(`/erps${qs ? `?${qs}` : ""}`, { method: "GET" })
 }
 
-// ─── Workspace Players (Concorrentes) ─────────────────────────────────────────
+// ─── Workspace Players (Sistemas) ─────────────────────────────────────────────
 
 export async function listWorkspacePlayers(
   workspaceId: string
@@ -697,15 +784,111 @@ export async function updateProject(
   })
 }
 
-// ─── Conglomerados ─────────────────────────────────────────────────────────────
+// ─── Grupos Econômicos ────────────────────────────────────────────────────────
 
 export async function listOrganizationConglomerates(
   organizationId: string
 ): Promise<Conglomerate[]> {
   return authorizedRequest<Conglomerate[]>(
-    `/organizations/${organizationId}/conglomerates`,
+    `/organizations/${organizationId}/economic-groups`,
     { method: "GET" }
   )
+}
+
+export async function createEconomicGroup(
+  organizationId: string,
+  payload: CreateEconomicGroupPayload
+): Promise<EconomicGroup> {
+  return authorizedRequest<EconomicGroup>(
+    `/organizations/${organizationId}/economic-groups`,
+    { method: "POST", body: JSON.stringify(payload) }
+  )
+}
+
+export async function getEconomicGroup(groupId: string): Promise<EconomicGroup> {
+  return authorizedRequest<EconomicGroup>(`/economic-groups/${groupId}`, { method: "GET" })
+}
+
+export async function updateEconomicGroup(
+  groupId: string,
+  payload: UpdateEconomicGroupPayload
+): Promise<EconomicGroup> {
+  return authorizedRequest<EconomicGroup>(`/economic-groups/${groupId}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteEconomicGroup(groupId: string): Promise<void> {
+  return authorizedRequest<void>(`/economic-groups/${groupId}`, { method: "DELETE" })
+}
+
+export async function listEstablishments(groupId: string): Promise<Establishment[]> {
+  return authorizedRequest<Establishment[]>(
+    `/economic-groups/${groupId}/establishments`,
+    { method: "GET" }
+  )
+}
+
+export async function createEstablishment(
+  groupId: string,
+  payload: CreateEstablishmentPayload
+): Promise<Establishment> {
+  return authorizedRequest<Establishment>(
+    `/economic-groups/${groupId}/establishments`,
+    { method: "POST", body: JSON.stringify(payload) }
+  )
+}
+
+export async function updateEstablishment(
+  establishmentId: string,
+  payload: UpdateEstablishmentPayload
+): Promise<Establishment> {
+  return authorizedRequest<Establishment>(`/establishments/${establishmentId}`, {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteEstablishment(establishmentId: string): Promise<void> {
+  return authorizedRequest<void>(`/establishments/${establishmentId}`, { method: "DELETE" })
+}
+
+// ─── Lookups (CNPJ / CEP) ────────────────────────────────────────────────────
+
+export type CNPJLookup = {
+  cnpj: string
+  razao_social: string
+  nome_fantasia: string | null
+  cnae_fiscal: string | null
+  cnae_fiscal_descricao: string | null
+  logradouro: string | null
+  numero: string | null
+  complemento: string | null
+  bairro: string | null
+  cep: string | null
+  municipio: string | null
+  uf: string | null
+  situacao_cadastral: string | null
+  inscricao_estadual: string | null
+}
+
+export type CEPLookup = {
+  cep: string
+  logradouro: string | null
+  complemento: string | null
+  bairro: string | null
+  localidade: string | null
+  uf: string | null
+  estado: string | null
+}
+
+export async function lookupCnpj(cnpj: string): Promise<CNPJLookup> {
+  return authorizedRequest<CNPJLookup>(`/lookups/cnpj/${cnpj.replace(/\D/g, "")}`, { method: "GET" })
+}
+
+export async function lookupCep(cep: string): Promise<CEPLookup> {
+  return authorizedRequest<CEPLookup>(`/lookups/cep/${cep.replace(/\D/g, "")}`, { method: "GET" })
 }
 
 // ─── Conexões ─────────────────────────────────────────────────────────────────
@@ -1349,4 +1532,92 @@ export async function deleteInputModelRow(rowId: string): Promise<void> {
 
 export async function clearInputModelRows(inputModelId: string): Promise<{ deleted: number }> {
   return authorizedRequest<{ deleted: number }>(`/input-models/${inputModelId}/rows`, { method: "DELETE" })
+}
+
+// ─── Workspace Members API ────────────────────────────────────────────────────
+
+export async function listWorkspaceMembers(workspaceId: string): Promise<Member[]> {
+  return authorizedRequest<Member[]>(`/workspaces/${workspaceId}/members`, { method: "GET" })
+}
+
+export async function updateWorkspaceMemberRole(
+  workspaceId: string,
+  userId: string,
+  role: string,
+): Promise<Member> {
+  return authorizedRequest<Member>(`/workspaces/${workspaceId}/members/${userId}`, {
+    method: "PUT",
+    body: JSON.stringify({ role }),
+  })
+}
+
+export async function removeWorkspaceMember(workspaceId: string, userId: string): Promise<void> {
+  return authorizedRequest<void>(`/workspaces/${workspaceId}/members/${userId}`, { method: "DELETE" })
+}
+
+// ─── Project Members API ──────────────────────────────────────────────────────
+
+export async function listProjectMembers(projectId: string): Promise<Member[]> {
+  return authorizedRequest<Member[]>(`/projects/${projectId}/members`, { method: "GET" })
+}
+
+export async function updateProjectMemberRole(
+  projectId: string,
+  userId: string,
+  role: string,
+): Promise<Member> {
+  return authorizedRequest<Member>(`/projects/${projectId}/members/${userId}`, {
+    method: "PUT",
+    body: JSON.stringify({ role }),
+  })
+}
+
+export async function removeProjectMember(projectId: string, userId: string): Promise<void> {
+  return authorizedRequest<void>(`/projects/${projectId}/members/${userId}`, { method: "DELETE" })
+}
+
+// ─── Invitations API ──────────────────────────────────────────────────────────
+
+export async function createWorkspaceInvitation(
+  workspaceId: string,
+  payload: { email: string; role: string },
+): Promise<Invitation> {
+  return authorizedRequest<Invitation>(`/workspaces/${workspaceId}/invitations`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function createProjectInvitation(
+  projectId: string,
+  payload: { email: string; role: string },
+): Promise<Invitation> {
+  return authorizedRequest<Invitation>(`/projects/${projectId}/invitations`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function listWorkspaceInvitations(workspaceId: string): Promise<Invitation[]> {
+  return authorizedRequest<Invitation[]>(`/workspaces/${workspaceId}/invitations`, { method: "GET" })
+}
+
+export async function listProjectInvitations(projectId: string): Promise<Invitation[]> {
+  return authorizedRequest<Invitation[]>(`/projects/${projectId}/invitations`, { method: "GET" })
+}
+
+export async function cancelInvitation(invitationId: string): Promise<void> {
+  return authorizedRequest<void>(`/invitations/${invitationId}`, { method: "DELETE" })
+}
+
+export async function resendInvitation(invitationId: string): Promise<Invitation> {
+  return authorizedRequest<Invitation>(`/invitations/${invitationId}/resend`, { method: "POST" })
+}
+
+export async function getInvitationByToken(token: string): Promise<InvitationDetail> {
+  return request<InvitationDetail>(`/invitations/accept/${token}`, { method: "GET" })
+}
+
+export async function acceptInvitation(token: string): Promise<AcceptInvitationResult> {
+  return authorizedRequest<AcceptInvitationResult>(`/invitations/accept/${token}`, { method: "POST" })
 }
