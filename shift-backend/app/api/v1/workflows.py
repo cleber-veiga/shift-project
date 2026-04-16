@@ -20,6 +20,7 @@ from app.schemas.workflow import (
     ExecutionStatusResponse,
     NodeExecutionResponse,
 )
+from app.services import execution_registry
 from app.services.workflow_service import workflow_service
 from app.services.workflow_test_service import workflow_test_service
 
@@ -37,7 +38,7 @@ async def execute_workflow(
     db: AsyncSession = Depends(get_db),
     _=Depends(require_permission("workspace", "CONSULTANT")),
 ) -> ExecutionResponse:
-    """Submete um workflow para execucao assincrona no Prefect."""
+    """Submete um workflow para execucao assincrona em background."""
     try:
         input_data = await _extract_request_payload(request)
         return await workflow_service.execute_workflow(
@@ -98,6 +99,16 @@ async def test_workflow(
     )
 
 
+@router.get("/executions/running")
+async def list_running_executions(
+    _=Depends(require_permission("workspace", "VIEWER")),
+) -> dict[str, list[str]]:
+    """Retorna as execucoes atualmente ativas neste processo."""
+    return {
+        "execution_ids": [str(eid) for eid in execution_registry.list_running()],
+    }
+
+
 @router.get(
     "/executions/{execution_id}/status",
     response_model=ExecutionStatusResponse,
@@ -115,6 +126,28 @@ async def get_execution_status(
             detail=f"Execucao '{execution_id}' nao encontrada.",
         )
     return result
+
+
+@router.post("/executions/{execution_id}/cancel")
+async def cancel_execution(
+    execution_id: UUID,
+    _=Depends(require_permission("workspace", "CONSULTANT")),
+) -> dict[str, str]:
+    """
+    Cancela uma execucao em andamento.
+
+    Aciona ``task.cancel()`` na coroutine registrada; o finalizador do
+    ``WorkflowExecutionService`` marca ``status=CANCELLED`` no banco.
+    Retorna 404 se a execucao nao esta ativa (nunca registrada, ja
+    finalizada, ou rodando em outro processo).
+    """
+    cancelled = await execution_registry.cancel(execution_id)
+    if not cancelled:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Execucao nao encontrada ou ja finalizada.",
+        )
+    return {"status": "CANCELLED"}
 
 
 @router.get(

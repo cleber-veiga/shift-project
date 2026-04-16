@@ -49,9 +49,6 @@ Thumbs.db
 # Alembic (manter versões, ignorar temporários)
 # alembic/versions/*.py  # descomente se não quiser versionar migrations
 
-# Prefect
-.prefect/
-
 # DuckDB (arquivos de banco local)
 *.duckdb
 *.duckdb.wal

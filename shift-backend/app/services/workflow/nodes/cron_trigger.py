@@ -1,9 +1,9 @@
 """
 Processador do nó de trigger cron.
 
-O agendamento é gerenciado pelo Prefect (Deployment com schedule).
-Este nó não faz processamento de dados — apenas sinaliza o início
-de um fluxo temporal e retorna a data/hora atual como output.
+O agendamento e gerenciado pelo APScheduler interno (ver scheduler_service).
+Este no nao faz processamento de dados — apenas sinaliza o inicio de um
+fluxo temporal e retorna a data/hora atual como output.
 """
 
 from datetime import datetime, timezone

@@ -1,14 +1,9 @@
-import oracledb
-oracledb.init_oracle_client()
-
+import asyncio
 import logging
-import os
 from uuid import uuid4
 
-# Forca o Prefect a rodar em modo local (ephemeral) sem precisar de servidor.
-# Remover a variavel evita erro interno do EventsWorker com api_url vazio.
-os.environ.pop("PREFECT_API_URL", None)
-os.environ["PREFECT_SERVER_ALLOW_EPHEMERAL_MODE"] = "true"
+import oracledb
+oracledb.init_oracle_client()
 
 from app.orchestration.flows.dynamic_runner import run_workflow
 
@@ -100,13 +95,13 @@ def test_oracle_aggregator():
 
     logger.info("Iniciando execucao do workflow de Agregacao (Notas Fiscais)...")
     
-    # Executar o fluxo
+    # Executar o fluxo (run_workflow agora e async — roda via asyncio.run).
     try:
-        result = run_workflow(
+        result = asyncio.run(run_workflow(
             workflow_payload=payload,
             workflow_id=workflow_id,
-            triggered_by="manual"
-        )
+            triggered_by="manual",
+        ))
         logger.info(f"Execucao finalizada com sucesso. Resultado: {result}")
     except Exception as e:
         logger.error(f"Erro durante a execucao: {e}")

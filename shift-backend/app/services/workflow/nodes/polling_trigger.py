@@ -37,8 +37,8 @@ class PollingTriggerProcessor(BaseNodeProcessor):
                 f"No polling '{node_id}': connection_string e query sao obrigatorios."
             )
 
-        # O processor roda em uma task do Prefect; por isso, um engine
-        # sincrono simples ja atende bem para a verificacao de polling.
+        # O processor roda em thread separada (asyncio.to_thread), entao
+        # um engine sincrono simples ja atende a verificacao de polling.
         engine = sa.create_engine(connection_string)
         try:
             with engine.connect() as conn:

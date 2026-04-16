@@ -369,7 +369,6 @@ class ExecutionResponse(BaseModel):
     """Resposta imediata ao submeter um workflow para execucao."""
 
     execution_id: UUID
-    prefect_flow_run_id: UUID | None = None
     status: str
 
 

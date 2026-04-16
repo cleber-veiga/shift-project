@@ -2,7 +2,7 @@
 Fixtures compartilhadas entre todos os testes de nos de transformacao.
 
 Estrategia de teste:
-  - Cada no e testado diretamente via seu processador (sem Prefect/orquestrador).
+  - Cada no e testado diretamente via seu processador (sem orquestrador).
   - O banco DuckDB e criado em um arquivo temporario por teste (tmp_path do pytest).
   - O contexto simula o que o dynamic_runner passaria para o no.
   - Os dados de saida sao verificados lendo a tabela DuckDB resultante.

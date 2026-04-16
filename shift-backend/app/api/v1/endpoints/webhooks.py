@@ -2,7 +2,7 @@
 Endpoint de webhook para disparo externo de workflows.
 
 Sistemas externos enviam POST /api/v1/webhooks/{workflow_id} com
-um payload JSON. O workflow e submetido ao Prefect imediatamente,
+um payload JSON. O workflow e despachado imediatamente em background,
 sem aguardar a conclusao do fluxo.
 """
 

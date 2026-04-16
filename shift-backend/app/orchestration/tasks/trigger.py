@@ -1,12 +1,11 @@
 """
-Task Prefect para nos de trigger.
-Despacha o processamento para os node processors registrados no Shift.
+Execucao de nos de trigger via registry de processors.
 """
 
+import asyncio
 from typing import Any
 
-from prefect import get_run_logger, task
-
+from app.core.logging import bind_context, get_logger
 from app.services.workflow.nodes import get_processor
 
 
@@ -26,8 +25,7 @@ def _resolve_processor_type(
     return node_type
 
 
-@task(name="trigger_node", retries=0)
-def execute_trigger_node(
+async def execute_trigger_node(
     node_id: str,
     config: dict[str, Any],
     context: dict[str, Any],
@@ -45,16 +43,19 @@ def execute_trigger_node(
     Returns:
         Dicionario com o output do processor.
     """
-    logger = get_run_logger()
+    logger = get_logger(__name__)
     resolved_type = _resolve_processor_type(config, processor_type)
 
-    logger.info(
-        f"No trigger '{node_id}' disparado. Processor selecionado: {resolved_type}"
-    )
-
-    processor = get_processor(resolved_type)
-    return processor.process(
+    with bind_context(
         node_id=node_id,
-        config=config,
-        context=context,
-    )
+        execution_id=context.get("execution_id"),
+        workflow_id=context.get("workflow_id"),
+    ):
+        logger.info("trigger.dispatch", processor_type=resolved_type)
+        processor = get_processor(resolved_type)
+        return await asyncio.to_thread(
+            processor.process,
+            node_id=node_id,
+            config=config,
+            context=context,
+        )

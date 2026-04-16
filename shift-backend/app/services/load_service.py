@@ -386,7 +386,7 @@ class LoadService:
         Carrega dados de uma fonte SQL para um destino.
 
         Delega para dlt ou SQLAlchemy conforme o tipo de destino.
-        Usado pelo modo producao (Prefect) onde a fonte e DuckDB staging.
+        Usado pelo modo producao onde a fonte e DuckDB staging.
         """
         cs = destination_connection.lower()
 

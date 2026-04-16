@@ -2,10 +2,11 @@
 Endpoints de autenticacao: registro, login, refresh, logout, /me, Google OAuth2 e reset de senha.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user, get_db
+from app.core.rate_limit import limiter
 from app.models import User
 from app.schemas.user import (
     ForgotPasswordRequest,
@@ -32,7 +33,9 @@ router = APIRouter(prefix="/auth", tags=["autenticacao"])
     response_model=TokenResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@limiter.limit("5/minute")
 async def register(
+    request: Request,
     user_data: UserCreate,
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
@@ -47,7 +50,9 @@ async def register(
 
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("10/minute")
 async def login(
+    request: Request,
     payload: LoginRequest,
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
@@ -63,7 +68,9 @@ async def login(
 
 
 @router.post("/refresh", response_model=TokenResponse)
+@limiter.limit("30/minute")
 async def refresh_token(
+    request: Request,
     payload: RefreshRequest,
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
@@ -104,7 +111,9 @@ async def me(
 
 
 @router.post("/google", response_model=TokenResponse)
+@limiter.limit("10/minute")
 async def login_google(
+    request: Request,
     payload: GoogleAuthRequest,
     db: AsyncSession = Depends(get_db),
 ) -> TokenResponse:
@@ -122,7 +131,9 @@ async def login_google(
 # ─── Reset de senha ───────────────────────────────────────────────────────────
 
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
+@limiter.limit("3/minute")
 async def forgot_password(
+    request: Request,
     payload: ForgotPasswordRequest,
     db: AsyncSession = Depends(get_db),
 ) -> ForgotPasswordResponse:
@@ -148,7 +159,9 @@ async def forgot_password(
 
 
 @router.post("/verify-reset-code", response_model=VerifyCodeResponse)
+@limiter.limit("10/minute")
 async def verify_reset_code(
+    request: Request,
     payload: VerifyCodeRequest,
 ) -> VerifyCodeResponse:
     """Verifica se o codigo de reset e valido."""
@@ -157,7 +170,9 @@ async def verify_reset_code(
 
 
 @router.post("/reset-password", response_model=ResetPasswordResponse)
+@limiter.limit("5/minute")
 async def reset_password(
+    request: Request,
     payload: ResetPasswordRequest,
     db: AsyncSession = Depends(get_db),
 ) -> ResetPasswordResponse:

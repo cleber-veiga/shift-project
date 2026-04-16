@@ -2,11 +2,13 @@
 Servico de envio de email com backend abstrato (console ou Resend).
 """
 
-import logging
+import asyncio
 
 from app.core.config import settings
+from app.core.logging import get_logger
+from app.core.retry import retry_transient
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 SCOPE_LABELS = {
@@ -118,22 +120,45 @@ class EmailService:
         self, to_email: str, subject: str, html: str, text: str
     ) -> bool:
         try:
-            import resend
-
-            resend.api_key = settings.RESEND_API_KEY
-            resend.Emails.send(
-                {
-                    "from": settings.EMAIL_FROM,
-                    "to": [to_email],
-                    "subject": subject,
-                    "html": html,
-                    "text": text,
-                }
+            await _resend_send(
+                to_email=to_email,
+                subject=subject,
+                html=html,
+                text=text,
             )
             return True
         except Exception:
-            logger.exception("Falha ao enviar email via Resend para %s", to_email)
+            logger.exception("email.resend_failed", to=to_email)
             return False
+
+
+@retry_transient()
+async def _resend_send(
+    to_email: str,
+    subject: str,
+    html: str,
+    text: str,
+) -> None:
+    """
+    Chamada de rede isolada com retry exponencial (3 tentativas).
+
+    ``resend.Emails.send`` e sincrono (http request bloqueante) — rodamos
+    em thread para nao bloquear o event loop. O tenacity escolhe a
+    variante async automaticamente quando decora uma coroutine.
+    """
+    import resend
+
+    resend.api_key = settings.RESEND_API_KEY
+    await asyncio.to_thread(
+        resend.Emails.send,
+        {
+            "from": settings.EMAIL_FROM,
+            "to": [to_email],
+            "subject": subject,
+            "html": html,
+            "text": text,
+        },
+    )
 
 
 email_service = EmailService()

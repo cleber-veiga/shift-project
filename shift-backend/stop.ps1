@@ -30,12 +30,6 @@ function Stop-ByCommandLine {
 # Uvicorn (FastAPI)
 Stop-ByCommandLine -Label "FastAPI / uvicorn" -Pattern "uvicorn"
 
-# Prefect worker (serve_worker.py)
-Stop-ByCommandLine -Label "Prefect Worker" -Pattern "serve_worker"
-
-# Prefect server
-Stop-ByCommandLine -Label "Prefect Server" -Pattern "prefect.*server|prefect_server"
-
 # Processos Python restantes do projeto (fallback)
 Stop-ByCommandLine -Label "Python (shift-backend)" -Pattern "shift-backend.*python|python.*shift-backend"
 

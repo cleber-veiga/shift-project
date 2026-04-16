@@ -4,7 +4,7 @@
 #  Requer: make (choco install make)
 # =====================================================
 
-.PHONY: help setup db migrate start stop prefect init-prefect worker api
+.PHONY: help setup db migrate start stop api
 
 VENV     = venv
 PYTHON   = $(VENV)/Scripts/python
@@ -19,14 +19,10 @@ help:
 	@echo   make migrate       - Gera nova migracao (msg="descricao")
 	@echo   make start         - Inicia todos os servicos
 	@echo   make stop          - Encerra todos os servicos
-	@echo   make prefect       - Inicia servidor Prefect
-	@echo   make init-prefect  - Cria pool e deployment (rodar uma vez)
-	@echo   make worker        - Inicia worker Prefect
 	@echo   make api           - Inicia API FastAPI
 
 setup:
 	python -m venv $(VENV)
-	$(PIP) install "prefect==3.0.4" "pydantic==2.10.6" --quiet
 	$(PIP) install -e . --quiet
 	@if not exist .env copy .env.example .env
 
@@ -36,15 +32,6 @@ db:
 migrate:
 	$(ALEMBIC) revision --autogenerate -m "$(msg)"
 	$(ALEMBIC) upgrade head
-
-prefect:
-	$(VENV)/Scripts/prefect server start
-
-init-prefect:
-	$(PYTHON) scripts/init_prefect.py
-
-worker:
-	$(PYTHON) scripts/serve_worker.py
 
 api:
 	$(UVICORN) main:app --reload --port 8000

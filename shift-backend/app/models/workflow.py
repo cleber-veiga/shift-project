@@ -82,9 +82,6 @@ class WorkflowExecution(Base):
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="PENDING"
     )
-    prefect_flow_run_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True
-    )
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(
@@ -92,6 +89,12 @@ class WorkflowExecution(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
     workflow: Mapped["Workflow"] = relationship(back_populates="executions")

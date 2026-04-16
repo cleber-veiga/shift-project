@@ -2,7 +2,7 @@
 Servico de CRUD de Workflows e Templates.
 
 Responsabilidades: criacao, atualizacao, listagem e clonagem de workflows.
-A execucao via Prefect permanece em workflow_service.py (SRP).
+A execucao permanece em workflow_service.py (SRP).
 """
 
 import copy

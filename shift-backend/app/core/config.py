@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     # --- Banco de Dados da Plataforma (asyncpg) ---
     DATABASE_URL: str = "postgresql+asyncpg://shift:shift@localhost:5432/shift"
 
+    # --- Logging ---
+    # LOG_FORMAT: "console" (dev, colorido) ou "json" (producao, machine-readable).
+    # LOG_LEVEL:  DEBUG | INFO | WARNING | ERROR | CRITICAL.
+    LOG_FORMAT: str = "console"
+    LOG_LEVEL: str = "INFO"
+
     # --- Seguranca / JWT ---
     SECRET_KEY: str = "CHANGE-ME-IN-PRODUCTION"
     ALGORITHM: str = "HS256"
@@ -28,13 +34,6 @@ class Settings(BaseSettings):
     # Chave Fernet (32 bytes, base64-url encoded, 44 chars).
     # Gere com: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     ENCRYPTION_KEY: str = "CHANGE-ME-GENERATE-A-REAL-FERNET-KEY-32B="
-
-    # --- Prefect ---
-    PREFECT_FLOW_NAME: str = "dynamic-runner"
-    PREFECT_DEPLOYMENT_NAME: str = "dynamic-runner/shift-workflow-runner"
-    # Work pool usado pelo worker. Serve de fallback para deployments cron quando o
-    # deployment base nao for encontrado ou nao tiver work_pool_name configurado.
-    PREFECT_WORK_POOL_NAME: str = ""
 
     # --- dlt ---
     DLT_DEFAULT_DESTINATION: str = "postgres"

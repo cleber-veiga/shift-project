@@ -144,3 +144,7 @@ from app.services.workflow.nodes.csv_input_node import CsvInputNodeProcessor  # 
 from app.services.workflow.nodes.excel_input_node import ExcelInputNodeProcessor  # noqa: E402, F401
 from app.services.workflow.nodes.api_input_node import ApiInputNodeProcessor  # noqa: E402, F401
 from app.services.workflow.nodes.inline_data_node import InlineDataNodeProcessor  # noqa: E402, F401
+from app.services.workflow.nodes.truncate_table import TruncateTableProcessor  # noqa: E402, F401
+from app.services.workflow.nodes.bulk_insert import BulkInsertProcessor  # noqa: E402, F401
+from app.services.workflow.nodes.if_node import IfNodeProcessor  # noqa: E402, F401
+from app.services.workflow.nodes.switch_node import SwitchNodeProcessor as RowPartitionSwitchNodeProcessor  # noqa: E402, F401

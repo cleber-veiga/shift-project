@@ -2,7 +2,7 @@
 Orquestrador dinamico de workflows.
 
 Recebe o payload do React Flow (nodes + edges), constroi a ordem de
-execucao via ordenacao topologica e despacha as tasks Prefect
+execucao via ordenacao topologica e despacha as coroutines
 correspondentes a cada tipo de no.
 
 Cada no e executado individualmente pelo registry de processors.
@@ -12,27 +12,49 @@ O no de carga (loadNode) le o DuckDB e escreve no destino final via dlt.
 
 Ramificacao condicional
 -----------------------
-Nos de condicao (ifElse, switch) retornam ``active_handle`` em seu resultado,
-indicando qual porta de saida foi ativada. O runner mapeia esse valor contra o
-``sourceHandle`` de cada aresta de saida do no:
+Nos de condicao (ifElse, switch, if_node, switch_node) retornam um marcador
+de handles ativos em seu resultado, que o runner usa para decidir quais
+arestas de saida sao ativadas:
 
-- Arestas cujo ``sourceHandle`` nao corresponde ao ``active_handle`` sao
-  adicionadas a ``inactive_edges``.
-- Nos cujas TODAS as entradas estao em ``inactive_edges`` ou em
-  ``skipped_nodes`` sao marcados com ``status: "skipped_by_branch"`` e nao
-  sao executados. Esse estado se propaga em cascata para os descendentes.
-- Nos de juncao com ao menos uma entrada ativa sao executados normalmente,
-  recebendo apenas os resultados upstream ativos no contexto.
+- ``active_handle`` (string, semantica all-or-nothing): apenas o handle
+  informado e ativo; os demais sao desativados. Usado por ``ifElse`` e
+  ``switch`` (apenas um ramo do grafo e executado).
+- ``active_handles`` (list[str], semantica row-partition): cada handle listado
+  e ativo. Usado por ``if_node`` e ``switch_node`` quando o no particiona
+  linhas por ramo — ambos os ramos podem rodar em paralelo com seus
+  subconjuntos de linhas.
+
+Em ambos os casos, arestas cujo ``sourceHandle`` nao esta no conjunto ativo
+sao adicionadas a ``inactive_edges``. Nos cujas TODAS as entradas estao em
+``inactive_edges`` ou em ``skipped_nodes`` sao marcados com
+``status: "skipped_by_branch"`` e nao sao executados. Esse estado se propaga
+em cascata para os descendentes. Nos de juncao com ao menos uma entrada
+ativa sao executados normalmente, recebendo apenas os resultados upstream
+ativos no contexto.
+
+Roteamento de ``branches`` (row-partition)
+------------------------------------------
+Nos row-partition retornam ``branches``: ``{handle_id -> DuckDbReference}``,
+onde cada referencia aponta para a tabela DuckDB que contem apenas as
+linhas daquele ramo. Ao construir o ``upstream_results`` de um no a jusante,
+o runner identifica o ``sourceHandle`` da aresta origem->destino e substitui
+a referencia primaria do resultado upstream pela particao correspondente
+(ver ``_route_upstream_result``). Assim ``get_primary_input_reference``
+retorna automaticamente a tabela correta para o ramo conectado.
 """
 
+import asyncio
+import time
 from collections import defaultdict, deque
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
-from prefect import flow, get_run_logger
-from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.logging import bind_context, get_logger
+from app.db.session import async_session_factory
 from app.models.workflow import Workflow
 from app.orchestration.tasks.llm_task import execute_llm_node
 from app.orchestration.tasks.node_processor import execute_registered_node
@@ -42,29 +64,43 @@ from app.services.workflow.nodes.exceptions import (
     NodeProcessingSkipped,
 )
 
-# Engine síncrono usado apenas pelo flow Prefect para evitar conflito de event loop.
-# asyncio.run() dentro de um flow síncrono falha quando o worker Prefect já possui
-# um loop em execução. Usar psycopg2 (síncrono) resolve o problema sem refatorar o flow.
-_sync_engine = None
+
+DEFAULT_NODE_TIMEOUT_SECONDS = 300
 
 
-def _get_sync_engine():
-    global _sync_engine
-    if _sync_engine is None:
-        from app.core.config import settings
-        _sync_engine = create_engine(
-            settings.DATABASE_URL_SYNC,
-            pool_pre_ping=True,
-            pool_size=2,
-            max_overflow=2,
-        )
-    return _sync_engine
+def _resolve_node_timeout(node_data: dict[str, Any]) -> float:
+    """Extrai ``timeout_seconds`` do config, com fallback para o default.
+
+    Aceita int ou float positivo; qualquer outro valor cai no default.
+    """
+    raw = node_data.get("timeout_seconds")
+    if isinstance(raw, bool):  # bool e subclasse de int — descartar
+        return DEFAULT_NODE_TIMEOUT_SECONDS
+    if isinstance(raw, (int, float)) and raw > 0:
+        return float(raw)
+    return DEFAULT_NODE_TIMEOUT_SECONDS
 
 
-def _load_workflow_payload_from_db(workflow_id: UUID) -> dict[str, Any]:
-    """Carrega a definicao do workflow do banco para execucoes agendadas (síncrono)."""
-    with Session(_get_sync_engine()) as session:
-        result = session.execute(
+async def _run_with_timeout(
+    node_id: str,
+    coro: Any,
+    timeout: float,
+    logger: Any,
+) -> dict[str, Any]:
+    """Aplica ``asyncio.wait_for`` e converte TimeoutError em NodeProcessingError."""
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        logger.error("node.timeout", node_id=node_id, timeout=timeout)
+        raise NodeProcessingError(
+            f"No '{node_id}' excedeu timeout de {timeout}s"
+        ) from exc
+
+
+async def _load_workflow_payload_from_db(workflow_id: UUID) -> dict[str, Any]:
+    """Carrega a definicao do workflow do banco para execucoes agendadas."""
+    async with async_session_factory() as session:  # type: AsyncSession
+        result = await session.execute(
             select(Workflow.definition).where(Workflow.id == workflow_id)
         )
         workflow_definition = result.scalar_one_or_none()
@@ -212,6 +248,102 @@ def _get_node_type(node: dict[str, Any]) -> str:
     return str(node.get("type") or node.get("data", {}).get("type", "unknown"))
 
 
+def _extract_row_counts(result: Any) -> tuple[int | None, int | None]:
+    """Deriva ``(row_count_in, row_count_out)`` a partir do resultado do no.
+
+    Reconhece chaves comuns usadas pelos processors e pelo load_service.
+    Segue as mesmas heuristicas do ``workflow_test_service`` para manter
+    consistencia das metricas persistidas.
+    """
+    if not isinstance(result, dict):
+        return None, None
+
+    def _as_int(value: Any) -> int | None:
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    # Entrada: total_input (mapper/filter) tem prioridade; depois row_count bruto.
+    row_in = _as_int(result.get("total_input")) or _as_int(result.get("row_count"))
+
+    # Saida: rows_written (loadNode/bulk_insert) tem prioridade; depois row_count.
+    row_out = _as_int(result.get("rows_written")) or _as_int(result.get("row_count"))
+
+    # Row-partition (if_node/switch_node): total de saida = soma dos buckets.
+    if "true_count" in result or "false_count" in result:
+        true_c = _as_int(result.get("true_count")) or 0
+        false_c = _as_int(result.get("false_count")) or 0
+        if row_out is None:
+            row_out = true_c + false_c
+
+    return row_in, row_out
+
+
+# Chaves que nao devem ser copiadas para o output_summary persistido em DB
+# (seja por tamanho, seja por conterem estruturas nao serializaveis).
+_OUTPUT_SUMMARY_DROP_KEYS = frozenset({"rows", "data", "upstream_results"})
+
+
+def _summarize_result(result: Any) -> dict[str, Any]:
+    """Constroi um resumo seguro para JSONB descartando payloads pesados.
+
+    Remove arrays ``rows`` e a referencia DuckDB primaria em ``data`` — essas
+    estruturas podem ter milhares de linhas ou paths efemeros que nao fazem
+    sentido gravar no snapshot de auditoria.
+    """
+    if not isinstance(result, dict):
+        return {"value": str(result)[:500]}
+
+    summary: dict[str, Any] = {}
+    for key, value in result.items():
+        if key in _OUTPUT_SUMMARY_DROP_KEYS:
+            continue
+        if isinstance(value, dict):
+            # Remove array de linhas aninhado caso exista
+            summary[key] = {k: v for k, v in value.items() if k != "rows"}
+        elif isinstance(value, list) and len(value) > 20:
+            summary[key] = {"_truncated": True, "length": len(value)}
+        else:
+            summary[key] = value
+    return summary
+
+
+def _route_upstream_result(
+    source_result: dict[str, Any],
+    source_handle: str | None,
+) -> dict[str, Any]:
+    """
+    Seleciona a particao correta quando o no upstream e row-partition.
+
+    Nos row-partition retornam ``branches``: ``{handle_id -> DuckDbReference}``.
+    Para rotear o downstream para o ramo correto, substituimos a referencia
+    primaria no resultado com a particao que corresponde ao ``sourceHandle``
+    da aresta.
+
+    O shape retornado usa ``output_field="data"`` apontando para a referencia
+    especifica do ramo — ``find_duckdb_reference`` encontra essa referencia
+    primeiro (via resolucao de ``output_field``) e ignora o dicionario
+    ``branches`` original.
+
+    Quando o no upstream nao e row-partition (sem ``branches``), ou quando a
+    aresta nao tem ``sourceHandle``, retorna o resultado intacto.
+    """
+    if not isinstance(source_result, dict):
+        return source_result
+
+    branches = source_result.get("branches")
+    if not isinstance(branches, dict) or source_handle is None:
+        return source_result
+
+    branch_ref = branches.get(source_handle)
+    if not isinstance(branch_ref, dict):
+        return source_result
+
+    return {
+        **source_result,
+        "output_field": "data",
+        "data": branch_ref,
+    }
+
+
 def _get_registered_processor_type(node: dict[str, Any]) -> str | None:
     """Normaliza o tipo do no para o registry de processors."""
     node_type = _get_node_type(node)
@@ -232,7 +364,7 @@ def _get_registered_processor_type(node: dict[str, Any]) -> str | None:
     return None
 
 
-def _resolve_workflow_payload(
+async def _resolve_workflow_payload(
     workflow_payload: dict[str, Any] | None,
     workflow_id: str | None,
 ) -> dict[str, Any]:
@@ -242,14 +374,13 @@ def _resolve_workflow_payload(
 
     if workflow_id is None:
         raise ValueError(
-            "workflow_payload ou workflow_id deve ser informado para executar o flow."
+            "workflow_payload ou workflow_id deve ser informado para executar o workflow."
         )
 
-    return _load_workflow_payload_from_db(UUID(workflow_id))
+    return await _load_workflow_payload_from_db(UUID(workflow_id))
 
 
-@flow(name="dynamic-runner", retries=0, log_prints=True)
-def run_workflow(
+async def run_workflow(
     workflow_payload: dict[str, Any] | None = None,
     workflow_id: str | None = None,
     triggered_by: str = "manual",
@@ -258,19 +389,20 @@ def run_workflow(
     resolved_connections: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """
-    Flow principal que orquestra a execucao dinamica de um workflow.
+    Entrypoint principal que orquestra a execucao dinamica de um workflow.
 
     Cada no e executado individualmente na ordem topologica do grafo.
+    Nos do mesmo nivel sao executados em paralelo via ``asyncio.gather``.
     Nos de transformacao materializam dados em DuckDB e passam a referencia
     para o proximo no via contexto. O no de carga le o DuckDB e escreve
     no destino final.
 
-    O flow pode receber o payload completo do workflow ou apenas o ID.
-    Isso permite que execucoes manuais/webhook e agendamentos cron
-    compartilhem a mesma flow principal.
+    Pode receber o payload completo do workflow ou apenas o ID — permite
+    que execucoes manuais/webhook e agendamentos cron compartilhem o
+    mesmo entrypoint.
     """
-    logger = get_run_logger()
-    resolved_payload = _resolve_workflow_payload(workflow_payload, workflow_id)
+    logger = get_logger(__name__)
+    resolved_payload = await _resolve_workflow_payload(workflow_payload, workflow_id)
     execution_context: dict[str, Any] = {
         "execution_id": execution_id,
         "workflow_id": workflow_id,
@@ -281,137 +413,309 @@ def run_workflow(
     nodes = resolved_payload.get("nodes", [])
     edges = resolved_payload.get("edges", [])
 
-    logger.info(f"Iniciando workflow com {len(nodes)} nos e {len(edges)} arestas.")
+    with bind_context(execution_id=execution_id, workflow_id=workflow_id):
+        logger.info(
+            "workflow.start",
+            node_count=len(nodes),
+            edge_count=len(edges),
+            triggered_by=triggered_by,
+        )
 
-    adjacency, reverse_adj, in_degree, node_map, edge_handle_map, target_handle_map = _build_graph(
-        nodes, edges
-    )
-    levels = _topological_sort_levels(dict(in_degree), adjacency)
+        adjacency, reverse_adj, in_degree, node_map, edge_handle_map, target_handle_map = _build_graph(
+            nodes, edges
+        )
+        levels = _topological_sort_levels(dict(in_degree), adjacency)
 
-    logger.info(f"Niveis de execucao: {len(levels)}")
+        logger.info("workflow.levels_computed", levels=len(levels))
 
-    results: dict[str, dict[str, Any]] = {}
+        results: dict[str, dict[str, Any]] = {}
+        node_executions: list[dict[str, Any]] = []
+        node_timing: dict[str, dict[str, Any]] = {}
 
-    # Controle de ramificacao condicional.
-    # skipped_nodes: nos que nao devem ser executados porque todas as suas
-    #   entradas sao inativas (por branch condicional ou cascata de skip).
-    # inactive_edges: arestas (source, target) que partem de um handle nao
-    #   ativado por um no de condicao.
-    skipped_nodes: set[str] = set()
-    inactive_edges: set[tuple[str, str]] = set()
+        def _record_event(
+            node_id: str,
+            node: dict[str, Any],
+            status: str,
+            *,
+            duration_ms: int = 0,
+            started_at: datetime | None = None,
+            completed_at: datetime | None = None,
+            row_count_in: int | None = None,
+            row_count_out: int | None = None,
+            output_summary: dict[str, Any] | None = None,
+            error_message: str | None = None,
+        ) -> None:
+            """Registra um evento de execucao de no para persistir em DB."""
+            now = datetime.now(timezone.utc)
+            node_data_local = node.get("data", {}) if isinstance(node, dict) else {}
+            label = node_data_local.get("label") or _get_node_type(node)
+            node_executions.append({
+                "node_id": node_id,
+                "node_type": _get_node_type(node),
+                "label": str(label)[:255] if label is not None else None,
+                "status": status,
+                "duration_ms": int(duration_ms),
+                "row_count_in": row_count_in,
+                "row_count_out": row_count_out,
+                "output_summary": output_summary,
+                "error_message": (error_message[:2000] if error_message else None),
+                "started_at": started_at or now,
+                "completed_at": completed_at or now,
+            })
 
-    for level_index, level in enumerate(levels):
-        logger.info(f"Nivel {level_index + 1}: {level}")
-        futures: list[tuple[str, Any]] = []
+        # Controle de ramificacao condicional.
+        # skipped_nodes: nos que nao devem ser executados porque todas as suas
+        #   entradas sao inativas (por branch condicional ou cascata de skip).
+        # inactive_edges: arestas (source, target) que partem de um handle nao
+        #   ativado por um no de condicao.
+        skipped_nodes: set[str] = set()
+        inactive_edges: set[tuple[str, str]] = set()
 
-        for node_id in level:
-            # --- Verificacao de branch condicional ---
-            if _is_node_skipped(node_id, reverse_adj, skipped_nodes, inactive_edges):
-                logger.info(
-                    f"No '{node_id}' ignorado por ramificacao condicional (skipped_by_branch)."
-                )
-                skipped_nodes.add(node_id)
-                results[node_id] = {"node_id": node_id, "status": "skipped_by_branch"}
-                continue
+        for level_index, level in enumerate(levels):
+            logger.info("workflow.level_start", level=level_index + 1, nodes=level)
+            coros: list[tuple[str, Any]] = []
 
-            node = node_map[node_id]
-            node_data = node.get("data", {})
-            node_type = _get_node_type(node)
-            registered_processor_type = _get_registered_processor_type(node)
+            for node_id in level:
+                node = node_map[node_id]
 
-            # Apenas upstream ativos sao passados ao processador.
-            # Nos de juncao recebem somente os resultados dos caminhos ativos.
-            active_sources = [
-                source_id
-                for source_id in reverse_adj.get(node_id, [])
-                if source_id not in skipped_nodes
-                and (source_id, node_id) not in inactive_edges
-            ]
-            upstream_results = {
-                source_id: results.get(source_id, {})
-                for source_id in active_sources
-            }
-            # edge_handles: {source_node_id -> targetHandle} para nos com multiplas
-            # entradas (join, lookup) identificarem qual upstream chegou em qual porta.
-            edge_handles = {
-                source_id: target_handle_map.get((source_id, node_id))
-                for source_id in active_sources
-            }
+                # --- Verificacao de branch condicional ---
+                if _is_node_skipped(node_id, reverse_adj, skipped_nodes, inactive_edges):
+                    with bind_context(node_id=node_id):
+                        logger.info("node.skipped_by_branch")
+                    skipped_nodes.add(node_id)
+                    results[node_id] = {"node_id": node_id, "status": "skipped_by_branch"}
+                    _record_event(
+                        node_id,
+                        node,
+                        "skipped",
+                        output_summary={"reason": "skipped_by_branch"},
+                    )
+                    continue
 
-            if registered_processor_type is not None:
-                logger.info(
-                    f"Executando no registrado: {node_id} ({registered_processor_type})"
-                )
-                # Injeta connection_string no config quando o no usa connection_id.
-                # Os processadores continuam lendo config["connection_string"] sem alteracoes.
-                effective_config = _inject_connection_string(
-                    node_data, resolved_connections or {}
-                )
-                processor_context = {
-                    **execution_context,
-                    "upstream_results": upstream_results,
-                    "edge_handles": edge_handles,
+                node_data = node.get("data", {})
+                node_type = _get_node_type(node)
+                registered_processor_type = _get_registered_processor_type(node)
+
+                # Apenas upstream ativos sao passados ao processador.
+                # Nos de juncao recebem somente os resultados dos caminhos ativos.
+                active_sources = [
+                    source_id
+                    for source_id in reverse_adj.get(node_id, [])
+                    if source_id not in skipped_nodes
+                    and (source_id, node_id) not in inactive_edges
+                ]
+                upstream_results = {
+                    source_id: _route_upstream_result(
+                        results.get(source_id, {}),
+                        edge_handle_map.get((source_id, node_id)),
+                    )
+                    for source_id in active_sources
                 }
-                future = execute_registered_node.submit(
-                    node_id=node_id,
-                    node_type=registered_processor_type,
-                    config=effective_config,
-                    context=processor_context,
+                # edge_handles: {source_node_id -> targetHandle} para nos com multiplas
+                # entradas (join, lookup) identificarem qual upstream chegou em qual porta.
+                edge_handles = {
+                    source_id: target_handle_map.get((source_id, node_id))
+                    for source_id in active_sources
+                }
+
+                node_timeout = _resolve_node_timeout(node_data)
+
+                if registered_processor_type is not None:
+                    with bind_context(node_id=node_id):
+                        logger.info(
+                            "node.dispatch_registered",
+                            processor_type=registered_processor_type,
+                            timeout_seconds=node_timeout,
+                        )
+                    # Injeta connection_string no config quando o no usa connection_id.
+                    effective_config = _inject_connection_string(
+                        node_data, resolved_connections or {}
+                    )
+                    processor_context = {
+                        **execution_context,
+                        "upstream_results": upstream_results,
+                        "edge_handles": edge_handles,
+                    }
+                    node_timing[node_id] = {
+                        "started_at": datetime.now(timezone.utc),
+                        "t0": time.monotonic(),
+                    }
+                    coros.append((
+                        node_id,
+                        _run_with_timeout(
+                            node_id=node_id,
+                            coro=execute_registered_node(
+                                node_id=node_id,
+                                node_type=registered_processor_type,
+                                config=effective_config,
+                                context=processor_context,
+                            ),
+                            timeout=node_timeout,
+                            logger=logger,
+                        ),
+                    ))
+                    continue
+
+                if node_type == "aiNode":
+                    with bind_context(node_id=node_id):
+                        logger.info(
+                            "node.dispatch_llm",
+                            timeout_seconds=node_timeout,
+                        )
+                    node_timing[node_id] = {
+                        "started_at": datetime.now(timezone.utc),
+                        "t0": time.monotonic(),
+                    }
+                    coros.append((
+                        node_id,
+                        _run_with_timeout(
+                            node_id=node_id,
+                            coro=execute_llm_node(
+                                node_id=node_id,
+                                config=node_data,
+                                input_data=upstream_results or None,
+                            ),
+                            timeout=node_timeout,
+                            logger=logger,
+                        ),
+                    ))
+                    continue
+
+                with bind_context(node_id=node_id):
+                    logger.warning("node.unknown_type", node_type=node_type)
+                # Registra como skipped para manter rastreabilidade em DB.
+                _record_event(
+                    node_id,
+                    node,
+                    "skipped",
+                    output_summary={
+                        "reason": "unknown_type",
+                        "node_type": node_type,
+                    },
                 )
-                futures.append((node_id, future))
+
+            if not coros:
                 continue
 
-            if node_type == "aiNode":
-                logger.info(f"AI/LLM: {node_id}")
-                future = execute_llm_node.submit(
-                    node_id=node_id,
-                    config=node_data,
-                    input_data=upstream_results or None,
-                )
-                futures.append((node_id, future))
-                continue
-
-            logger.warning(
-                f"Tipo de no desconhecido '{node_type}' no no '{node_id}'. Ignorando."
+            # Executa nos do nivel em paralelo; cada excecao retorna como valor.
+            node_ids = [nid for nid, _ in coros]
+            gathered = await asyncio.gather(
+                *(c for _, c in coros), return_exceptions=True
             )
 
-        for node_id, future in futures:
-            try:
-                result = future.result()
-            except NodeProcessingSkipped as exc:
-                logger.info(
-                    f"Workflow abortado graciosamente pelo no '{node_id}': {exc}"
+            for node_id, outcome in zip(node_ids, gathered):
+                timing = node_timing.get(node_id, {})
+                started_at = timing.get("started_at") or datetime.now(timezone.utc)
+                t0 = timing.get("t0")
+                duration_ms = (
+                    int((time.monotonic() - t0) * 1000) if t0 is not None else 0
                 )
-                return {
-                    "status": "aborted",
-                    "aborted_by": node_id,
-                    "reason": str(exc),
-                    "node_results": results,
-                }
-            except NodeProcessingError as exc:
-                logger.error(f"Falha funcional no no '{node_id}': {exc}")
-                return {
-                    "status": "failed",
-                    "failed_by": node_id,
-                    "error": str(exc),
-                    "node_results": results,
-                }
+                completed_at = datetime.now(timezone.utc)
+                node_for_event = node_map[node_id]
 
-            results[node_id] = result
-
-            # Se o no retornou active_handle (no de condicao), marca como inativas
-            # todas as arestas de saida cujo sourceHandle nao corresponde ao handle ativo.
-            active_handle = result.get("active_handle")
-            if active_handle is not None:
-                active_handle_str = str(active_handle)
-                for target_id in adjacency.get(node_id, []):
-                    edge_handle = edge_handle_map.get((node_id, target_id))
-                    if edge_handle is not None and edge_handle != active_handle_str:
-                        inactive_edges.add((node_id, target_id))
+                with bind_context(node_id=node_id):
+                    if isinstance(outcome, NodeProcessingSkipped):
                         logger.info(
-                            f"Aresta '{node_id}' -> '{target_id}' (handle='{edge_handle}') "
-                            f"inativada: handle ativo e '{active_handle_str}'."
+                            "workflow.aborted_gracefully", reason=str(outcome)
                         )
+                        _record_event(
+                            node_id,
+                            node_for_event,
+                            "skipped",
+                            duration_ms=duration_ms,
+                            started_at=started_at,
+                            completed_at=completed_at,
+                            error_message=str(outcome),
+                            output_summary={"reason": "aborted_gracefully"},
+                        )
+                        return {
+                            "status": "aborted",
+                            "aborted_by": node_id,
+                            "reason": str(outcome),
+                            "node_results": results,
+                            "node_executions": node_executions,
+                        }
+                    if isinstance(outcome, NodeProcessingError):
+                        logger.error("node.failed", error=str(outcome))
+                        _record_event(
+                            node_id,
+                            node_for_event,
+                            "error",
+                            duration_ms=duration_ms,
+                            started_at=started_at,
+                            completed_at=completed_at,
+                            error_message=str(outcome),
+                        )
+                        return {
+                            "status": "failed",
+                            "failed_by": node_id,
+                            "error": str(outcome),
+                            "node_results": results,
+                            "node_executions": node_executions,
+                        }
+                    if isinstance(outcome, BaseException):
+                        # Erros inesperados — registra evento antes de propagar
+                        # para que _persist_final_state ainda tenha contexto
+                        # minimo (via caller que captura node_executions do
+                        # result parcial, se disponivel). O re-raise mantem o
+                        # comportamento atual: a execucao e marcada como
+                        # FAILED/CANCELLED pelo workflow_service.
+                        _record_event(
+                            node_id,
+                            node_for_event,
+                            "error",
+                            duration_ms=duration_ms,
+                            started_at=started_at,
+                            completed_at=completed_at,
+                            error_message=f"{type(outcome).__name__}: {outcome}",
+                        )
+                        raise outcome
 
-    logger.info(f"Workflow concluido com {len(results)} nos processados.")
-    return {"status": "completed", "node_results": results}
+                    result = outcome
+                    results[node_id] = result
+
+                    row_in, row_out = _extract_row_counts(result)
+                    _record_event(
+                        node_id,
+                        node_for_event,
+                        "success",
+                        duration_ms=duration_ms,
+                        started_at=started_at,
+                        completed_at=completed_at,
+                        row_count_in=row_in,
+                        row_count_out=row_out,
+                        output_summary=_summarize_result(result),
+                    )
+
+                    # Se o no retornou active_handle(s) (no de condicao), marca como
+                    # inativas todas as arestas de saida cujo sourceHandle nao esta
+                    # no conjunto ativo. Suporta duas formas:
+                    #   - ``active_handle``  (str):     all-or-nothing (ifElse/switch)
+                    #   - ``active_handles`` (list):    row-partition (if_node/switch_node)
+                    active_handles_set: set[str] | None = None
+                    active_handles_raw = result.get("active_handles")
+                    if isinstance(active_handles_raw, (list, tuple, set)):
+                        active_handles_set = {str(h) for h in active_handles_raw}
+                    else:
+                        active_handle = result.get("active_handle")
+                        if active_handle is not None:
+                            active_handles_set = {str(active_handle)}
+
+                    if active_handles_set is not None:
+                        for target_id in adjacency.get(node_id, []):
+                            edge_handle = edge_handle_map.get((node_id, target_id))
+                            if edge_handle is not None and edge_handle not in active_handles_set:
+                                inactive_edges.add((node_id, target_id))
+                                logger.info(
+                                    "edge.inactivated",
+                                    target=target_id,
+                                    handle=edge_handle,
+                                    active_handles=sorted(active_handles_set),
+                                )
+
+        logger.info("workflow.completed", node_count=len(results))
+        return {
+            "status": "completed",
+            "node_results": results,
+            "node_executions": node_executions,
+        }

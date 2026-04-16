@@ -72,7 +72,32 @@
       "Bash(python -c \"from app.core.cache import user_cache; from app.api.dependencies import get_current_user; print\\('OK'\\)\")",
       "Bash(python -c \"from app.core.cache import user_cache, TTLCache; c = TTLCache\\(ttl=2\\); import uuid; k = uuid.uuid4\\(\\); c.set\\(k, 'test'\\); assert c.get\\(k\\) == 'test'; c.invalidate\\(k\\); assert c.get\\(k\\) is None; print\\('Cache module OK'\\)\")",
       "Bash(python -c \"import psycopg2; print\\('psycopg2 available'\\)\")",
-      "Bash(python -c \"import psycopg2cffi; print\\('psycopg2cffi available'\\)\")"
+      "Bash(python -c \"import psycopg2cffi; print\\('psycopg2cffi available'\\)\")",
+      "Bash(venv/Scripts/pip install *)",
+      "Bash(venv/Scripts/python -c 'from app.core.logging import get_logger, bind_context; from app.core.retry import retry_transient, retry_with; log = get_logger\\('\\\\''smoke'\\\\''\\); log.info\\('\\\\''hello'\\\\'', foo='\\\\''bar'\\\\''\\); print\\('\\\\''--'\\\\''\\); *)",
+      "Bash(venv/Scripts/python -c ' *)",
+      "Bash(venv/Scripts/python -m pytest tests/ -q --no-header -x)",
+      "Bash(venv/Scripts/python -m pytest tests/ -q --no-header)",
+      "Bash(venv/Scripts/pip show *)",
+      "Bash(venv/Scripts/python -c \"import main; print\\('main imports OK'\\)\")",
+      "Bash(venv/Scripts/python -m pytest -q)",
+      "Bash(venv/Scripts/python -c \"import main; print\\('main OK'\\)\")",
+      "Bash(venv/Scripts/pip uninstall *)",
+      "Bash(venv/Scripts/pip check *)",
+      "Bash(venv/Scripts/python -c \"from app.core.config import settings; print\\('LOG_FORMAT=', settings.LOG_FORMAT\\); print\\('LOG_LEVEL=', settings.LOG_LEVEL\\)\")",
+      "Bash(venv/Scripts/python -c 'from app.core.logging import get_logger, bind_context; l=get_logger\\('\\\\''smoke'\\\\''\\); *)",
+      "Bash(venv/Scripts/python -c \"from app.services.scheduler_service import scheduler; print\\('job_defaults:', scheduler._job_defaults\\); print\\('listeners:', len\\(scheduler._listeners\\)\\)\")",
+      "Bash(venv/Scripts/python -c \"from app.services.email_service import email_service, _resend_send; import asyncio; print\\('retry wrapper attached:', hasattr\\(_resend_send, '__wrapped__'\\)\\)\")",
+      "Bash(venv/Scripts/python -m pytest tests/test_dynamic_runner.py -v)",
+      "Bash(venv/Scripts/python -m pytest tests/)",
+      "Bash(venv/Scripts/python -c \"import main; print\\('OK: app loads'\\); print\\('routes:', len\\(main.app.routes\\)\\); metrics = [r for r in main.app.routes if getattr\\(r, 'path', ''\\) == '/metrics']; print\\('metrics endpoint:', bool\\(metrics\\)\\)\")",
+      "Bash(python -c \"from app.services.workflow.nodes import _PROCESSOR_REGISTRY, has_processor; print\\('registered:', sorted\\(_PROCESSOR_REGISTRY.keys\\(\\)\\)\\); print\\('truncate_table:', has_processor\\('truncate_table'\\)\\); print\\('bulk_insert:', has_processor\\('bulk_insert'\\)\\); print\\('if_node:', has_processor\\('if_node'\\)\\); print\\('switch_node:', has_processor\\('switch_node'\\)\\)\")",
+      "Bash(python -m pytest tests/ -x --tb=short)",
+      "Bash(python -m pytest tests/ --tb=short)",
+      "Bash(python -m pip show pytest-asyncio)",
+      "Bash(python -m pip install \"pytest-asyncio>=0.24,<1.0\")",
+      "Bash(python -m pytest tests/ -q --no-header)",
+      "Bash(python -m pytest tests/test_dynamic_runner.py tests/test_truncate_bulk_status_flatten.py tests/test_workflow_service_persistence.py -v --no-header)"
     ]
   }
 }

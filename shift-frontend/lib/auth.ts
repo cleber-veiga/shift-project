@@ -1226,7 +1226,6 @@ export type UpdateWorkflowPayload = {
 
 export type ExecutionResponse = {
   execution_id: string
-  prefect_flow_run_id: string | null
   status: string
 }
 

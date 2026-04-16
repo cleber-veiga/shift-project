@@ -1,5 +1,5 @@
 """
-Servico de teste de workflows: execucao inline com SSE, sem Prefect.
+Servico de teste de workflows: execucao inline com SSE.
 
 Executa nos em ordem topologica, emitindo eventos SSE por no.
 Usa sessions independentes para nao bloquear o loop de eventos enquanto
