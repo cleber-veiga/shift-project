@@ -17,6 +17,9 @@ from app.api.v1.input_models import router as input_models_router
 from app.api.v1.input_model_rows import router as input_model_rows_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.connections import router as connections_router
+from app.api.v1.composite_preview import router as composite_preview_router
+from app.api.v1.custom_node_definitions import router as custom_node_definitions_router
+from app.api.v1.dead_letters import router as dead_letters_router
 from app.api.v1.economic_groups import router as economic_groups_router
 from app.api.v1.invitations import router as invitations_router
 from app.api.v1.lookups import router as lookups_router
@@ -27,6 +30,7 @@ from app.api.v1.webhooks_admin import router as webhook_admin_router
 from app.api.v1.workflows import router as workflow_router
 from app.api.v1.playground import router as playground_router
 from app.api.v1.saved_queries import router as saved_queries_router
+from app.api.v1.workflow_versions import router as workflow_versions_router
 from app.api.v1.workflows_crud import router as workflow_crud_router
 from app.api.v1.workspaces import router as workspaces_router
 from app.core.logging import get_logger
@@ -115,6 +119,9 @@ Instrumentator(
 
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(connections_router, prefix="/api/v1")
+app.include_router(composite_preview_router, prefix="/api/v1")
+app.include_router(custom_node_definitions_router, prefix="/api/v1")
+app.include_router(dead_letters_router, prefix="/api/v1")
 app.include_router(economic_groups_router, prefix="/api/v1")
 app.include_router(lookups_router, prefix="/api/v1")
 app.include_router(organizations_router, prefix="/api/v1")
@@ -124,6 +131,7 @@ app.include_router(webhook_router, prefix="/api/v1")
 app.include_router(webhook_admin_router, prefix="/api/v1")
 app.include_router(workflow_router, prefix="/api/v1")
 app.include_router(workflow_crud_router, prefix="/api/v1")
+app.include_router(workflow_versions_router, prefix="/api/v1")
 app.include_router(playground_router, prefix="/api/v1")
 app.include_router(saved_queries_router, prefix="/api/v1")
 app.include_router(ai_chat_router, prefix="/api/v1")

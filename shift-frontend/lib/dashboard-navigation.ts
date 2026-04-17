@@ -1,7 +1,7 @@
-import { Building2, FileSpreadsheet, GitBranch, Home, Plug2, ShieldCheck, Users, type LucideIcon } from "lucide-react"
+import { AlertTriangle, Boxes, Building2, FileSpreadsheet, GitBranch, Home, Plug2, ShieldCheck, Users, type LucideIcon } from "lucide-react"
 
 export type DashboardScope = "space" | "project"
-export type DashboardSection = "visao-geral" | "grupo-economico" | "conexoes" | "fluxos" | "modelos-entrada" | "membros" | "controle-acesso"
+export type DashboardSection = "visao-geral" | "grupo-economico" | "conexoes" | "fluxos" | "nos-personalizados" | "modelos-entrada" | "dead-letters" | "membros" | "controle-acesso"
 
 type SectionDefinition = {
   slug: DashboardSection
@@ -56,11 +56,25 @@ const sectionDefinitions: SectionDefinition[] = [
     minWorkspaceRole: "MANAGER",
   },
   {
+    slug: "nos-personalizados",
+    label: "Nós Personalizados",
+    description: "Cadastre nós compostos reutilizáveis (multi-tabela) que aparecem na paleta do editor.",
+    icon: Boxes,
+    minWorkspaceRole: "MANAGER",
+  },
+  {
     slug: "modelos-entrada",
     label: "Modelos de Entrada",
     description: "Defina templates de Excel/CSV para padronizar a importação de dados.",
     icon: FileSpreadsheet,
     minWorkspaceRole: "MANAGER",
+  },
+  {
+    slug: "dead-letters",
+    label: "Dead Letters",
+    description: "Linhas problemáticas capturadas durante execuções de fluxos com retry manual.",
+    icon: AlertTriangle,
+    minWorkspaceRole: "CONSULTANT",
   },
   {
     slug: "membros",
@@ -109,7 +123,7 @@ export function getDashboardSectionMeta(scope: DashboardScope, section: Dashboar
 function buildNavigationItems(scope: DashboardScope) {
   if (scope === "project") {
     return sectionDefinitions
-      .filter((section) => section.slug !== "grupo-economico" && section.slug !== "modelos-entrada" && section.slug !== "controle-acesso")
+      .filter((section) => section.slug !== "grupo-economico" && section.slug !== "modelos-entrada" && section.slug !== "controle-acesso" && section.slug !== "dead-letters")
       .map((section) => getDashboardSectionMeta(scope, section.slug))
   }
 

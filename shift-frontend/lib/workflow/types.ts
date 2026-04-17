@@ -181,6 +181,46 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     color: "violet",
     defaultData: { type: "code", code: "", result_variable: "result" },
   },
+  {
+    type: "sql_script",
+    label: "SQL Script",
+    description: "Executar SQL arbitrário parametrizado",
+    category: "transform",
+    icon: "Terminal",
+    color: "slate",
+    defaultData: {
+      type: "sql_script",
+      connection_id: "",
+      script: "",
+      parameters: {},
+      mode: "query",
+      output_schema: [],
+      output_field: "sql_result",
+      timeout_seconds: 60,
+    },
+  },
+  {
+    type: "loop",
+    label: "For Each",
+    description: "Iterar sobre dataset invocando um workflow por item",
+    category: "transform",
+    icon: "Repeat",
+    color: "violet",
+    defaultData: {
+      type: "loop",
+      source_field: "",
+      workflow_id: "",
+      workflow_version: "latest",
+      item_param_name: "item",
+      index_param_name: "",
+      extra_inputs: {},
+      mode: "sequential",
+      max_parallelism: 4,
+      on_item_error: "fail_fast",
+      max_iterations: 10000,
+      output_field: "loop_result",
+    },
+  },
 
   // --- Decision ---
   {
@@ -203,6 +243,22 @@ export const NODE_REGISTRY: NodeDefinition[] = [
   },
 
   // --- Output ---
+  {
+    type: "composite_insert",
+    label: "Nó Composto",
+    description: "Inserção multi-tabela reutilizável (ex.: Nota + NotaItem)",
+    category: "output",
+    icon: "Boxes",
+    color: "emerald",
+    defaultData: {
+      type: "composite_insert",
+      definition_id: null,
+      definition_version: null,
+      blueprint: null,
+      form_schema: null,
+      field_mapping: {},
+    },
+  },
   {
     type: "truncate_table",
     label: "Limpar Tabela",
@@ -229,6 +285,15 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     icon: "DatabaseZap",
     color: "emerald",
     defaultData: { type: "loadNode", connection_id: "", target_table: "", write_disposition: "append" },
+  },
+  {
+    type: "dead_letter",
+    label: "Dead Letter",
+    description: "Persiste linhas problemáticas para retry manual",
+    category: "output",
+    icon: "AlertTriangle",
+    color: "red",
+    defaultData: { type: "dead_letter" },
   },
 
   // --- AI ---

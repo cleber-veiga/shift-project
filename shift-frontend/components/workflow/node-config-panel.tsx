@@ -12,6 +12,9 @@ import { IfConfig } from "@/components/workflow/nodes/if-config"
 import { SwitchConfig } from "@/components/workflow/nodes/switch-config"
 import { TruncateTableConfig } from "@/components/workflow/nodes/truncate-table-config"
 import { BulkInsertConfig } from "@/components/workflow/nodes/bulk-insert-config"
+import { CompositeInsertConfig } from "@/components/workflow/nodes/composite-insert-config"
+import { SqlScriptConfig } from "@/components/workflow/nodes/sql-script-config"
+import { LoopConfig } from "@/components/workflow/nodes/loop-config"
 import { CronConfig } from "@/components/workflow/nodes/cron-config"
 import { WebhookConfig } from "@/components/workflow/nodes/webhook-config"
 import type { WebhookCapture } from "@/lib/api/webhooks"
@@ -31,6 +34,7 @@ const categoryBgMap: Record<string, string> = {
   emerald: "bg-emerald-500/10",
   orange: "bg-orange-500/10",
   pink: "bg-pink-500/10",
+  slate: "bg-slate-500/10",
 }
 
 const categoryTextMap: Record<string, string> = {
@@ -40,6 +44,7 @@ const categoryTextMap: Record<string, string> = {
   emerald: "text-emerald-500",
   orange: "text-orange-500",
   pink: "text-pink-500",
+  slate: "text-slate-500",
 }
 
 function ConfigField({
@@ -498,6 +503,30 @@ export function NodeConfigFields({
     case "bulk_insert":
       return (
         <BulkInsertConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "composite_insert":
+      return (
+        <CompositeInsertConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "sql_script":
+      return (
+        <SqlScriptConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "loop":
+      return (
+        <LoopConfig
           data={data}
           onUpdate={(newData) => onUpdate(node.id, newData)}
         />

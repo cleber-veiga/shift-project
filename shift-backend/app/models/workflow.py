@@ -75,6 +75,57 @@ class Workflow(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    versions: Mapped[list["WorkflowVersion"]] = relationship(
+        back_populates="workflow",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="WorkflowVersion.version",
+    )
+
+
+class WorkflowVersion(Base):
+    """Snapshot imutavel de um workflow publicado para uso como sub-workflow."""
+
+    __tablename__ = "workflow_versions"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_id", "version", name="uq_workflow_versions_wf_version"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    workflow_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    definition: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    input_schema: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb"),
+    )
+    output_schema: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb"),
+    )
+    published: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true"), default=True,
+    )
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False,
+    )
+
+    workflow: Mapped["Workflow"] = relationship(back_populates="versions")
 
 
 class WorkflowExecution(Base):
@@ -118,6 +169,10 @@ class WorkflowExecution(Base):
 
     workflow: Mapped["Workflow"] = relationship(back_populates="executions")
     node_executions: Mapped[list["WorkflowNodeExecution"]] = relationship(
+        back_populates="execution",
+        cascade="all, delete-orphan",
+    )
+    dead_letter_entries: Mapped[list["DeadLetterEntry"]] = relationship(
         back_populates="execution",
         cascade="all, delete-orphan",
     )
@@ -182,6 +237,58 @@ class WorkflowNodeExecution(Base):
 
     execution: Mapped["WorkflowExecution"] = relationship(
         back_populates="node_executions",
+    )
+
+
+class DeadLetterEntry(Base):
+    """Linha em dead-letter para payloads que nao puderam ser processados."""
+
+    __tablename__ = "dead_letter_entries"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    execution_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workflow_executions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    node_id: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        comment="ID do no que originalmente falhou / gerou o dead-letter.",
+    )
+    error_message: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        comment="Snapshot do payload problematico armazenado para retry manual.",
+    )
+    retry_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        index=True,
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    execution: Mapped["WorkflowExecution"] = relationship(
+        back_populates="dead_letter_entries",
     )
 
 

@@ -144,6 +144,29 @@ class TestTransformForSSENodeError:
         assert sse["duration_ms"] == 60000
 
 
+class TestTransformForSSENodeErrorHandled:
+    def test_error_handled_becomes_node_complete_with_handled_status(self) -> None:
+        evt = {
+            "type": "node_error_handled",
+            "node_id": "n1",
+            "label": "X",
+            "error": "Falha de schema",
+            "error_type": "NodeProcessingError",
+            "duration_ms": 42,
+            "timestamp": "t",
+        }
+        sse = _transform_for_sse(evt, mode="test", total_start=0.0)
+        assert sse is not None
+        assert sse["type"] == "node_complete"
+        assert sse["output"] == {
+            "status": "handled_error",
+            "active_handle": "on_error",
+            "error": "Falha de schema",
+            "error_type": "NodeProcessingError",
+        }
+        assert sse["duration_ms"] == 42
+
+
 class TestTransformForSSENodeSkipped:
     """Compat BC: runner emite node_skipped, SSE envia como node_complete
     com output={status: skipped, reason: ...} para preservar o shape legado."""

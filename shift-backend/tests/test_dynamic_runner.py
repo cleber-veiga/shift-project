@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+import app.orchestration.flows.dynamic_runner as runner_mod
 from app.orchestration.flows.dynamic_runner import (
     _build_graph,
     _extract_row_counts,
@@ -24,6 +25,7 @@ from app.orchestration.flows.dynamic_runner import (
     _topological_sort_levels,
     run_workflow,
 )
+from app.services.workflow.nodes.exceptions import NodeProcessingError
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +255,133 @@ class TestRunWorkflowSmoke:
         """Sem payload e sem workflow_id, o runner deve falhar rapido."""
         with pytest.raises(ValueError, match="workflow_payload ou workflow_id"):
             await run_workflow()
+
+
+class TestRunWorkflowOnErrorBranch:
+    @pytest.mark.asyncio
+    async def test_on_error_branch_activated_on_failure(self, monkeypatch) -> None:
+        seen_upstream: dict[str, Any] = {}
+        events: list[dict[str, Any]] = []
+
+        async def sink(evt: dict[str, Any]) -> None:
+            events.append(evt)
+
+        async def fake_execute_registered_node(
+            node_id: str,
+            node_type: str,
+            config: dict[str, Any],
+            context: dict[str, Any],
+        ) -> dict[str, Any]:
+            if node_id == "n1":
+                raise NodeProcessingError("falha de validacao")
+            seen_upstream.update(context.get("upstream_results", {}))
+            return {"status": "success", "recovered": True}
+
+        monkeypatch.setattr(runner_mod, "execute_registered_node", fake_execute_registered_node)
+
+        payload = {
+            "nodes": [
+                {"id": "n1", "type": "mapper", "data": {"type": "mapper", "label": "Origem"}},
+                {"id": "n2", "type": "mapper", "data": {"type": "mapper", "label": "Fallback"}},
+            ],
+            "edges": [
+                {"source": "n1", "target": "n2", "sourceHandle": "on_error"},
+            ],
+        }
+
+        result = await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-on-error",
+            execution_id="exec-on-error",
+            event_sink=sink,
+        )
+
+        assert result["status"] == "completed"
+        assert result["node_results"]["n1"]["status"] == "handled_error"
+        assert result["node_results"]["n1"]["active_handle"] == "on_error"
+        assert seen_upstream["n1"]["status"] == "handled_error"
+        assert seen_upstream["n1"]["active_handle"] == "on_error"
+
+        n1_exec = next(evt for evt in result["node_executions"] if evt["node_id"] == "n1")
+        assert n1_exec["status"] == "handled_error"
+        assert any(evt["type"] == "node_error_handled" for evt in events)
+
+    @pytest.mark.asyncio
+    async def test_on_error_branch_absent_preserves_old_behavior(self, monkeypatch) -> None:
+        executed: list[str] = []
+
+        async def fake_execute_registered_node(
+            node_id: str,
+            node_type: str,
+            config: dict[str, Any],
+            context: dict[str, Any],
+        ) -> dict[str, Any]:
+            executed.append(node_id)
+            if node_id == "n1":
+                raise NodeProcessingError("boom")
+            return {"status": "success"}
+
+        monkeypatch.setattr(runner_mod, "execute_registered_node", fake_execute_registered_node)
+
+        payload = {
+            "nodes": [
+                {"id": "n1", "type": "mapper", "data": {"type": "mapper"}},
+                {"id": "n2", "type": "mapper", "data": {"type": "mapper"}},
+            ],
+            "edges": [
+                {"source": "n1", "target": "n2", "sourceHandle": "success"},
+            ],
+        }
+
+        result = await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-old-behavior",
+            execution_id="exec-old-behavior",
+        )
+
+        assert result["status"] == "failed"
+        assert result["failed_by"] == "n1"
+        assert executed == ["n1"]
+
+    @pytest.mark.asyncio
+    async def test_success_default_handle_skips_on_error_branch(self, monkeypatch) -> None:
+        executed: list[str] = []
+
+        async def fake_execute_registered_node(
+            node_id: str,
+            node_type: str,
+            config: dict[str, Any],
+            context: dict[str, Any],
+        ) -> dict[str, Any]:
+            executed.append(node_id)
+            return {"status": "success", "node": node_id}
+
+        monkeypatch.setattr(runner_mod, "execute_registered_node", fake_execute_registered_node)
+
+        payload = {
+            "nodes": [
+                {"id": "n1", "type": "mapper", "data": {"type": "mapper"}},
+                {"id": "n2", "type": "mapper", "data": {"type": "mapper"}},
+                {"id": "n3", "type": "mapper", "data": {"type": "mapper"}},
+            ],
+            "edges": [
+                {"source": "n1", "target": "n2", "sourceHandle": "success"},
+                {"source": "n1", "target": "n3", "sourceHandle": "on_error"},
+            ],
+        }
+
+        result = await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-success-default",
+            execution_id="exec-success-default",
+        )
+
+        assert result["status"] == "completed"
+        assert result["node_results"]["n1"]["active_handle"] == "success"
+        assert executed == ["n1", "n2"]
+        n3_exec = next(evt for evt in result["node_executions"] if evt["node_id"] == "n3")
+        assert n3_exec["status"] == "skipped"
+        assert n3_exec["output_summary"] == {"reason": "skipped_by_branch"}
 
 
 # ---------------------------------------------------------------------------

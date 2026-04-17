@@ -474,14 +474,18 @@ async function parseApiError(response: Response): Promise<string> {
       return data.detail
     }
     if (Array.isArray(data.detail) && data.detail.length > 0) {
-      const first = data.detail[0]
-      const msg = typeof first?.msg === "string" ? first.msg.trim() : ""
-      const loc =
-        Array.isArray(first?.loc) && first.loc.length > 0
-          ? first.loc.map((item) => String(item)).join(".")
-          : ""
-      if (msg && loc) return `${loc}: ${msg}`
-      if (msg) return msg
+      const parts = data.detail
+        .map((entry) => {
+          const msg = typeof entry?.msg === "string" ? entry.msg.trim() : ""
+          const loc =
+            Array.isArray(entry?.loc) && entry.loc.length > 0
+              ? entry.loc.map((item) => String(item)).join(".")
+              : ""
+          if (msg && loc) return `${loc}: ${msg}`
+          return msg
+        })
+        .filter(Boolean)
+      if (parts.length > 0) return parts.join(" | ")
     }
   } catch {
     // ignore
@@ -949,6 +953,196 @@ export async function getConnection(connectionId: string): Promise<Connection> {
   return authorizedRequest<Connection>(`/connections/${connectionId}`, {
     method: "GET",
   })
+}
+
+// ─── Nós personalizados (Custom Node Definitions) ────────────────────────────
+
+export type CompositeFkMapItem = {
+  child_column: string
+  parent_returning: string
+}
+
+export type CompositeConflictMode = "insert" | "upsert" | "insert_or_ignore"
+
+export type CompositeTableStep = {
+  alias: string
+  table: string
+  role: "header" | "child"
+  parent_alias?: string | null
+  fk_map: CompositeFkMapItem[]
+  cardinality: "one"
+  columns: string[]
+  returning: string[]
+  conflict_mode?: CompositeConflictMode
+  conflict_keys?: string[]
+  update_columns?: string[] | null
+}
+
+export type CompositeBlueprint = {
+  tables: CompositeTableStep[]
+}
+
+export type CustomNodeFormField = {
+  key: string
+  label?: string | null
+  help?: string | null
+  required?: boolean
+  hidden?: boolean
+  default_upstream?: string | null
+}
+
+export type CustomNodeFormSchema = {
+  fields: CustomNodeFormField[]
+}
+
+export type CustomNodeDefinition = {
+  id: string
+  workspace_id: string | null
+  project_id: string | null
+  name: string
+  description: string | null
+  category: string
+  icon: string | null
+  color: string | null
+  kind: string
+  version: number
+  is_published: boolean
+  blueprint: CompositeBlueprint
+  form_schema: CustomNodeFormSchema | null
+  created_by_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type CreateCustomNodeDefinitionPayload = {
+  name: string
+  workspace_id?: string | null
+  project_id?: string | null
+  description?: string | null
+  category?: string
+  icon?: string | null
+  color?: string | null
+  kind?: "composite_insert"
+  version?: number
+  is_published?: boolean
+  blueprint: CompositeBlueprint
+  form_schema?: CustomNodeFormSchema | null
+}
+
+export type UpdateCustomNodeDefinitionPayload = {
+  name?: string
+  description?: string | null
+  category?: string
+  icon?: string | null
+  color?: string | null
+  version?: number
+  is_published?: boolean
+  blueprint?: CompositeBlueprint
+  form_schema?: CustomNodeFormSchema | null
+}
+
+export async function listWorkspaceCustomNodeDefinitions(
+  workspaceId: string
+): Promise<CustomNodeDefinition[]> {
+  return authorizedRequest<CustomNodeDefinition[]>(
+    `/custom-node-definitions?workspace_id=${workspaceId}`,
+    { method: "GET" }
+  )
+}
+
+export async function listProjectCustomNodeDefinitions(
+  projectId: string
+): Promise<CustomNodeDefinition[]> {
+  return authorizedRequest<CustomNodeDefinition[]>(
+    `/projects/${projectId}/custom-node-definitions`,
+    { method: "GET" }
+  )
+}
+
+export async function getCustomNodeDefinition(
+  definitionId: string
+): Promise<CustomNodeDefinition> {
+  return authorizedRequest<CustomNodeDefinition>(
+    `/custom-node-definitions/${definitionId}`,
+    { method: "GET" }
+  )
+}
+
+export async function createCustomNodeDefinition(
+  payload: CreateCustomNodeDefinitionPayload
+): Promise<CustomNodeDefinition> {
+  return authorizedRequest<CustomNodeDefinition>("/custom-node-definitions", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updateCustomNodeDefinition(
+  definitionId: string,
+  payload: UpdateCustomNodeDefinitionPayload
+): Promise<CustomNodeDefinition> {
+  return authorizedRequest<CustomNodeDefinition>(
+    `/custom-node-definitions/${definitionId}`,
+    {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }
+  )
+}
+
+export async function deleteCustomNodeDefinition(
+  definitionId: string
+): Promise<void> {
+  return authorizedRequest<void>(
+    `/custom-node-definitions/${definitionId}`,
+    { method: "DELETE" }
+  )
+}
+
+export async function duplicateCustomNodeDefinition(
+  definitionId: string
+): Promise<CustomNodeDefinition> {
+  return authorizedRequest<CustomNodeDefinition>(
+    `/custom-node-definitions/${definitionId}/duplicate`,
+    { method: "POST" }
+  )
+}
+
+// ─── Preview de SQL do no composto ──────────────────────────────────────────
+
+export type CompositePreviewDialect = "postgres" | "sqlite" | "oracle"
+
+export type CompositePreviewStepInput = {
+  alias: string
+  table: string
+  columns: string[]
+  conflict_mode?: CompositeConflictMode
+  conflict_keys?: string[]
+  update_columns?: string[] | null
+  returning?: string[]
+}
+
+export type CompositePreviewStatement = {
+  alias: string
+  table: string
+  conflict_mode: string
+  primary_sql: string
+  fetch_existing_sql: string | null
+  always_fetch: boolean
+}
+
+export async function previewCompositeSql(
+  conn_type: CompositePreviewDialect,
+  steps: CompositePreviewStepInput[]
+): Promise<CompositePreviewStatement[]> {
+  const resp = await authorizedRequest<{ statements: CompositePreviewStatement[] }>(
+    "/composite/preview-sql",
+    {
+      method: "POST",
+      body: JSON.stringify({ conn_type, steps }),
+    }
+  )
+  return resp.statements
 }
 
 // ─── Playground ─────────────────────────────────────────────────────────────

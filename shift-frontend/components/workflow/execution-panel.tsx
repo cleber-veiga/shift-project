@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { Braces, CheckCircle2, DatabaseZap, Filter, Loader2, Square, Table2, X, XCircle } from "lucide-react"
+import { AlertTriangle, Braces, CheckCircle2, DatabaseZap, Filter, Loader2, Square, Table2, X, XCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { getNodeDefinition } from "@/lib/workflow/types"
 import { getNodeIcon } from "@/lib/workflow/node-icons"
@@ -13,7 +13,7 @@ interface NodeState {
   node_id: string
   node_type: string
   label: string
-  status: "running" | "success" | "error" | "skipped"
+  status: "running" | "success" | "error" | "skipped" | "handled_error"
   duration_ms?: number
   output?: Record<string, unknown>
   error?: string
@@ -38,9 +38,18 @@ function buildNodeStates(events: WorkflowTestEvent[]): NodeState[] {
     } else if (event.type === "node_complete") {
       if (states[event.node_id]) {
         const isSkipped = event.output?.status === "skipped"
-        states[event.node_id].status = isSkipped ? "skipped" : "success"
+        const isHandledError = event.output?.status === "handled_error"
+        states[event.node_id].status = isSkipped
+          ? "skipped"
+          : isHandledError
+          ? "handled_error"
+          : "success"
         states[event.node_id].duration_ms = event.duration_ms
         states[event.node_id].output = event.output
+        states[event.node_id].error =
+          isHandledError && typeof event.output?.error === "string"
+            ? event.output.error
+            : undefined
       }
     } else if (event.type === "node_error") {
       if (states[event.node_id]) {
@@ -259,6 +268,9 @@ function NodeListItem({
           {node.status === "success" && (
             <CheckCircle2 className="size-3.5 text-emerald-500" />
           )}
+          {node.status === "handled_error" && (
+            <AlertTriangle className="size-3.5 text-rose-500" />
+          )}
           {node.status === "error" && (
             <XCircle className="size-3.5 text-red-500" />
           )}
@@ -304,6 +316,29 @@ function NodeDetail({ node }: { node: NodeState }) {
         <p className="text-[10px] font-bold uppercase tracking-widest text-destructive">Erro</p>
         <div className="rounded-md border border-red-500/20 bg-red-500/5 p-3 text-xs text-red-600 break-all dark:text-red-400">
           {node.error}
+        </div>
+      </div>
+    )
+  }
+
+  if (node.status === "handled_error") {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex items-center gap-2 border-b border-rose-500/20 bg-rose-500/5 px-4 py-3">
+          <AlertTriangle className="size-4 shrink-0 text-rose-500" />
+          <div>
+            <p className="text-xs font-semibold text-rose-700 dark:text-rose-400">
+              Erro tratado via on_error
+            </p>
+            <p className="text-[10px] text-muted-foreground break-all">
+              {node.error ?? "Falha roteada para o ramo alternativo."}
+            </p>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto">
+          <pre className="p-3 font-mono text-[11px] text-foreground whitespace-pre-wrap break-all">
+            {JSON.stringify(node.output ?? {}, null, 2)}
+          </pre>
         </div>
       </div>
     )

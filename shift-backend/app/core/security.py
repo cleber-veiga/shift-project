@@ -20,6 +20,7 @@ from app.models.connection import Connection
 from app.models.input_model import InputModel
 from app.models.input_model_row import InputModelRow
 from app.models import (
+    DeadLetterEntry,
     EconomicGroup,
     Establishment,
     OrganizationMember,
@@ -412,6 +413,27 @@ class AuthorizationService:
                 select(Workflow.workspace_id)
                 .join(WorkflowExecution, WorkflowExecution.workflow_id == Workflow.id)
                 .where(WorkflowExecution.id == execution_id)
+            )
+            return result.scalar_one_or_none()
+
+        dead_letter_id = self._read_uuid_param(request, "dead_letter_id")
+        if dead_letter_id is not None:
+            result = await db.execute(
+                select(Project.workspace_id)
+                .join(Workflow, Workflow.project_id == Project.id)
+                .join(WorkflowExecution, WorkflowExecution.workflow_id == Workflow.id)
+                .join(DeadLetterEntry, DeadLetterEntry.execution_id == WorkflowExecution.id)
+                .where(DeadLetterEntry.id == dead_letter_id)
+            )
+            ws_id = result.scalar_one_or_none()
+            if ws_id is not None:
+                return ws_id
+
+            result = await db.execute(
+                select(Workflow.workspace_id)
+                .join(WorkflowExecution, WorkflowExecution.workflow_id == Workflow.id)
+                .join(DeadLetterEntry, DeadLetterEntry.execution_id == WorkflowExecution.id)
+                .where(DeadLetterEntry.id == dead_letter_id)
             )
             return result.scalar_one_or_none()
 

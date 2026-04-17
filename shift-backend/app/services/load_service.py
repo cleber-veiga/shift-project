@@ -68,6 +68,15 @@ class RejectedRow:
     column: str | None = None
     value: Any = None
     expected_type: str | None = None
+    failed_alias: str | None = None
+
+
+@dataclass
+class PreparedLoadRow:
+    """Linha preparada para insert, mantendo referencia da origem."""
+
+    source_row_number: int
+    values: dict[str, Any]
 
 
 @dataclass
@@ -91,6 +100,8 @@ class LoadResult:
     columns_mapped: int = 0
     unique_columns: list[str] = field(default_factory=list)
     duplicate_sample: list[dict[str, Any]] = field(default_factory=list)
+    successful_row_numbers: list[int] = field(default_factory=list)
+    failed_row_numbers: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -129,6 +140,64 @@ class LoadResult:
         if self.columns_mapped:
             d["columns_mapped"] = self.columns_mapped
         d["loader"] = self.loader
+        return d
+
+
+@dataclass
+class CompositeTableStepResult:
+    """Metricas por tabela dentro de uma carga composta."""
+    alias: str
+    table: str
+    rows_written: int = 0
+
+
+@dataclass
+class CompositeResult:
+    """Resultado de uma carga composta (multi-tabela, transacional)."""
+    status: str = "success"
+    rows_received: int = 0
+    rows_written: int = 0  # linhas de entrada processadas com sucesso (linhas fonte)
+    steps: list[CompositeTableStepResult] = field(default_factory=list)
+    duration_ms: int = 0
+    failed_at_alias: str | None = None
+    failed_at_row_index: int | None = None
+    error_message: str | None = None
+    rejected_rows: list[RejectedRow] = field(default_factory=list)
+    successful_row_numbers: list[int] = field(default_factory=list)
+    failed_row_numbers: list[int] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "status": self.status,
+            "rows_received": self.rows_received,
+            "rows_written": self.rows_written,
+            "steps": [
+                {
+                    "alias": s.alias,
+                    "table": s.table,
+                    "rows_written": s.rows_written,
+                }
+                for s in self.steps
+            ],
+        }
+        if self.duration_ms:
+            d["duration_ms"] = self.duration_ms
+        if self.failed_at_alias:
+            d["failed_at_alias"] = self.failed_at_alias
+        if self.failed_at_row_index is not None:
+            d["failed_at_row_index"] = self.failed_at_row_index
+        if self.error_message:
+            d["error_message"] = self.error_message
+        if self.rejected_rows:
+            d["rejected_count"] = len(self.rejected_rows)
+            d["rejected_rows"] = [
+                {k: v for k, v in rr.__dict__.items() if v is not None}
+                for rr in self.rejected_rows[:10]
+            ]
+        if self.successful_row_numbers:
+            d["succeeded_count"] = len(self.successful_row_numbers)
+        if self.failed_row_numbers:
+            d["failed_count"] = len(self.failed_row_numbers)
         return d
 
 
@@ -218,12 +287,13 @@ class LoadService:
             # Introspeccao dos tipos da tabela destino
             col_type_map = _introspect_columns(engine, target_table)
 
-            # Aplica column_mapping e cast
-            mapped_rows, cast_warnings, cast_summary = _map_and_cast(
+            # Aplica column_mapping e cast, preservando a numeracao das
+            # linhas de origem para split success/on_error a jusante.
+            prepared_rows, cast_warnings, cast_summary = _prepare_rows_for_insert(
                 rows, column_mapping, col_type_map
             )
 
-            if not mapped_rows:
+            if not prepared_rows:
                 return LoadResult(
                     status="skipped",
                     rows_received=rows_received,
@@ -236,7 +306,7 @@ class LoadService:
                 valid_maps = [m for m in column_mapping if m.get("source") and m.get("target")]
                 cols = [m["target"] for m in valid_maps]
             else:
-                cols = list(mapped_rows[0].keys())
+                cols = list(prepared_rows[0].values.keys())
 
             for col in cols:
                 if not _COLUMN_NAME_RE.match(col):
@@ -249,27 +319,29 @@ class LoadService:
 
             if effective_unique:
                 # Resolve nomes: unique_columns pode vir como nomes de
-                # destino (target). Garante que existem nas mapped_rows.
-                available_cols = set(mapped_rows[0].keys()) if mapped_rows else set()
+                # destino (target). Garante que existem nas linhas preparadas.
+                available_cols = (
+                    set(prepared_rows[0].values.keys()) if prepared_rows else set()
+                )
                 valid_unique = [c for c in effective_unique if c in available_cols]
 
                 if valid_unique:
                     seen: set[tuple] = set()
-                    deduped: list[dict[str, Any]] = []
-                    for row in mapped_rows:
-                        key = tuple(row.get(c) for c in valid_unique)
+                    deduped: list[PreparedLoadRow] = []
+                    for prepared in prepared_rows:
+                        key = tuple(prepared.values.get(c) for c in valid_unique)
                         if key in seen:
                             duplicates_removed += 1
                             if len(duplicate_sample) < 5:
                                 duplicate_sample.append(
-                                    {c: row.get(c) for c in valid_unique}
+                                    {c: prepared.values.get(c) for c in valid_unique}
                                 )
                             continue
                         seen.add(key)
-                        deduped.append(row)
-                    mapped_rows = deduped
+                        deduped.append(prepared)
+                    prepared_rows = deduped
 
-            if not mapped_rows:
+            if not prepared_rows:
                 return LoadResult(
                     status="skipped",
                     rows_received=rows_received,
@@ -287,19 +359,36 @@ class LoadService:
             loader = _choose_loader(connection_string)
 
             if loader == "dlt":
-                result = _insert_via_dlt(
-                    connection_string=connection_string,
-                    target_table=target_table,
-                    rows=mapped_rows,
-                    write_disposition=write_disposition,
-                    merge_key=merge_key,
-                    batch_size=batch_size,
-                )
+                try:
+                    result = _insert_via_dlt(
+                        connection_string=connection_string,
+                        target_table=target_table,
+                        rows=[prepared.values for prepared in prepared_rows],
+                        source_row_numbers=[
+                            prepared.source_row_number for prepared in prepared_rows
+                        ],
+                        write_disposition=write_disposition,
+                        merge_key=merge_key,
+                        batch_size=batch_size,
+                    )
+                except Exception:
+                    # dlt nao devolve diagnostico por linha. Se falhar,
+                    # recai no caminho SQLAlchemy para capturar split
+                    # success/on_error sem abortar o workflow inteiro.
+                    result = _insert_via_sqlalchemy(
+                        engine=engine,
+                        target_table=target_table,
+                        prepared_rows=prepared_rows,
+                        cols=cols,
+                        write_disposition=write_disposition,
+                        merge_key=merge_key or [],
+                        batch_size=batch_size,
+                    )
             else:
                 result = _insert_via_sqlalchemy(
                     engine=engine,
                     target_table=target_table,
-                    rows=mapped_rows,
+                    prepared_rows=prepared_rows,
                     cols=cols,
                     write_disposition=write_disposition,
                     merge_key=merge_key or [],
@@ -329,6 +418,242 @@ class LoadService:
                 )
             return result
 
+        finally:
+            engine.dispose()
+
+    def insert_composite(
+        self,
+        connection_string: str,
+        conn_type: str,
+        blueprint: dict[str, Any],
+        field_mapping: dict[str, str],
+        rows: list[dict[str, Any]],
+    ) -> CompositeResult:
+        """
+        Insercao composta em multiplas tabelas relacionadas, em UMA transacao.
+
+        Para cada linha da entrada, percorre ``blueprint["tables"]`` na ordem:
+          1. Monta a linha a inserir a partir de ``field_mapping`` (alias.col -> upstream_col).
+          2. Injeta colunas FK com valores RETURNING capturados de tabelas pais.
+          3. Executa INSERT com RETURNING das colunas declaradas em ``returning``.
+          4. Captura os valores para uso por filhos.
+
+        Garantias:
+          - Transacao unica: falha em qualquer insert faz rollback de TUDO.
+          - Phase 1 exige cardinalidade ``one`` por tabela.
+          - Firebird e MySQL nao sao suportados (ausencia de RETURNING portavel).
+        """
+        import time as _time
+
+        started_at = _time.monotonic()
+
+        steps_spec = _validate_blueprint(blueprint)
+        per_alias_map = _split_field_mapping(field_mapping)
+
+        if conn_type == "firebird":
+            raise ValueError("insert_composite nao suporta Firebird (sem RETURNING portavel).")
+        if conn_type == "mysql":
+            raise ValueError("insert_composite nao suporta MySQL no Phase 1 (sem RETURNING portavel).")
+
+        rows_received = len(rows)
+        step_results: dict[str, CompositeTableStepResult] = {
+            s["alias"]: CompositeTableStepResult(alias=s["alias"], table=s["table"])
+            for s in steps_spec
+        }
+
+        if rows_received == 0:
+            return CompositeResult(
+                status="skipped",
+                rows_received=0,
+                rows_written=0,
+                steps=list(step_results.values()),
+                duration_ms=int((_time.monotonic() - started_at) * 1000),
+            )
+
+        engine = _create_engine(connection_string, conn_type)
+        try:
+            meta = sa.MetaData()
+            tables_by_alias: dict[str, sa.Table] = {}
+            col_types_by_alias: dict[str, dict[str, str]] = {}
+
+            for step in steps_spec:
+                alias = step["alias"]
+                tbl_name = step["table"]
+                _validate_table_name(tbl_name)
+                schema: str | None = None
+                bare_name = tbl_name
+                if "." in tbl_name:
+                    schema, bare_name = tbl_name.split(".", 1)
+                table_obj = sa.Table(
+                    bare_name,
+                    meta,
+                    autoload_with=engine,
+                    schema=schema,
+                )
+                tables_by_alias[alias] = table_obj
+                col_types_by_alias[alias] = _introspect_columns(engine, tbl_name)
+
+            rows_written_source = 0
+            failed_alias: str | None = None
+            failed_index: int | None = None
+            error_msg: str | None = None
+            rejected_rows: list[RejectedRow] = []
+            successful_row_numbers: list[int] = []
+
+            with engine.begin() as db_conn:
+                for row_index, source_row in enumerate(rows):
+                    row_aliases: list[str] = []
+                    captured: dict[str, dict[str, Any]] = {}
+                    alias = ""
+                    savepoint = db_conn.begin_nested()
+                    try:
+                        for step in steps_spec:
+                            alias = step["alias"]
+                            table_obj = tables_by_alias[alias]
+                            col_types = col_types_by_alias[alias]
+                            step_conflict_mode = step.get("conflict_mode", "insert")
+
+                            insert_values = _build_composite_row(
+                                step=step,
+                                source_row=source_row,
+                                upstream_map=per_alias_map.get(alias, {}),
+                                captured=captured,
+                                col_types=col_types,
+                            )
+
+                            returning_names = [
+                                col for col in step["returning"]
+                                if col in table_obj.c
+                            ]
+
+                            if step_conflict_mode == "insert":
+                                stmt = table_obj.insert().values(**insert_values)
+                                if returning_names:
+                                    stmt = stmt.returning(
+                                        *[table_obj.c[col] for col in returning_names]
+                                    )
+                                    result = db_conn.execute(stmt)
+                                    row_ret = result.fetchone()
+                                    captured[alias] = (
+                                        dict(row_ret._mapping) if row_ret is not None else {}
+                                    )
+                                else:
+                                    db_conn.execute(stmt)
+                                    captured[alias] = {}
+                            else:
+                                if conn_type not in _UPSERT_SUPPORTED_DIALECTS:
+                                    raise ValueError(
+                                        f"alias='{alias}' conflict_mode="
+                                        f"'{step_conflict_mode}' nao suportado para "
+                                        f"conn_type='{conn_type}'. Dialetos com upsert: "
+                                        "postgres, sqlite, oracle."
+                                    )
+                                missing_keys = [
+                                    k for k in step["conflict_keys"]
+                                    if k not in insert_values
+                                ]
+                                if missing_keys:
+                                    raise ValueError(
+                                        f"alias='{alias}' conflict_keys {missing_keys} "
+                                        "nao presentes nos valores do INSERT — "
+                                        "confira field_mapping/fk_map."
+                                    )
+                                stmts = _build_upsert_sql(
+                                    conn_type=conn_type,
+                                    table=step["table"],
+                                    columns=list(insert_values.keys()),
+                                    conflict_mode=step_conflict_mode,
+                                    conflict_keys=step["conflict_keys"],
+                                    update_columns=step.get("update_columns"),
+                                    returning=returning_names,
+                                )
+                                row_ret = None
+                                if stmts.always_fetch:
+                                    db_conn.execute(
+                                        sa.text(stmts.primary), insert_values
+                                    )
+                                else:
+                                    result = db_conn.execute(
+                                        sa.text(stmts.primary), insert_values
+                                    )
+                                    if returning_names:
+                                        row_ret = result.fetchone()
+
+                                if (
+                                    returning_names
+                                    and row_ret is None
+                                    and stmts.fetch_existing is not None
+                                ):
+                                    key_params = {
+                                        f"__ck_{k}": insert_values[k]
+                                        for k in step["conflict_keys"]
+                                    }
+                                    fetch_result = db_conn.execute(
+                                        sa.text(stmts.fetch_existing), key_params
+                                    )
+                                    row_ret = fetch_result.fetchone()
+
+                                captured[alias] = (
+                                    dict(row_ret._mapping) if row_ret is not None else {}
+                                )
+
+                            row_aliases.append(alias)
+
+                        savepoint.commit()
+                        rows_written_source += 1
+                        successful_row_numbers.append(row_index + 1)
+                        for committed_alias in row_aliases:
+                            step_results[committed_alias].rows_written += 1
+                    except Exception as exc:
+                        savepoint.rollback()
+                        current_error = f"{type(exc).__name__}: {str(exc)[:300]}"
+                        if failed_alias is None:
+                            failed_alias = alias or None
+                            failed_index = row_index
+                            error_msg = current_error
+                        rejected_rows.append(
+                            RejectedRow(
+                                row_number=row_index + 1,
+                                error=current_error,
+                                failed_alias=alias or None,
+                            )
+                        )
+                        # Rollback acontece automaticamente ao sair do with com excecao.
+                        failed_alias = alias  # noqa: F821 — alias do step que falhou
+
+            duration = int((_time.monotonic() - started_at) * 1000)
+            failed_row_numbers = [row.row_number for row in rejected_rows]
+            status = "success"
+            if rejected_rows:
+                status = "partial" if rows_written_source > 0 else "error"
+            return CompositeResult(
+                status=status,
+                rows_received=rows_received,
+                rows_written=rows_written_source,
+                steps=list(step_results.values()),
+                duration_ms=duration,
+                failed_at_alias=failed_alias,
+                failed_at_row_index=failed_index,
+                error_message=error_msg,
+                rejected_rows=rejected_rows,
+                successful_row_numbers=successful_row_numbers,
+                failed_row_numbers=failed_row_numbers,
+            )
+
+        except Exception as exc:
+            return CompositeResult(
+                status="error",
+                rows_received=rows_received,
+                rows_written=0,
+                steps=[
+                    CompositeTableStepResult(alias=s["alias"], table=s["table"])
+                    for s in steps_spec
+                ],
+                duration_ms=int((_time.monotonic() - started_at) * 1000),
+                failed_at_alias=failed_alias,
+                failed_at_row_index=failed_index,
+                error_message=error_msg or f"{type(exc).__name__}: {str(exc)[:300]}",
+            )
         finally:
             engine.dispose()
 
@@ -505,11 +830,11 @@ def _count_rows(engine: sa.Engine, target_table: str) -> int:
 
 def _choose_loader(connection_string: str) -> Literal["dlt", "sqlalchemy"]:
     """
-    Oracle e Firebird -> sqlalchemy (bug ORA-00932 com CLOB).
+    Oracle, Firebird e SQLite -> sqlalchemy.
     Tudo mais -> dlt.
     """
     cs = connection_string.lower()
-    if cs.startswith(("oracle", "firebird")):
+    if cs.startswith(("oracle", "firebird", "sqlite")):
         return "sqlalchemy"
     return "dlt"
 
@@ -540,15 +865,15 @@ def _introspect_columns(engine: sa.Engine, target_table: str) -> dict[str, str]:
     return col_type_map
 
 
-def _map_and_cast(
+def _prepare_rows_for_insert(
     rows: list[dict[str, Any]],
     column_mapping: list[dict[str, str]] | None,
     col_type_map: dict[str, str],
-) -> tuple[list[dict[str, Any]], list[str], dict[str, int]]:
+) -> tuple[list[PreparedLoadRow], list[str], dict[str, int]]:
     """
     Aplica column_mapping e cast de tipos.
 
-    Retorna: (mapped_rows, cast_warnings, cast_summary)
+    Retorna linhas prontas para insert, preservando a numeracao da origem.
     """
     valid_maps = None
     if column_mapping:
@@ -556,7 +881,7 @@ def _map_and_cast(
         if not valid_maps:
             raise ValueError("Nenhum mapeamento de colunas valido encontrado.")
 
-    mapped_rows: list[dict[str, Any]] = []
+    prepared_rows: list[PreparedLoadRow] = []
     cast_warnings: list[str] = []
     cast_summary: dict[str, int] = {}
 
@@ -593,9 +918,14 @@ def _map_and_cast(
                     new_val = val
                 mapped_row[key] = new_val
 
-        mapped_rows.append(mapped_row)
+        prepared_rows.append(
+            PreparedLoadRow(
+                source_row_number=row_idx + 1,
+                values=mapped_row,
+            )
+        )
 
-    return mapped_rows, cast_warnings, cast_summary
+    return prepared_rows, cast_warnings, cast_summary
 
 
 def _track_cast(summary: dict[str, int], original: Any, converted: Any, db_type: str) -> None:
@@ -615,7 +945,7 @@ def _track_cast(summary: dict[str, int], original: Any, converted: Any, db_type:
 def _insert_via_sqlalchemy(
     engine: sa.Engine,
     target_table: str,
-    rows: list[dict[str, Any]],
+    prepared_rows: list[PreparedLoadRow],
     cols: list[str],
     write_disposition: str,
     merge_key: list[str],
@@ -628,6 +958,7 @@ def _insert_via_sqlalchemy(
     linhas inseridas antes do erro permaneciam e o fallback linha-a-linha
     as duplicava).
     """
+    _ = merge_key
     col_names = ", ".join(f'"{c}"' for c in cols)
     placeholders = ", ".join(f":{c}" for c in cols)
     insert_sql = sa.text(
@@ -636,6 +967,7 @@ def _insert_via_sqlalchemy(
 
     rows_written = 0
     rejected: list[RejectedRow] = []
+    successful_row_numbers: list[int] = []
     batch_count = 0
 
     with engine.begin() as db_conn:
@@ -647,12 +979,17 @@ def _insert_via_sqlalchemy(
             else:
                 db_conn.execute(sa.text(f"TRUNCATE TABLE {target_table}"))
 
-        # Detecta suporte a savepoint (SQLite em modo autocommit nao suporta)
-        supports_savepoint = engine.dialect.name.lower() != "sqlite"
+        # Savepoint e suportado em todos os dialetos que usamos (incluindo
+        # SQLite, desde que a conexao esteja dentro de uma transacao — como e
+        # o caso aqui via ``engine.begin()``). Isso e essencial para partial
+        # row capture: se um batch falha, rolbackeamos apenas o batch e
+        # reinserimos linha a linha, sem deixar linhas fantasma.
+        supports_savepoint = True
 
         # Insere em lotes com savepoint para rollback preciso
-        for i in range(0, len(rows), batch_size):
-            batch = rows[i:i + batch_size]
+        for i in range(0, len(prepared_rows), batch_size):
+            batch_prepared = prepared_rows[i:i + batch_size]
+            batch = [prepared.values for prepared in batch_prepared]
             batch_count += 1
 
             if supports_savepoint:
@@ -662,64 +999,71 @@ def _insert_via_sqlalchemy(
                     db_conn.execute(insert_sql, batch)
                     savepoint.commit()
                     rows_written += len(batch)
+                    successful_row_numbers.extend(
+                        prepared.source_row_number for prepared in batch_prepared
+                    )
                 except Exception:
                     # Rollback do savepoint: DESFAZ linhas parciais do batch
                     savepoint.rollback()
                     # Agora reinsere linha a linha com savepoint individual
-                    for j, single_row in enumerate(batch):
+                    for prepared in batch_prepared:
+                        single_row = prepared.values
                         sp_row = db_conn.begin_nested()
                         try:
                             db_conn.execute(insert_sql, [single_row])
                             sp_row.commit()
                             rows_written += 1
+                            successful_row_numbers.append(prepared.source_row_number)
                         except Exception as row_exc:
                             sp_row.rollback()
-                            row_num = i + j + 1
                             col_hint, val_hint, type_hint = _diagnose_row_error(
                                 single_row, str(row_exc)
                             )
                             rejected.append(RejectedRow(
-                                row_number=row_num,
+                                row_number=prepared.source_row_number,
                                 error=str(row_exc)[:300],
                                 column=col_hint,
                                 value=val_hint,
                                 expected_type=type_hint,
                             ))
-                            if len(rejected) >= 50:
-                                break
             else:
                 # Fallback sem savepoint (SQLite)
                 try:
                     db_conn.execute(insert_sql, batch)
                     rows_written += len(batch)
+                    successful_row_numbers.extend(
+                        prepared.source_row_number for prepared in batch_prepared
+                    )
                 except Exception:
-                    for j, single_row in enumerate(batch):
+                    for prepared in batch_prepared:
+                        single_row = prepared.values
                         try:
                             db_conn.execute(insert_sql, [single_row])
                             rows_written += 1
+                            successful_row_numbers.append(prepared.source_row_number)
                         except Exception as row_exc:
-                            row_num = i + j + 1
                             col_hint, val_hint, type_hint = _diagnose_row_error(
                                 single_row, str(row_exc)
                             )
                             rejected.append(RejectedRow(
-                                row_number=row_num,
+                                row_number=prepared.source_row_number,
                                 error=str(row_exc)[:300],
                                 column=col_hint,
                                 value=val_hint,
                                 expected_type=type_hint,
                             ))
-                            if len(rejected) >= 50:
-                                break
-
-            if len(rejected) >= 50:
-                break
+    failed_row_numbers = [row.row_number for row in rejected]
+    status = "success"
+    if rejected:
+        status = "partial" if rows_written > 0 else "error"
 
     return LoadResult(
-        status="success" if not rejected else "partial",
+        status=status,
         rows_written=rows_written,
         batches=batch_count,
         rejected_rows=rejected,
+        successful_row_numbers=successful_row_numbers,
+        failed_row_numbers=failed_row_numbers,
         loader="sqlalchemy",
     )
 
@@ -742,6 +1086,7 @@ def _insert_via_dlt(
     connection_string: str,
     target_table: str,
     rows: list[dict[str, Any]],
+    source_row_numbers: list[int],
     write_disposition: str,
     merge_key: list[str] | None,
     batch_size: int,
@@ -786,6 +1131,7 @@ def _insert_via_dlt(
         status="success",
         rows_written=len(rows),
         batches=1,
+        successful_row_numbers=source_row_numbers,
         loader="dlt",
     )
 
@@ -1247,6 +1593,319 @@ def _build_dlt_pipelines_dir() -> Path:
     )
     base_dir.mkdir(parents=True, exist_ok=True)
     return base_dir
+
+
+# ─── Upsert SQL builder (composite) ─────────────────────────────────────────
+
+_UPSERT_SUPPORTED_DIALECTS = frozenset({"postgres", "sqlite", "oracle"})
+
+
+@dataclass
+class UpsertStatements:
+    """SQL gerado para um passo de upsert/insert_or_ignore."""
+    primary: str
+    """INSERT ... ON CONFLICT / MERGE — SQL principal a executar."""
+    fetch_existing: str | None
+    """SELECT pelas conflict_keys — usado como fallback quando primary nao retorna."""
+    always_fetch: bool
+    """True para dialetos cujo primary nunca retorna rows (ex.: Oracle MERGE)."""
+
+
+def _build_upsert_sql(
+    *,
+    conn_type: str,
+    table: str,
+    columns: list[str],
+    conflict_mode: str,
+    conflict_keys: list[str],
+    update_columns: list[str] | None,
+    returning: list[str],
+) -> UpsertStatements:
+    """Monta SQL de upsert para postgres/sqlite/oracle.
+
+    ``columns`` deve conter TODAS as colunas que irao no INSERT (inclui FKs),
+    na ordem em que os binds foram preparados pelo chamador. As conflict_keys
+    sao validadas como subset desse conjunto; update_columns=None significa
+    atualizar tudo exceto conflict_keys.
+    """
+    if conflict_mode not in ("upsert", "insert_or_ignore"):
+        raise ValueError(
+            f"_build_upsert_sql espera 'upsert' ou 'insert_or_ignore', "
+            f"recebeu '{conflict_mode}'."
+        )
+    if conn_type not in _UPSERT_SUPPORTED_DIALECTS:
+        raise ValueError(
+            f"Upsert nao suportado para conn_type='{conn_type}'. "
+            "Dialetos suportados: postgres, sqlite, oracle."
+        )
+    if not conflict_keys:
+        raise ValueError("conflict_keys nao pode ser vazio.")
+    col_set = set(columns)
+    missing_keys = [k for k in conflict_keys if k not in col_set]
+    if missing_keys:
+        raise ValueError(
+            f"conflict_keys {missing_keys} nao estao entre as colunas "
+            f"do INSERT ({sorted(col_set)})."
+        )
+
+    schema: str | None = None
+    bare = table
+    if "." in table:
+        schema, bare = table.split(".", 1)
+    target = _quote_table(schema, bare)
+
+    quoted_cols = [f'"{c}"' for c in columns]
+    col_list = ", ".join(quoted_cols)
+    placeholders = ", ".join(f":{c}" for c in columns)
+
+    effective_update = (
+        list(update_columns)
+        if update_columns is not None
+        else [c for c in columns if c not in conflict_keys]
+    )
+
+    fetch_existing: str | None = None
+    if returning:
+        returning_list_fetch = ", ".join(f'"{c}"' for c in returning)
+        key_where = " AND ".join(f'"{k}" = :__ck_{k}' for k in conflict_keys)
+        fetch_existing = (
+            f"SELECT {returning_list_fetch} FROM {target} WHERE {key_where}"
+        )
+
+    if conn_type in ("postgres", "sqlite"):
+        key_list = ", ".join(f'"{k}"' for k in conflict_keys)
+        if conflict_mode == "upsert" and effective_update:
+            set_clause = ", ".join(
+                f'"{c}" = EXCLUDED."{c}"' for c in effective_update
+            )
+            conflict_action = (
+                f"ON CONFLICT ({key_list}) DO UPDATE SET {set_clause}"
+            )
+        else:
+            conflict_action = f"ON CONFLICT ({key_list}) DO NOTHING"
+
+        returning_clause = (
+            " RETURNING " + ", ".join(f'"{c}"' for c in returning)
+            if returning else ""
+        )
+        primary = (
+            f"INSERT INTO {target} ({col_list}) VALUES ({placeholders}) "
+            f"{conflict_action}{returning_clause}"
+        )
+        always_fetch = False
+
+    else:  # oracle
+        using_cols = ", ".join(f':{c} AS "{c}"' for c in columns)
+        on_clause = " AND ".join(f't."{k}" = s."{k}"' for k in conflict_keys)
+        insert_vals = ", ".join(f's."{c}"' for c in columns)
+
+        if conflict_mode == "upsert" and effective_update:
+            update_clause = (
+                "WHEN MATCHED THEN UPDATE SET "
+                + ", ".join(f't."{c}" = s."{c}"' for c in effective_update)
+                + " "
+            )
+        else:
+            update_clause = ""
+
+        insert_clause = (
+            f"WHEN NOT MATCHED THEN INSERT ({col_list}) "
+            f"VALUES ({insert_vals})"
+        )
+        primary = (
+            f"MERGE INTO {target} t USING "
+            f"(SELECT {using_cols} FROM dual) s "
+            f"ON ({on_clause}) {update_clause}{insert_clause}"
+        )
+        # MERGE no Oracle nunca retorna rows por si — fetch obrigatorio quando
+        # returning foi pedido.
+        always_fetch = bool(returning)
+
+    return UpsertStatements(
+        primary=primary,
+        fetch_existing=fetch_existing,
+        always_fetch=always_fetch,
+    )
+
+
+# ─── Helpers do insert_composite ────────────────────────────────────────────
+
+def _validate_blueprint(blueprint: dict[str, Any]) -> list[dict[str, Any]]:
+    """Valida o blueprint e retorna a lista de steps normalizada.
+
+    Checa: (a) tables nao-vazio; (b) aliases unicos; (c) filhos referenciam
+    pais que aparecem antes no array; (d) fk_map.parent_returning existe
+    em ``returning`` do pai. Levanta ValueError em qualquer violacao.
+    """
+    tables = blueprint.get("tables") if isinstance(blueprint, dict) else None
+    if not isinstance(tables, list) or not tables:
+        raise ValueError("blueprint.tables deve ser uma lista nao-vazia.")
+
+    seen_aliases: set[str] = set()
+    returning_by_alias: dict[str, set[str]] = {}
+    normalized: list[dict[str, Any]] = []
+
+    for idx, raw in enumerate(tables):
+        if not isinstance(raw, dict):
+            raise ValueError(f"blueprint.tables[{idx}] deve ser dict.")
+
+        alias = str(raw.get("alias") or "").strip()
+        table = str(raw.get("table") or "").strip()
+        if not alias:
+            raise ValueError(f"blueprint.tables[{idx}].alias obrigatorio.")
+        if not table:
+            raise ValueError(f"blueprint.tables[{idx}].table obrigatorio.")
+        if alias in seen_aliases:
+            raise ValueError(f"alias duplicado no blueprint: '{alias}'.")
+        seen_aliases.add(alias)
+
+        role = str(raw.get("role") or "header")
+        parent_alias = raw.get("parent_alias")
+        fk_map_raw = raw.get("fk_map") or []
+        cardinality = str(raw.get("cardinality") or "one")
+        columns = [str(c) for c in (raw.get("columns") or []) if c]
+        returning = [str(c) for c in (raw.get("returning") or []) if c]
+        conflict_mode = str(raw.get("conflict_mode") or "insert")
+        conflict_keys = [str(c) for c in (raw.get("conflict_keys") or []) if c]
+        update_columns_raw = raw.get("update_columns")
+        update_columns: list[str] | None = (
+            [str(c) for c in update_columns_raw if c]
+            if isinstance(update_columns_raw, list)
+            else None
+        )
+
+        if conflict_mode not in ("insert", "upsert", "insert_or_ignore"):
+            raise ValueError(
+                f"alias='{alias}' conflict_mode invalido: '{conflict_mode}'."
+            )
+        if conflict_mode != "insert" and not conflict_keys:
+            raise ValueError(
+                f"alias='{alias}' conflict_mode='{conflict_mode}' "
+                "exige conflict_keys nao-vazio."
+            )
+        if update_columns is not None:
+            for col in update_columns:
+                if col not in columns:
+                    raise ValueError(
+                        f"alias='{alias}' update_columns contem '{col}' "
+                        "que nao esta em columns."
+                    )
+
+        if cardinality != "one":
+            raise ValueError(
+                f"Phase 1 so suporta cardinality='one'. "
+                f"alias='{alias}' declarou '{cardinality}'."
+            )
+
+        fk_map: list[dict[str, str]] = []
+        if role == "child":
+            if not parent_alias:
+                raise ValueError(f"alias='{alias}' role='child' exige parent_alias.")
+            if parent_alias not in seen_aliases or parent_alias == alias:
+                raise ValueError(
+                    f"alias='{alias}' referencia parent_alias='{parent_alias}' "
+                    "que nao foi declarado antes no blueprint."
+                )
+            if not fk_map_raw:
+                raise ValueError(f"alias='{alias}' role='child' exige fk_map nao-vazio.")
+
+            parent_returning_set = returning_by_alias.get(parent_alias, set())
+            for fk_idx, fk in enumerate(fk_map_raw):
+                if not isinstance(fk, dict):
+                    raise ValueError(
+                        f"alias='{alias}' fk_map[{fk_idx}] deve ser dict."
+                    )
+                child_column = str(fk.get("child_column") or "").strip()
+                parent_returning = str(fk.get("parent_returning") or "").strip()
+                if not child_column or not parent_returning:
+                    raise ValueError(
+                        f"alias='{alias}' fk_map[{fk_idx}] exige "
+                        "child_column e parent_returning."
+                    )
+                if parent_returning not in parent_returning_set:
+                    raise ValueError(
+                        f"alias='{alias}' fk_map aponta para "
+                        f"'{parent_alias}.{parent_returning}' que nao esta em "
+                        f"returning do pai."
+                    )
+                fk_map.append(
+                    {"child_column": child_column, "parent_returning": parent_returning}
+                )
+
+        fk_child_cols = {fk["child_column"] for fk in fk_map}
+        allowed_conflict_keys = set(columns) | fk_child_cols
+        for key in conflict_keys:
+            if key not in allowed_conflict_keys:
+                raise ValueError(
+                    f"alias='{alias}' conflict_keys contem '{key}' "
+                    "que nao esta em columns nem em fk_map.child_column."
+                )
+
+        returning_by_alias[alias] = set(returning)
+        normalized.append({
+            "alias": alias,
+            "table": table,
+            "role": role,
+            "parent_alias": parent_alias if role == "child" else None,
+            "fk_map": fk_map,
+            "cardinality": cardinality,
+            "columns": columns,
+            "returning": returning,
+            "conflict_mode": conflict_mode,
+            "conflict_keys": conflict_keys,
+            "update_columns": update_columns,
+        })
+
+    return normalized
+
+
+def _split_field_mapping(
+    field_mapping: dict[str, str],
+) -> dict[str, dict[str, str]]:
+    """Divide ``{'alias.col': 'upstream_col'}`` em ``{alias: {col: upstream_col}}``."""
+    out: dict[str, dict[str, str]] = {}
+    for key, upstream_col in (field_mapping or {}).items():
+        if not isinstance(key, str) or "." not in key:
+            continue
+        alias, _, column = key.partition(".")
+        alias = alias.strip()
+        column = column.strip()
+        if not alias or not column:
+            continue
+        out.setdefault(alias, {})[column] = str(upstream_col)
+    return out
+
+
+def _build_composite_row(
+    *,
+    step: dict[str, Any],
+    source_row: dict[str, Any],
+    upstream_map: dict[str, str],
+    captured: dict[str, dict[str, Any]],
+    col_types: dict[str, str],
+) -> dict[str, Any]:
+    """Monta valores do INSERT desta tabela (FKs do pai + campos do upstream)."""
+    values: dict[str, Any] = {}
+
+    # 1. FKs primeiro — vem de captured[parent_alias]
+    parent_alias = step.get("parent_alias")
+    for fk in step.get("fk_map") or []:
+        parent_values = captured.get(parent_alias or "") or {}
+        values[fk["child_column"]] = parent_values.get(fk["parent_returning"])
+
+    # 2. Colunas declaradas, lidas do source_row via upstream_map
+    for column in step["columns"]:
+        upstream_key = upstream_map.get(column)
+        if upstream_key is None:
+            continue
+        raw_value = source_row.get(upstream_key)
+        db_type = col_types.get(column.upper(), "")
+        try:
+            values[column] = cast_for_db(raw_value, db_type)
+        except (ValueError, TypeError):
+            values[column] = raw_value
+
+    return values
 
 
 # ─── Instancia singleton ────────────────────────────────────────────────────

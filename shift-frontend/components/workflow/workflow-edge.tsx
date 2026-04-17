@@ -20,6 +20,7 @@ export function WorkflowEdge({
   sourceY,
   targetX,
   targetY,
+  sourceHandleId,
   sourcePosition,
   targetPosition,
   selected,
@@ -57,6 +58,9 @@ export function WorkflowEdge({
   )
 
   const isActive = hovered || selected
+  const isErrorEdge = sourceHandleId === "on_error"
+  const baseStroke = isErrorEdge ? "#ef4444" : style?.stroke
+  const activeStroke = isErrorEdge ? "#dc2626" : "hsl(var(--primary))"
 
   return (
     <>
@@ -65,8 +69,9 @@ export function WorkflowEdge({
         markerEnd={markerEnd}
         style={{
           ...style,
-          stroke: isActive ? "hsl(var(--primary))" : style?.stroke,
+          stroke: isActive ? activeStroke : baseStroke,
           strokeWidth: isActive ? 2.5 : ((style?.strokeWidth as number) ?? 2),
+          strokeDasharray: isErrorEdge ? "6 4" : style?.strokeDasharray,
           transition: "stroke 0.15s, stroke-width 0.15s",
         }}
         interactionWidth={20}

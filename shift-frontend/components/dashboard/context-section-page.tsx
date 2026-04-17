@@ -14,6 +14,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { hasWorkspacePermission } from "@/lib/permissions"
 import { AccessMatrixSection } from "@/components/dashboard/access-matrix-section"
 import { ConnectionsSection } from "@/components/dashboard/connections-section"
+import { CustomNodeDefinitionsSection } from "@/components/dashboard/custom-node-definitions-section"
+import { DeadLettersSection } from "@/components/dashboard/dead-letters-section"
 import { EconomicGroupSection } from "@/components/dashboard/economic-group-section"
 import { InputModelsSection } from "@/components/dashboard/input-models-section"
 import { MembersSection } from "@/components/dashboard/members-section"
@@ -414,8 +416,16 @@ export function ContextSectionPage({ scope, section }: ContextSectionPageProps) 
     return <ConnectionsSection scope={scope} />
   }
 
+  if (section === "nos-personalizados") {
+    return <CustomNodeDefinitionsSection scope={scope} />
+  }
+
   if (section === "modelos-entrada") {
     return <InputModelsSection />
+  }
+
+  if (section === "dead-letters") {
+    return <DeadLettersSection />
   }
 
   if (section === "membros") {

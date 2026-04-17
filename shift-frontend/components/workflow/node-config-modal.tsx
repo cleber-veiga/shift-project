@@ -3,6 +3,7 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
 import { type Node } from "@xyflow/react"
 import {
+  AlertTriangle,
   ArrowRightLeft,
   Braces,
   ChevronDown,
@@ -524,6 +525,21 @@ function OutputPanel({
         <div className="flex flex-1 items-center justify-center gap-2 text-xs text-muted-foreground">
           <Loader2 className="size-3.5 animate-spin" />
           Executando…
+        </div>
+      ) : currentOutput?.status === "handled_error" ? (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex items-start gap-2 border-b border-rose-500/20 bg-rose-500/5 px-3 py-3">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-rose-500" />
+            <div className="min-w-0">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-rose-600 dark:text-rose-400">
+                Erro tratado
+              </div>
+              <div className="mt-1 text-[11px] text-rose-600 break-all dark:text-rose-400">
+                {currentOutput.error ?? "Falha roteada para o handle on_error."}
+              </div>
+            </div>
+          </div>
+          {currentOutput.output && <DataViewer output={currentOutput.output} />}
         </div>
       ) : currentOutput?.status === "error" ? (
         <div className="flex flex-col gap-2 p-3">

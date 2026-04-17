@@ -3,6 +3,7 @@
 import { Fragment, memo, useCallback, useEffect, useRef, useState } from "react"
 import { Handle, Position, useReactFlow, type NodeProps } from "@xyflow/react"
 import {
+  AlertTriangle,
   CheckCircle2,
   Copy,
   Loader2,
@@ -72,6 +73,20 @@ const themes: Record<
     border:      "border-orange-200 dark:border-orange-500/30",
     handleColor: "!bg-orange-500",
     ring:        "ring-orange-400/50",
+  },
+  slate: {
+    iconBg:      "bg-slate-100 dark:bg-slate-500/20",
+    iconColor:   "text-slate-600 dark:text-slate-300",
+    border:      "border-slate-200 dark:border-slate-500/30",
+    handleColor: "!bg-slate-500",
+    ring:        "ring-slate-400/50",
+  },
+  red: {
+    iconBg:      "bg-red-100 dark:bg-red-500/20",
+    iconColor:   "text-red-600 dark:text-red-400",
+    border:      "border-red-200 dark:border-red-500/30",
+    handleColor: "!bg-red-500",
+    ring:        "ring-red-400/50",
   },
 }
 
@@ -153,6 +168,52 @@ function getNodeSummaryRows(type: string, data: Record<string, unknown>): Summar
   }
 }
 
+const sourceHandleBaseClass =
+  "!size-3 !-right-2 !rounded-full !border-2 !border-background !transition-transform hover:!scale-125"
+
+function BranchSourceHandle({
+  id,
+  top,
+  colorClass,
+  label,
+  labelClass,
+}: {
+  id: string
+  top: string
+  colorClass: string
+  label: string
+  labelClass: string
+}) {
+  return (
+    <>
+      <Handle
+        type="source"
+        position={Position.Right}
+        id={id}
+        style={{ top }}
+        className={cn(sourceHandleBaseClass, colorClass)}
+      />
+      <span
+        className={cn("pointer-events-none absolute text-[8px] font-bold", labelClass)}
+        style={{ right: 10, top, transform: "translateY(-50%)" }}
+      >
+        {label}
+      </span>
+    </>
+  )
+}
+
+function LegacySourceHandle() {
+  return (
+    <Handle
+      type="source"
+      position={Position.Right}
+      style={{ top: "50%" }}
+      className="!size-2 !-right-1 !border-0 !bg-transparent !opacity-0 !pointer-events-none"
+    />
+  )
+}
+
 // ─── Node component ────────────────────────────────────────────────────────────
 
 function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
@@ -174,9 +235,11 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
   }, [menuOpen])
 
   const definition  = getNodeDefinition(type ?? "")
-  const theme       = themes[definition?.color ?? "blue"] ?? themes.blue
-  const Icon        = getNodeIcon(definition?.icon ?? "Database")
   const nodeData    = data as Record<string, unknown>
+  const customIcon  = typeof nodeData.icon === "string" ? nodeData.icon : null
+  const customColor = typeof nodeData.color === "string" && nodeData.color.trim() !== "" ? nodeData.color : null
+  const theme       = themes[definition?.color ?? "blue"] ?? themes.blue
+  const Icon        = getNodeIcon(customIcon ?? definition?.icon ?? "Database")
   const label       = nodeData.label as string | undefined
   const enabled     = nodeData.enabled !== false          // default: enabled
   const execState   = useNodeExecution(id)
@@ -199,6 +262,7 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
   const execBorder =
     execState?.status === "running" ? "!border-amber-400 shadow-amber-300/40 shadow-lg"
     : execState?.status === "success" ? "!border-emerald-400 shadow-emerald-300/30 shadow-md"
+    : execState?.status === "handled_error" ? "!border-rose-400 shadow-rose-300/30 shadow-md"
     : execState?.status === "error"   ? "!border-red-500 shadow-red-400/30 shadow-lg"
     : ""
 
@@ -275,11 +339,16 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
           <div
             className={cn(
               "flex size-9 items-center justify-center rounded-xl transition-all",
-              theme.iconBg,
+              !customColor && theme.iconBg,
               execState?.status === "running" && "animate-pulse",
             )}
+            style={
+              customColor
+                ? { backgroundColor: `${customColor}20`, color: customColor }
+                : undefined
+            }
           >
-            <Icon className={cn("size-4", theme.iconColor)} />
+            <Icon className={cn("size-4", !customColor && theme.iconColor)} />
           </div>
 
           {execState?.status === "running" && (
@@ -290,6 +359,11 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
           {execState?.status === "success" && (
             <span className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full border-2 border-background bg-emerald-500">
               <CheckCircle2 className="size-2.5 text-white" />
+            </span>
+          )}
+          {execState?.status === "handled_error" && (
+            <span className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full border-2 border-background bg-rose-500">
+              <AlertTriangle className="size-2.5 text-white" />
             </span>
           )}
           {execState?.status === "error" && (
@@ -431,58 +505,27 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
 
       {/* ── Source handle(s) (right) ── */}
       {(() => {
-        const isOutput = definition?.category === "output" && definition?.type !== "truncate_table"
-        if (isOutput) return null
-
-        // IF node: two handles (true / false)
+        // IF node: true / false + on_error
         if (definition?.type === "if_node") {
           return (
             <>
-              <Handle
-                type="source"
-                position={Position.Right}
-                id="true"
-                style={{ top: "35%" }}
-                className={cn(
-                  "!size-3 !-right-2 !rounded-full !border-2 !border-background !transition-transform hover:!scale-125",
-                  "!bg-emerald-500",
-                )}
-              />
-              <span
-                className="pointer-events-none absolute text-[9px] font-bold text-emerald-500"
-                style={{ right: 10, top: "35%", transform: "translateY(-50%)" }}
-              >
-                V
-              </span>
-              <Handle
-                type="source"
-                position={Position.Right}
-                id="false"
-                style={{ top: "65%" }}
-                className={cn(
-                  "!size-3 !-right-2 !rounded-full !border-2 !border-background !transition-transform hover:!scale-125",
-                  "!bg-red-500",
-                )}
-              />
-              <span
-                className="pointer-events-none absolute text-[9px] font-bold text-red-500"
-                style={{ right: 10, top: "65%", transform: "translateY(-50%)" }}
-              >
-                F
-              </span>
+              <BranchSourceHandle id="true" top="28%" colorClass="!bg-emerald-500" label="V" labelClass="text-emerald-500" />
+              <BranchSourceHandle id="false" top="50%" colorClass="!bg-orange-500" label="F" labelClass="text-orange-500" />
+              <BranchSourceHandle id="on_error" top="72%" colorClass="!bg-red-500" label="ERR" labelClass="text-red-500" />
             </>
           )
         }
 
-        // Switch node: dynamic handles from cases + default
+        // Switch node: dynamic handles from cases + default + on_error
         if (definition?.type === "switch_node") {
           const cases: { label: string }[] = Array.isArray(nodeData.cases) ? (nodeData.cases as { label: string }[]) : []
           const handleIds = [...cases.map((c) => c.label).filter(Boolean), "default"]
           const count = handleIds.length || 1
           return (
             <>
+              <LegacySourceHandle />
               {handleIds.map((hId, idx) => {
-                const pct = count === 1 ? 50 : 20 + (idx * 60) / (count - 1)
+                const pct = count === 1 ? 38 : 18 + (idx * 44) / Math.max(count - 1, 1)
                 return (
                   <Fragment key={hId}>
                     <Handle
@@ -491,7 +534,7 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
                       id={hId}
                       style={{ top: `${pct}%` }}
                       className={cn(
-                        "!size-3 !-right-2 !rounded-full !border-2 !border-background !transition-transform hover:!scale-125",
+                        sourceHandleBaseClass,
                         hId === "default" ? "!bg-gray-400" : theme.handleColor,
                       )}
                     />
@@ -504,20 +547,19 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
                   </Fragment>
                 )
               })}
+              <BranchSourceHandle id="on_error" top="82%" colorClass="!bg-red-500" label="ERR" labelClass="text-red-500" />
             </>
           )
         }
 
-        // Default: single handle
+        // Default nodes: success + on_error, plus a hidden legacy handle so
+        // edges antigos sem ``sourceHandle`` continuam visiveis.
         return (
-          <Handle
-            type="source"
-            position={Position.Right}
-            className={cn(
-              "!size-3.5 !-right-2 !rounded-full !border-2 !border-background !transition-transform hover:!scale-125",
-              theme.handleColor,
-            )}
-          />
+          <>
+            <LegacySourceHandle />
+            <BranchSourceHandle id="success" top="36%" colorClass="!bg-emerald-500" label="OK" labelClass="text-emerald-500" />
+            <BranchSourceHandle id="on_error" top="70%" colorClass="!bg-red-500" label="ERR" labelClass="text-red-500" />
+          </>
         )
       })()}
     </div>

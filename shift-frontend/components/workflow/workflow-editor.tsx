@@ -35,11 +35,14 @@ import {
   getWorkflowSchedule,
   updateWorkflow,
   testWorkflowStream,
+  listWorkspaceCustomNodeDefinitions,
+  type CustomNodeDefinition,
   type Workflow,
   type WorkflowScheduleStatus,
   type WorkflowTestEvent,
 } from "@/lib/auth"
 import { useDashboard } from "@/lib/context/dashboard-context"
+import { CustomNodesContext, findCustomNode } from "@/lib/workflow/custom-nodes-context"
 
 /** Build nodeTypes map — all custom node types share one component */
 function buildNodeTypes(): NodeTypes {
@@ -102,6 +105,9 @@ function WorkflowEditorInner({
   const [workflowWorkspaceId, setWorkflowWorkspaceId] = useState<string | undefined>(
     selectedWorkspace?.id,
   )
+
+  // Custom (composite_insert) node definitions available in this workspace
+  const [customNodes, setCustomNodes] = useState<CustomNodeDefinition[]>([])
 
   const [showLibrary, setShowLibrary] = useState(false)
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
@@ -172,6 +178,27 @@ function WorkflowEditorInner({
     }
   }, [workflowId, setNodes, setEdges, refreshScheduleStatus])
 
+  // ── Load custom node definitions (composite_insert palette) ──────────────
+  useEffect(() => {
+    const wsId = workflowWorkspaceId ?? selectedWorkspace?.id
+    if (!wsId) {
+      setCustomNodes([])
+      return
+    }
+    let cancelled = false
+    listWorkspaceCustomNodeDefinitions(wsId)
+      .then((list) => {
+        if (cancelled) return
+        setCustomNodes(list.filter((d) => d.is_published))
+      })
+      .catch(() => {
+        if (!cancelled) setCustomNodes([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workflowWorkspaceId, selectedWorkspace?.id])
+
   // ── Edge connections ─────────────────────────────────────────────────────
   const onConnect = useCallback(
     (params: Connection) => {
@@ -216,16 +243,39 @@ function WorkflowEditorInner({
         y: event.clientY,
       })
 
+      let data: Record<string, unknown> = {
+        ...definition.defaultData,
+        label: definition.label,
+      }
+
+      // composite_insert: snapshot blueprint from the custom definition
+      if (type === "composite_insert") {
+        const defId = event.dataTransfer.getData("application/reactflow-definition-id")
+        const customDef = findCustomNode(customNodes, defId)
+        if (!customDef) return
+        data = {
+          ...data,
+          label: customDef.name,
+          definition_id: customDef.id,
+          definition_version: customDef.version,
+          icon: customDef.icon ?? null,
+          color: customDef.color ?? null,
+          blueprint: customDef.blueprint,
+          form_schema: customDef.form_schema ?? null,
+          field_mapping: {},
+        }
+      }
+
       const newNode: Node = {
         id: generateNodeId(),
         type,
         position,
-        data: { ...definition.defaultData, label: definition.label },
+        data,
       }
 
       setNodes((nds) => [...nds, newNode])
     },
-    [reactFlowInstance, setNodes],
+    [reactFlowInstance, setNodes, customNodes],
   )
 
   // ── Update node data from config panel ───────────────────────────────────
@@ -439,12 +489,17 @@ function WorkflowEditorInner({
             }))
           } else if (event.type === "node_complete") {
             const isSkipped = event.output?.status === "skipped"
+            const isHandledError = event.output?.status === "handled_error"
             setNodeExecStates((prev) => ({
               ...prev,
               [event.node_id]: {
-                status: isSkipped ? "skipped" : "success",
+                status: isSkipped ? "skipped" : isHandledError ? "handled_error" : "success",
                 duration_ms: event.duration_ms,
                 output: event.output,
+                error:
+                  isHandledError && typeof event.output?.error === "string"
+                    ? event.output.error
+                    : undefined,
                 is_pinned: event.is_pinned === true,
               },
             }))
@@ -535,6 +590,7 @@ function WorkflowEditorInner({
   }
 
   return (
+    <CustomNodesContext.Provider value={customNodes}>
     <NodeActionsContext.Provider value={nodeActionsValue}>
     <NodeExecutionContext.Provider value={nodeExecStates}>
       <div className="flex h-full flex-col overflow-hidden bg-background">
@@ -700,6 +756,7 @@ function WorkflowEditorInner({
       </div>
     </NodeExecutionContext.Provider>
     </NodeActionsContext.Provider>
+    </CustomNodesContext.Provider>
   )
 }
 

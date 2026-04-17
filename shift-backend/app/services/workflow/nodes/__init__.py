@@ -146,5 +146,14 @@ from app.services.workflow.nodes.api_input_node import ApiInputNodeProcessor  # 
 from app.services.workflow.nodes.inline_data_node import InlineDataNodeProcessor  # noqa: E402, F401
 from app.services.workflow.nodes.truncate_table import TruncateTableProcessor  # noqa: E402, F401
 from app.services.workflow.nodes.bulk_insert import BulkInsertProcessor  # noqa: E402, F401
+from app.services.workflow.nodes.composite_insert import CompositeInsertProcessor  # noqa: E402, F401
+from app.services.workflow.nodes.dead_letter import DeadLetterProcessor  # noqa: E402, F401
 from app.services.workflow.nodes.if_node import IfNodeProcessor  # noqa: E402, F401
 from app.services.workflow.nodes.switch_node import SwitchNodeProcessor as RowPartitionSwitchNodeProcessor  # noqa: E402, F401
+from app.services.workflow.nodes.sql_script import SqlScriptProcessor  # noqa: E402, F401
+from app.services.workflow.nodes.sub_workflow import (  # noqa: E402, F401
+    CallWorkflowProcessor,
+    WorkflowInputProcessor,
+    WorkflowOutputProcessor,
+)
+from app.services.workflow.nodes.loop import LoopProcessor  # noqa: E402, F401

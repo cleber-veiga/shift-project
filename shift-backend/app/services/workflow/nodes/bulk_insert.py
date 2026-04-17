@@ -29,10 +29,11 @@ from typing import Any
 import duckdb
 
 from app.data_pipelines.duckdb_storage import (
+    ensure_duckdb_reference,
     build_table_ref,
     get_primary_input_reference,
 )
-from app.services.load_service import load_service
+from app.services.load_service import RejectedRow, load_service
 from app.services.workflow.nodes import BaseNodeProcessor, register_processor
 from app.services.workflow.nodes.exceptions import NodeProcessingError
 
@@ -130,6 +131,17 @@ class BulkInsertProcessor(BaseNodeProcessor):
 
         result_dict = load_result.to_dict()
         result_dict["message"] = _build_insert_report(load_result, target_table)
+        execution_id = str(
+            context.get("execution_id") or context.get("workflow_id") or node_id
+        )
+        _attach_branch_outputs(
+            result_dict=result_dict,
+            rows=rows,
+            rejected_rows=load_result.rejected_rows,
+            successful_row_numbers=load_result.successful_row_numbers,
+            execution_id=execution_id,
+            node_id=node_id,
+        )
 
         # Top-level status vem do LoadResult (``success``/``error``) para
         # parity com workflow_test_service e para habilitar if_node gates.
@@ -211,3 +223,68 @@ def _build_insert_report(result: Any, target_table: str) -> str:
             f"{result.dest_count_after} depois"
         )
     return " | ".join(lines)
+
+
+def _attach_branch_outputs(
+    *,
+    result_dict: dict[str, Any],
+    rows: list[dict[str, Any]],
+    rejected_rows: list[RejectedRow],
+    successful_row_numbers: list[int],
+    execution_id: str,
+    node_id: str,
+) -> None:
+    rejected_by_row = {row.row_number: row for row in rejected_rows}
+    success_set = set(successful_row_numbers)
+
+    success_rows: list[dict[str, Any]] = []
+    failed_rows: list[dict[str, Any]] = []
+    for row_number, row in enumerate(rows, start=1):
+        if row_number in success_set:
+            success_rows.append(dict(row))
+        elif row_number in rejected_by_row:
+            failed_rows.append(
+                _enrich_failed_row(dict(row), rejected_by_row[row_number])
+            )
+
+    branches: dict[str, Any] = {}
+    active_handles: list[str] = []
+    if success_rows:
+        branches["success"] = ensure_duckdb_reference(
+            success_rows,
+            execution_id,
+            f"{node_id}_success",
+        )
+        active_handles.append("success")
+    if failed_rows:
+        branches["on_error"] = ensure_duckdb_reference(
+            failed_rows,
+            execution_id,
+            f"{node_id}_on_error",
+        )
+        active_handles.append("on_error")
+        result_dict["failed_node"] = node_id
+        result_dict["error"] = failed_rows[0].get("_dead_letter_error")
+
+    if branches:
+        result_dict["branches"] = branches
+        result_dict["active_handles"] = active_handles
+    if success_rows:
+        result_dict["succeeded_rows_count"] = len(success_rows)
+    if failed_rows:
+        result_dict["failed_rows_count"] = len(failed_rows)
+
+
+def _enrich_failed_row(
+    row: dict[str, Any],
+    rejected_row: RejectedRow,
+) -> dict[str, Any]:
+    row["_dead_letter_row_number"] = rejected_row.row_number
+    row["_dead_letter_error"] = rejected_row.error
+    if rejected_row.column is not None:
+        row["_dead_letter_column"] = rejected_row.column
+    if rejected_row.expected_type is not None:
+        row["_dead_letter_expected_type"] = rejected_row.expected_type
+    if rejected_row.value is not None:
+        row["_dead_letter_value"] = rejected_row.value
+    return row

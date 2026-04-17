@@ -95,9 +95,13 @@ def _transform_for_sse(
 ) -> dict[str, Any] | None:
     """Mapeia evento do runner para o shape SSE esperado pelo frontend.
 
-    Detalhe nao-obvio: ``node_skipped`` vira ``node_complete`` com
-    ``output={status:skipped,reason:...}`` — legado para nao quebrar
-    clientes existentes.
+    Detalhe nao-obvio:
+    - ``node_skipped`` vira ``node_complete`` com
+      ``output={status:skipped,reason:...}`` — legado para nao quebrar
+      clientes existentes.
+    - ``node_error_handled`` tambem vira ``node_complete`` para que o
+      frontend marque o no como concluido com metadados de erro tratado,
+      sem depender de um novo tipo de evento SSE.
     """
     evt_type = evt.get("type")
 
@@ -140,6 +144,21 @@ def _transform_for_sse(
             "node_id": evt.get("node_id"),
             "label": evt.get("label"),
             "error": evt.get("error"),
+            "duration_ms": evt.get("duration_ms", 0),
+            "timestamp": evt.get("timestamp"),
+        }
+
+    if evt_type == "node_error_handled":
+        return {
+            "type": "node_complete",
+            "node_id": evt.get("node_id"),
+            "label": evt.get("label"),
+            "output": {
+                "status": "handled_error",
+                "active_handle": "on_error",
+                "error": evt.get("error"),
+                "error_type": evt.get("error_type"),
+            },
             "duration_ms": evt.get("duration_ms", 0),
             "timestamp": evt.get("timestamp"),
         }

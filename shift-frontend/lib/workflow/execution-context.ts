@@ -1,6 +1,6 @@
 import { createContext, useContext } from "react"
 
-export type NodeExecStatus = "running" | "success" | "error" | "skipped"
+export type NodeExecStatus = "running" | "success" | "error" | "skipped" | "handled_error"
 
 export type NodeExecState = {
   status: NodeExecStatus

@@ -1,9 +1,11 @@
 "use client"
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { ChevronDown, ChevronRight, GripVertical, Search, X } from "lucide-react"
 import { NODE_CATEGORIES, NODE_REGISTRY, type NodeCategory, type NodeDefinition } from "@/lib/workflow/types"
 import { getNodeIcon } from "@/lib/workflow/node-icons"
+import { useCustomNodes } from "@/lib/workflow/custom-nodes-context"
+import type { CustomNodeDefinition } from "@/lib/auth"
 import { cn } from "@/lib/utils"
 
 interface NodeLibraryProps {
@@ -54,17 +56,77 @@ function DraggableNode({ definition }: { definition: NodeDefinition }) {
   )
 }
 
+function DraggableCustomNode({ custom }: { custom: CustomNodeDefinition }) {
+  const Icon = getNodeIcon(custom.icon ?? "Boxes")
+  const customColor =
+    typeof custom.color === "string" && custom.color.trim() !== "" ? custom.color : null
+  const hasCustomColor = customColor !== null
+
+  function onDragStart(event: React.DragEvent) {
+    event.dataTransfer.setData("application/reactflow-type", "composite_insert")
+    event.dataTransfer.setData("application/reactflow-definition-id", custom.id)
+    event.dataTransfer.effectAllowed = "move"
+  }
+
+  return (
+    <div
+      draggable
+      onDragStart={onDragStart}
+      className="group flex cursor-grab items-center gap-2.5 rounded-md border border-transparent px-2 py-2 transition-colors hover:border-border hover:bg-muted/50 active:cursor-grabbing"
+    >
+      <GripVertical className="size-3 shrink-0 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground" />
+      <div
+        className={cn(
+          "flex size-7 shrink-0 items-center justify-center rounded-md",
+          !hasCustomColor && "bg-emerald-500/10",
+        )}
+        style={
+          customColor
+            ? { backgroundColor: `${customColor}20`, color: customColor }
+            : undefined
+        }
+      >
+        <Icon className={cn("size-3.5", !hasCustomColor && "text-emerald-500")} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-xs font-medium text-foreground">{custom.name}</p>
+        <p className="truncate text-[10px] text-muted-foreground">
+          {custom.description ?? `${custom.blueprint?.tables?.length ?? 0} tabela(s) · v${custom.version}`}
+        </p>
+      </div>
+    </div>
+  )
+}
+
 export function NodeLibrary({ onClose }: NodeLibraryProps) {
   const [search, setSearch] = useState("")
   const [expanded, setExpanded] = useState<Set<NodeCategory>>(new Set(NODE_CATEGORIES.map((c) => c.key)))
+  const [customExpanded, setCustomExpanded] = useState(true)
+
+  const customNodes = useCustomNodes()
+
+  // Hide the base "composite_insert" template from the palette — users drag
+  // specific custom definitions from the dedicated section below.
+  const registryNodes = useMemo(
+    () => NODE_REGISTRY.filter((n) => n.type !== "composite_insert"),
+    [],
+  )
 
   const filteredNodes = search.trim()
-    ? NODE_REGISTRY.filter(
+    ? registryNodes.filter(
         (n) =>
           n.label.toLowerCase().includes(search.toLowerCase()) ||
           n.description.toLowerCase().includes(search.toLowerCase())
       )
-    : NODE_REGISTRY
+    : registryNodes
+
+  const filteredCustomNodes = search.trim()
+    ? customNodes.filter(
+        (c) =>
+          c.name.toLowerCase().includes(search.toLowerCase()) ||
+          (c.description?.toLowerCase().includes(search.toLowerCase()) ?? false)
+      )
+    : customNodes
 
   function toggleCategory(cat: NodeCategory) {
     setExpanded((prev) => {
@@ -108,16 +170,45 @@ export function NodeLibrary({ onClose }: NodeLibraryProps) {
         {search.trim() ? (
           // Flat filtered list
           <div className="space-y-0.5">
-            {filteredNodes.length === 0 && (
+            {filteredNodes.length === 0 && filteredCustomNodes.length === 0 && (
               <p className="px-2 py-4 text-center text-xs text-muted-foreground">Nenhum nó encontrado</p>
             )}
             {filteredNodes.map((node) => (
               <DraggableNode key={node.type} definition={node} />
             ))}
+            {filteredCustomNodes.map((c) => (
+              <DraggableCustomNode key={c.id} custom={c} />
+            ))}
           </div>
         ) : (
           // Categorized list
           <div className="space-y-1">
+            {filteredCustomNodes.length > 0 && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setCustomExpanded((v) => !v)}
+                  className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted/50"
+                >
+                  {customExpanded ? (
+                    <ChevronDown className="size-3 text-muted-foreground" />
+                  ) : (
+                    <ChevronRight className="size-3 text-muted-foreground" />
+                  )}
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-500">
+                    Nós Personalizados
+                  </span>
+                  <span className="ml-auto text-[10px] text-muted-foreground">{filteredCustomNodes.length}</span>
+                </button>
+                {customExpanded && (
+                  <div className="ml-1 space-y-0.5">
+                    {filteredCustomNodes.map((c) => (
+                      <DraggableCustomNode key={c.id} custom={c} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             {NODE_CATEGORIES.map((cat) => {
               const nodes = filteredNodes.filter((n) => n.category === cat.key)
               if (nodes.length === 0) return null

@@ -15,9 +15,9 @@ Emissao de eventos (opcional)
 ``run_workflow`` aceita um ``event_sink: Callable[[dict], Awaitable[None]]``
 opcional para observabilidade em tempo real. Quando fornecido, o runner
 emite eventos de ciclo de vida (execution_start, node_start, node_complete,
-node_error, node_skipped, execution_end) para o sink — usado pelo
-``workflow_test_service`` para transformar em SSE. Quando ``None``
-(padrao em execucoes cron), nao ha overhead.
+node_error, node_error_handled, node_skipped, execution_end) para o sink —
+usado pelo ``workflow_test_service`` para transformar em SSE. Quando
+``None`` (padrao em execucoes cron), nao ha overhead.
 
 Excecoes do sink NAO derrubam a execucao: sao capturadas e logadas
 como warning.
@@ -97,6 +97,21 @@ EventSink = Callable[[dict[str, Any]], Awaitable[None]]
 
 DEFAULT_NODE_TIMEOUT_SECONDS = 300
 
+# --- Sub-workflows -----------------------------------------------------
+# Profundidade maxima de chamadas aninhadas via ``call_workflow``. O
+# contador e baseado em workflow_id (nao no_id), entao inclui o pai na
+# contagem. Default 5 (= pai + 4 niveis de sub).
+SUBWORKFLOW_MAX_DEPTH = 5
+
+
+class SubWorkflowCycleError(Exception):
+    """Levantada quando ``call_workflow`` forma um ciclo entre workflows."""
+
+
+class SubWorkflowDepthError(Exception):
+    """Levantada quando ``call_workflow`` ultrapassa SUBWORKFLOW_MAX_DEPTH."""
+
+
 
 def _resolve_node_timeout(node_data: dict[str, Any]) -> float:
     """Extrai ``timeout_seconds`` do config, com fallback para o default.
@@ -125,6 +140,98 @@ async def _run_with_timeout(
         raise NodeProcessingError(
             f"No '{node_id}' excedeu timeout de {timeout}s"
         ) from exc
+
+
+def _parse_retry_policy(raw: Any) -> "RetryPolicyConfig | None":
+    """Valida ``retry_policy`` do config como ``RetryPolicyConfig``.
+
+    Aceita dict ou instancia pronta; qualquer coisa invalida vira ``None``
+    — ausencia de politica = execucao de tentativa unica (backward compat).
+    """
+    from app.schemas.workflow import RetryPolicyConfig
+
+    if raw is None:
+        return None
+    if isinstance(raw, RetryPolicyConfig):
+        return raw
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return RetryPolicyConfig.model_validate(raw)
+    except Exception:  # noqa: BLE001 — politicas invalidas sao silenciosamente ignoradas
+        return None
+
+
+def _compute_backoff(policy: "RetryPolicyConfig", attempt: int) -> float:
+    """Calcula o atraso entre duas tentativas (apos a ``attempt``-esima falhar)."""
+    if policy.backoff_strategy == "none":
+        return 0.0
+    if policy.backoff_strategy == "fixed":
+        return float(policy.backoff_seconds)
+    # exponential: base * 2^(attempt-1)
+    return float(policy.backoff_seconds) * (2 ** (attempt - 1))
+
+
+async def _run_with_retry(
+    *,
+    node_id: str,
+    attempt_factory: Callable[[], Awaitable[dict[str, Any]]],
+    policy: "RetryPolicyConfig | None",
+    timeout: float,
+    logger: Any,
+    event_sink: EventSink | None,
+    execution_id: str | None,
+    node_type_for_event: str,
+    label_for_event: str,
+) -> dict[str, Any]:
+    """Executa ``attempt_factory`` com retry conforme ``policy``.
+
+    Cada tentativa recebe uma coroutine fresca via ``attempt_factory()`` —
+    re-usar a mesma coroutine e erro em asyncio. Retry so dispara para
+    ``NodeProcessingError``; outras excecoes propagam imediatamente.
+    Ausencia de politica = tentativa unica (comportamento original).
+    """
+    attempts = policy.max_attempts if policy else 1
+    last_exc: NodeProcessingError | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await _run_with_timeout(
+                node_id=node_id,
+                coro=attempt_factory(),
+                timeout=timeout,
+                logger=logger,
+            )
+        except NodeProcessingError as exc:
+            last_exc = exc
+            msg = str(exc)
+            if policy is None or attempt >= attempts:
+                raise
+            if policy.retry_on and not any(s in msg for s in policy.retry_on):
+                # erro nao bate o filtro de substrings — desiste sem retry
+                raise
+            delay = _compute_backoff(policy, attempt)
+            await _safe_emit(
+                event_sink,
+                {
+                    "type": "node_retry",
+                    "execution_id": execution_id,
+                    "timestamp": _iso_now(),
+                    "node_id": node_id,
+                    "node_type": node_type_for_event,
+                    "label": label_for_event,
+                    "attempt": attempt,
+                    "max_attempts": attempts,
+                    "next_delay_seconds": delay,
+                    "error": msg,
+                },
+                logger,
+            )
+            if delay > 0:
+                await asyncio.sleep(delay)
+    # Defensivo: loop saiu sem return nem raise (nao deveria acontecer).
+    if last_exc is not None:
+        raise last_exc
+    raise NodeProcessingError(f"No '{node_id}': retry policy exausto sem erro registrado")
 
 
 async def _load_workflow_payload_from_db(workflow_id: UUID) -> dict[str, Any]:
@@ -479,6 +586,48 @@ def _event_node_meta(node: dict[str, Any]) -> tuple[str, str | None]:
     return node_type, label_str
 
 
+def _default_success_handle_if_needed(
+    node_id: str,
+    result: dict[str, Any],
+    adjacency: dict[str, list[str]],
+    edge_handle_map: dict[tuple[str, str], str | None],
+) -> dict[str, Any]:
+    """Defaulta ``active_handle='success'`` para nos com branch de erro.
+
+    O fallback so se aplica quando o resultado NAO declarou
+    ``active_handle``/``active_handles`` e quando existe ao menos uma
+    aresta de saida marcada como ``success`` ou ``on_error``. Isso evita
+    quebrar nos de decisao (``if_node``, ``switch_node``) e preserva
+    backward compat para workflows antigos cujas arestas nao tinham
+    ``sourceHandle``.
+    """
+    if not isinstance(result, dict):
+        return result
+
+    active_handle = result.get("active_handle")
+    if active_handle is not None:
+        return result
+
+    active_handles = result.get("active_handles")
+    if isinstance(active_handles, (list, tuple, set)):
+        return result
+
+    if isinstance(result.get("branches"), dict):
+        return result
+
+    outgoing_handles = {
+        edge_handle_map.get((node_id, target_id))
+        for target_id in adjacency.get(node_id, [])
+    }
+    if not any(handle in {"success", "on_error"} for handle in outgoing_handles):
+        return result
+
+    return {
+        **result,
+        "active_handle": "success",
+    }
+
+
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -494,6 +643,9 @@ async def run_workflow(
     event_sink: EventSink | None = None,
     mode: str = "production",
     target_node_id: str | None = None,
+    call_stack: list[str] | None = None,
+    max_depth: int = SUBWORKFLOW_MAX_DEPTH,
+    in_loop: bool = False,
 ) -> dict[str, Any]:
     """
     Entrypoint principal que orquestra a execucao dinamica de um workflow.
@@ -521,6 +673,24 @@ async def run_workflow(
       grafo. Usado pelo botao "testar ate aqui" do frontend.
     """
     logger = get_logger(__name__)
+
+    # --- Sub-workflow guards ---------------------------------------
+    # ``call_stack`` contem os workflow_ids ja em execucao na cadeia.
+    # Detectamos ciclos antes de carregar o payload para evitar recursao
+    # descontrolada; a verificacao de profundidade e um limite duro.
+    incoming_stack = list(call_stack or [])
+    if workflow_id and workflow_id in incoming_stack:
+        cycle_path = " -> ".join(incoming_stack + [workflow_id])
+        raise SubWorkflowCycleError(
+            f"Ciclo detectado em call_workflow: {cycle_path}"
+        )
+    if len(incoming_stack) >= max_depth:
+        raise SubWorkflowDepthError(
+            f"Profundidade maxima de sub-workflows ({max_depth}) excedida: "
+            f"{' -> '.join(incoming_stack)}"
+        )
+    current_stack = incoming_stack + ([workflow_id] if workflow_id else [])
+
     resolved_payload = await _resolve_workflow_payload(workflow_payload, workflow_id)
     resolved_payload = _filter_payload_to_ancestors(resolved_payload, target_node_id)
     execution_context: dict[str, Any] = {
@@ -529,6 +699,15 @@ async def run_workflow(
         "triggered_by": triggered_by,
         "input_data": input_data or {},
         "mode": mode,
+        "call_stack": current_stack,
+        "max_depth": max_depth,
+        # Marcador: este run foi disparado de dentro de um no ``loop``
+        # (direto ou indireto). Usado pelo processor ``loop`` para
+        # rejeitar loops aninhados ja na entrada do sub-workflow.
+        "in_loop": bool(in_loop),
+        # Acumulador populado pelos nos ``workflow_output`` — o pai que
+        # chamou este run via ``call_workflow`` consome esse pacote.
+        "workflow_output": {},
     }
 
     nodes = resolved_payload.get("nodes", [])
@@ -651,10 +830,16 @@ async def run_workflow(
                     # --- pinnedOutput: usa output fixado, nao chama processor ---
                     pinned_output = node_data.get("pinnedOutput")
                     if isinstance(pinned_output, dict) and pinned_output:
+                        pinned_result = _default_success_handle_if_needed(
+                            node_id,
+                            pinned_output,
+                            adjacency,
+                            edge_handle_map,
+                        )
                         with bind_context(node_id=node_id):
                             logger.info("node.pinned_output")
-                        results[node_id] = pinned_output
-                        row_in, row_out = _extract_row_counts(pinned_output)
+                        results[node_id] = pinned_result
+                        row_in, row_out = _extract_row_counts(pinned_result)
                         _record_event(
                             node_id,
                             node,
@@ -672,7 +857,7 @@ async def run_workflow(
                                 "node_id": node_id,
                                 "node_type": node_type_for_event,
                                 "label": label_for_event,
-                                "output": pinned_output,
+                                "output": pinned_result,
                                 "duration_ms": 0,
                                 "is_pinned": True,
                                 "row_count_in": row_in,
@@ -773,18 +958,31 @@ async def run_workflow(
                             },
                             logger,
                         )
+                        retry_policy = _parse_retry_policy(
+                            effective_config.get("retry_policy")
+                            if isinstance(effective_config, dict)
+                            else None
+                        )
+                        _registered_type = registered_processor_type
+                        _effective_config = effective_config
+                        _processor_context = processor_context
                         coros.append((
                             node_id,
-                            _run_with_timeout(
+                            _run_with_retry(
                                 node_id=node_id,
-                                coro=execute_registered_node(
-                                    node_id=node_id,
-                                    node_type=registered_processor_type,
-                                    config=effective_config,
-                                    context=processor_context,
+                                attempt_factory=lambda nid=node_id, ntype=_registered_type, cfg=_effective_config, ctx=_processor_context: execute_registered_node(
+                                    node_id=nid,
+                                    node_type=ntype,
+                                    config=cfg,
+                                    context=ctx,
                                 ),
+                                policy=retry_policy,
                                 timeout=node_timeout,
                                 logger=logger,
+                                event_sink=event_sink,
+                                execution_id=execution_id,
+                                node_type_for_event=node_type_for_event,
+                                label_for_event=label_for_event,
                             ),
                         ))
                         continue
@@ -811,17 +1009,29 @@ async def run_workflow(
                             },
                             logger,
                         )
+                        retry_policy = _parse_retry_policy(
+                            node_data.get("retry_policy")
+                            if isinstance(node_data, dict)
+                            else None
+                        )
+                        _cfg = node_data
+                        _inputs = upstream_results or None
                         coros.append((
                             node_id,
-                            _run_with_timeout(
+                            _run_with_retry(
                                 node_id=node_id,
-                                coro=execute_llm_node(
-                                    node_id=node_id,
-                                    config=node_data,
-                                    input_data=upstream_results or None,
+                                attempt_factory=lambda nid=node_id, cfg=_cfg, inp=_inputs: execute_llm_node(
+                                    node_id=nid,
+                                    config=cfg,
+                                    input_data=inp,
                                 ),
+                                policy=retry_policy,
                                 timeout=node_timeout,
                                 logger=logger,
+                                event_sink=event_sink,
+                                execution_id=execution_id,
+                                node_type_for_event=node_type_for_event,
+                                label_for_event=label_for_event,
                             ),
                         ))
                         continue
@@ -912,6 +1122,65 @@ async def run_workflow(
                                 "node_executions": node_executions,
                             }
                         if isinstance(outcome, NodeProcessingError):
+                            # Fase 5b: se o no tem aresta saindo do handle
+                            # "on_error", convertemos a falha em resultado
+                            # ``handled_error`` e rotamos pelo ramo de erro
+                            # em vez de abortar o workflow. Caso contrario,
+                            # comportamento original (early-return failed).
+                            has_error_branch = any(
+                                edge_handle_map.get((node_id, target)) == "on_error"
+                                for target in adjacency.get(node_id, [])
+                            )
+                            if has_error_branch:
+                                logger.info(
+                                    "node.error_handled", error=str(outcome)
+                                )
+                                handled_result = {
+                                    "status": "handled_error",
+                                    "active_handle": "on_error",
+                                    "error": str(outcome),
+                                    "error_type": outcome.__class__.__name__,
+                                    "failed_node": node_id,
+                                }
+                                results[node_id] = handled_result
+                                # Desativa todas as arestas de saida que nao
+                                # sao o handle "on_error".
+                                for target_id in adjacency.get(node_id, []):
+                                    edge_handle = edge_handle_map.get(
+                                        (node_id, target_id)
+                                    )
+                                    if edge_handle != "on_error":
+                                        inactive_edges.add((node_id, target_id))
+                                _record_event(
+                                    node_id,
+                                    node_for_event,
+                                    "handled_error",
+                                    duration_ms=duration_ms,
+                                    started_at=started_at,
+                                    completed_at=completed_at,
+                                    error_message=str(outcome),
+                                    output_summary={
+                                        "error_type": outcome.__class__.__name__,
+                                        "active_handle": "on_error",
+                                    },
+                                )
+                                await _safe_emit(
+                                    event_sink,
+                                    {
+                                        "type": "node_error_handled",
+                                        "execution_id": execution_id,
+                                        "timestamp": _iso_now(),
+                                        "node_id": node_id,
+                                        "node_type": node_type_for_event,
+                                        "label": label_for_event,
+                                        "error": str(outcome),
+                                        "error_type": outcome.__class__.__name__,
+                                        "duration_ms": duration_ms,
+                                    },
+                                    logger,
+                                )
+                                continue  # nao aborta o workflow
+
                             logger.error("node.failed", error=str(outcome))
                             _record_event(
                                 node_id,
@@ -977,7 +1246,12 @@ async def run_workflow(
                             final_status = "failed"
                             raise outcome
 
-                        result = outcome
+                        result = _default_success_handle_if_needed(
+                            node_id,
+                            outcome,
+                            adjacency,
+                            edge_handle_map,
+                        )
                         results[node_id] = result
 
                         row_in, row_out = _extract_row_counts(result)
@@ -1042,6 +1316,7 @@ async def run_workflow(
                 "status": "completed",
                 "node_results": results,
                 "node_executions": node_executions,
+                "workflow_output": dict(execution_context.get("workflow_output", {})),
             }
         except asyncio.CancelledError:
             final_status = "cancelled"

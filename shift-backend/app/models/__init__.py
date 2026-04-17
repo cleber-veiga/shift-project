@@ -4,6 +4,7 @@ Exports centralizados dos modelos ORM.
 
 from .connection import Connection
 from .connection_schema import ConnectionSchema
+from .custom_node_definition import CustomNodeDefinition
 from .input_model import InputModel
 from .input_model_row import InputModelRow
 from .invitation import Invitation, InvitationScope, InvitationStatus
@@ -17,7 +18,13 @@ from .organization import (
 )
 from .project import Project, ProjectMember, ProjectRole
 from .user import User
-from .workflow import WebhookTestCapture, Workflow, WorkflowExecution
+from .workflow import (
+    DeadLetterEntry,
+    WebhookTestCapture,
+    Workflow,
+    WorkflowExecution,
+    WorkflowVersion,
+)
 from .workspace import (
     Workspace,
     WorkspaceMember,
@@ -29,6 +36,8 @@ from .workspace import (
 __all__ = [
     "Connection",
     "ConnectionSchema",
+    "CustomNodeDefinition",
+    "DeadLetterEntry",
     "InputModel",
     "InputModelRow",
     "Invitation",
@@ -47,6 +56,7 @@ __all__ = [
     "WebhookTestCapture",
     "Workflow",
     "WorkflowExecution",
+    "WorkflowVersion",
     "Workspace",
     "WorkspaceMember",
     "WorkspacePlayer",
