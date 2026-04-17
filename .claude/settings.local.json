@@ -212,7 +212,9 @@
       "Bash(python -m py_compile app/services/ai_chat_service.py app/services/ai_memory_service.py app/models/ai_chat_memory.py app/models/__init__.py app/schemas/ai_chat.py app/api/v1/ai_chat.py)",
       "Bash(python -m pytest tests/test_composite_upsert.py::TestBackwardCompatPreFase2 -v)",
       "Bash(python -m pytest tests/test_composite_upsert_migration.py -v)",
-      "Bash(python -m pytest tests/test_composite_upsert.py tests/test_composite_upsert_migration.py -v)"
+      "Bash(python -m pytest tests/test_composite_upsert.py tests/test_composite_upsert_migration.py -v)",
+      "Bash(python -m py_compile app/services/ai_memory_service.py alembic/versions/2026_04_17_d7e8f9a0b1c2_add_ai_chat_memories.py)",
+      "Bash(python -m py_compile app/services/ai_chat_service.py)"
     ]
   }
 }

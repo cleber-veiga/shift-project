@@ -8,14 +8,18 @@ sao usadas como exemplos de estilo nas futuras conversas.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from typing import Any
 from uuid import UUID
 
 import sqlalchemy as sa
+from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ai_chat_memory import AiChatMemory
+
+logger = logging.getLogger(__name__)
 
 # Quantas memorias sao injetadas no prompt
 _INJECT_TOP_N = 5
@@ -89,7 +93,11 @@ class AiMemoryService:
         user_id: UUID,
         limit: int = _INJECT_TOP_N,
     ) -> list[dict[str, Any]]:
-        """Lista as N memorias mais recentes para injecao no prompt."""
+        """Lista as N memorias mais recentes para injecao no prompt.
+
+        Tolerante a tabela ausente (migration nao aplicada): retorna [] e
+        faz rollback para nao envenenar a sessao compartilhada.
+        """
         stmt = (
             sa.select(AiChatMemory)
             .where(
@@ -99,7 +107,16 @@ class AiMemoryService:
             .order_by(AiChatMemory.updated_at.desc())
             .limit(limit)
         )
-        rows = (await db.execute(stmt)).scalars().all()
+        try:
+            rows = (await db.execute(stmt)).scalars().all()
+        except (ProgrammingError, DBAPIError) as exc:
+            logger.warning(
+                "ai_chat_memories indisponivel (%s); "
+                "rode `alembic upgrade head` para ativar memorias do assistente.",
+                exc.__class__.__name__,
+            )
+            await db.rollback()
+            return []
         return [
             {
                 "id": str(m.id),
