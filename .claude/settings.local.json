@@ -200,7 +200,19 @@
       "Bash(node ./node_modules/typescript/bin/tsc --noEmit)",
       "Bash(python3 -c \"from app.services.workflow.nodes import has_processor, get_processor; print\\('Has sql_script:', has_processor\\('sql_script'\\)\\); p = get_processor\\('sql_script'\\); print\\('Processor type:', type\\(p\\).__name__\\)\")",
       "Bash(python -m pytest shift-backend/tests/test_loop_node.py -v)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(python -m py_compile app/schemas/playground.py app/services/playground_service.py app/services/ai_tools.py app/services/ai_chat_service.py)",
+      "Bash(python -c \"from app.services.ai_tools import TOOL_SCHEMAS, execute_tool; from app.services.ai_chat_service import ai_chat_service, _build_system_prompt; from app.schemas.playground import SchemaResponse, SchemaTable, SchemaColumn, ForeignKey; print\\(f'{len\\(TOOL_SCHEMAS\\)} tools:', [t['function']['name'] for t in TOOL_SCHEMAS]\\)\")",
+      "Bash(python -m pytest tests/test_dynamic_runner.py::TestRetryExhaustedTriggersOnErrorBranch -v)",
+      "Bash(python -m pytest tests/test_dynamic_runner.py -v)",
+      "Bash(ruff check *)",
+      "Bash(python -m ruff check tests/test_dynamic_runner.py)",
+      "Bash(python -m py_compile app/core/config.py app/schemas/ai_chat.py app/services/ai_chat_service.py app/api/v1/ai_chat.py)",
+      "Bash(python -m py_compile app/services/ai_chat_service.py app/services/ai_memory_service.py app/models/ai_chat_memory.py app/models/__init__.py app/schemas/ai_chat.py app/api/v1/ai_chat.py)",
+      "Bash(python -m pytest tests/test_composite_upsert.py::TestBackwardCompatPreFase2 -v)",
+      "Bash(python -m pytest tests/test_composite_upsert_migration.py -v)",
+      "Bash(python -m pytest tests/test_composite_upsert.py tests/test_composite_upsert_migration.py -v)"
     ]
   }
 }

@@ -1268,12 +1268,77 @@ export async function deleteSavedQuery(queryId: string): Promise<void> {
 
 export type AiChatMessage = { role: "user" | "assistant"; content: string }
 
+export interface AiChatMeta {
+  reasoning: boolean
+  model: string
+  reasoning_effort?: string | null
+}
+
 export interface AiChatCallbacks {
   onDelta: (text: string) => void
+  onReasoningDelta?: (text: string) => void
   onToolCall?: (name: string, args: Record<string, unknown>) => void
   onToolResult?: (name: string, preview: string) => void
+  onMeta?: (meta: AiChatMeta) => void
   onError?: (message: string) => void
   onDone?: () => void
+}
+
+export interface AiChatOptions {
+  deepReasoning?: boolean
+}
+
+export interface AiChatCapabilities {
+  enabled: boolean
+  reasoning_enabled: boolean
+  reasoning_effort: string | null
+}
+
+export async function getAiChatCapabilities(): Promise<AiChatCapabilities> {
+  return authorizedRequest<AiChatCapabilities>("/ai-chat/capabilities", {
+    method: "GET",
+  })
+}
+
+export interface AiChatMemory {
+  id: string
+  query: string
+  description: string | null
+  created_at: string | null
+  updated_at: string | null
+}
+
+export async function recordAiChatMemory(
+  connectionId: string,
+  query: string,
+  description?: string,
+): Promise<AiChatMemory> {
+  return authorizedRequest<AiChatMemory>(
+    `/connections/${connectionId}/chat/memories`,
+    {
+      method: "POST",
+      body: JSON.stringify({ query, description }),
+    },
+  )
+}
+
+export async function listAiChatMemories(
+  connectionId: string,
+): Promise<AiChatMemory[]> {
+  return authorizedRequest<AiChatMemory[]>(
+    `/connections/${connectionId}/chat/memories`,
+    { method: "GET" },
+  )
+}
+
+export async function deleteAiChatMemory(
+  connectionId: string,
+  memoryId: string,
+): Promise<void> {
+  await authorizedRequest<void>(
+    `/connections/${connectionId}/chat/memories/${memoryId}`,
+    { method: "DELETE" },
+  )
 }
 
 /**
@@ -1285,6 +1350,7 @@ export async function streamAiChat(
   messages: AiChatMessage[],
   callbacks: AiChatCallbacks,
   signal?: AbortSignal,
+  options?: AiChatOptions,
 ): Promise<void> {
   const session = await getValidSession()
   if (!session) {
@@ -1300,7 +1366,10 @@ export async function streamAiChat(
         "Content-Type": "application/json",
         Authorization: `Bearer ${session.accessToken}`,
       },
-      body: JSON.stringify({ messages }),
+      body: JSON.stringify({
+        messages,
+        deep_reasoning: options?.deepReasoning ?? false,
+      }),
       signal,
     },
   )
@@ -1357,6 +1426,12 @@ export async function streamAiChat(
           switch (eventType) {
             case "delta":
               callbacks.onDelta(parsed.text ?? "")
+              break
+            case "reasoning_delta":
+              callbacks.onReasoningDelta?.(parsed.text ?? "")
+              break
+            case "meta":
+              callbacks.onMeta?.(parsed as AiChatMeta)
               break
             case "tool_call":
               callbacks.onToolCall?.(parsed.name, parsed.args ?? {})

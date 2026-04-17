@@ -65,6 +65,16 @@ class Settings(BaseSettings):
     # URL base opcional — apenas para Ollama ou endpoints customizados
     LLM_BASE_URL: str | None = None
 
+    # --- Modo "raciocinio profundo" (ativado por toggle no chat) ---
+    # Modelo com capacidade de reasoning (OpenAI o-series, Anthropic extended thinking, etc.).
+    # Vazio = modo nao disponivel no UI.
+    # Exemplos: openai/o4-mini, openai/o3-mini, anthropic/claude-opus-4-5
+    LLM_REASONING_MODEL: str = ""
+    # Nivel de esforco: "low" | "medium" | "high" (convertido por LiteLLM).
+    LLM_REASONING_EFFORT: str = "medium"
+    # Limite maior de tokens para respostas com reasoning (tokens internos + output).
+    LLM_REASONING_MAX_TOKENS: int = 8192
+
     @property
     def DATABASE_URL_SYNC(self) -> str:
         """URL sincrona (psycopg2) para uso com Alembic."""

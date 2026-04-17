@@ -296,6 +296,42 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     defaultData: { type: "dead_letter" },
   },
 
+  // --- Sub-workflow (entrada/saida/invocacao) ---
+  {
+    type: "workflow_input",
+    label: "Entrada do Workflow",
+    description: "Ponto de entrada quando este workflow é invocado como sub-workflow",
+    category: "trigger",
+    icon: "LogIn",
+    color: "emerald",
+    defaultData: { type: "workflow_input", output_field: "data" },
+  },
+  {
+    type: "workflow_output",
+    label: "Saída do Workflow",
+    description: "Define os valores retornados ao workflow pai",
+    category: "output",
+    icon: "LogOut",
+    color: "emerald",
+    defaultData: { type: "workflow_output", mapping: {} },
+  },
+  {
+    type: "call_workflow",
+    label: "Chamar Workflow",
+    description: "Invoca outro workflow publicado como sub-workflow",
+    category: "transform",
+    icon: "Workflow",
+    color: "indigo",
+    defaultData: {
+      type: "call_workflow",
+      workflow_id: "",
+      version: "latest",
+      input_mapping: {},
+      output_field: "workflow_result",
+      timeout_seconds: 300,
+    },
+  },
+
   // --- AI ---
   {
     type: "aiNode",

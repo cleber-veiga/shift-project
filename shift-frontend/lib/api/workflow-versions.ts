@@ -1,14 +1,33 @@
 // Cliente HTTP para WorkflowVersions e picker de workflows callable.
-// Consumido pelos nos call_workflow e loop no editor.
+// Consumido pelos nós call_workflow, loop e pelo IoSchemaEditor no editor.
 
 import { authorizedRequest } from "@/lib/auth"
 
+export type WorkflowParamType =
+  | "string"
+  | "integer"
+  | "number"
+  | "boolean"
+  | "object"
+  | "array"
+  | "table_reference"
+
+export const WORKFLOW_PARAM_TYPES: WorkflowParamType[] = [
+  "string",
+  "integer",
+  "number",
+  "boolean",
+  "object",
+  "array",
+  "table_reference",
+]
+
 export interface WorkflowParam {
   name: string
-  type: "string" | "number" | "boolean" | "object" | "array"
+  type: WorkflowParamType
   required?: boolean
   default?: unknown
-  description?: string
+  description?: string | null
 }
 
 export interface CallableWorkflowSummary {
@@ -19,6 +38,11 @@ export interface CallableWorkflowSummary {
   latest_version: number
 }
 
+export interface WorkflowIOSchema {
+  inputs: WorkflowParam[]
+  outputs: WorkflowParam[]
+}
+
 export interface WorkflowVersionResponse {
   id: string
   workflow_id: string
@@ -27,6 +51,11 @@ export interface WorkflowVersionResponse {
   output_schema: WorkflowParam[]
   published: boolean
   created_at: string
+}
+
+export interface PublishWorkflowVersionBody {
+  io_schema: WorkflowIOSchema
+  definition?: Record<string, unknown> | null
 }
 
 export async function listCallableWorkflows(): Promise<CallableWorkflowSummary[]> {
@@ -42,5 +71,18 @@ export async function listWorkflowVersions(
   return authorizedRequest<WorkflowVersionResponse[]>(
     `/workflows/${workflowId}/versions`,
     { method: "GET" },
+  )
+}
+
+export async function publishWorkflowVersion(
+  workflowId: string,
+  body: PublishWorkflowVersionBody,
+): Promise<WorkflowVersionResponse> {
+  return authorizedRequest<WorkflowVersionResponse>(
+    `/workflows/${workflowId}/versions`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
   )
 }

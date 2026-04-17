@@ -6,9 +6,11 @@ import {
   ArrowLeft,
   Clock,
   Download,
+  FileJson,
   Loader2,
   Pencil,
   Play,
+  Rocket,
   Save,
   Undo2,
   Redo2,
@@ -35,6 +37,8 @@ interface WorkflowToolbarProps {
   onExecute: () => void
   onExport: () => void
   onImport: () => void
+  onOpenIoSchema?: () => void
+  onOpenPublish?: () => void
   scheduleStatus?: WorkflowScheduleStatus | null
   isSaving?: boolean
   isExecuting?: boolean
@@ -59,6 +63,8 @@ export function WorkflowToolbar({
   onExecute,
   onExport,
   onImport,
+  onOpenIoSchema,
+  onOpenPublish,
   scheduleStatus,
   isSaving = false,
   isExecuting = false,
@@ -243,6 +249,34 @@ export function WorkflowToolbar({
           <span className={`size-2 rounded-full ${isPublished ? "bg-sky-500" : "bg-muted-foreground/40"}`} />
           Publicado
         </button>
+
+        <div className="h-5 w-px bg-border" />
+
+        {onOpenIoSchema && (
+          <button
+            type="button"
+            onClick={onOpenIoSchema}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            aria-label="Editar schema de I/O"
+            title="Editar inputs/outputs expostos quando este workflow é chamado como sub-workflow"
+          >
+            <FileJson className="size-3.5" />
+            Schema de I/O
+          </button>
+        )}
+
+        {onOpenPublish && (
+          <button
+            type="button"
+            onClick={onOpenPublish}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-500/20 dark:text-emerald-400"
+            aria-label="Publicar versão"
+            title="Publicar uma nova versão imutável deste workflow"
+          >
+            <Rocket className="size-3.5" />
+            Publicar Versão
+          </button>
+        )}
 
         <div className="h-5 w-px bg-border" />
 

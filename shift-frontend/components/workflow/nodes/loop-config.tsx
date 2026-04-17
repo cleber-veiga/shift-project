@@ -64,6 +64,7 @@ export function LoopConfig({ data, onUpdate }: LoopConfigProps) {
   const onItemError = ((data.on_item_error as OnItemError) ?? "fail_fast") as OnItemError
   const maxIterations = (data.max_iterations as number) ?? 10000
   const outputField = (data.output_field as string) ?? "loop_result"
+  const timeoutSeconds = (data.timeout_seconds as number) ?? 300
   const extraInputs = extraInputsToRows(
     data.extra_inputs as Record<string, string> | undefined,
   )
@@ -178,6 +179,7 @@ export function LoopConfig({ data, onUpdate }: LoopConfigProps) {
           : "Coleta sucessos e falhas separadamente."
     previewLines.push(limit)
     previewLines.push(`Limite: até ${maxIterations.toLocaleString()} iterações.`)
+    previewLines.push(`Cada item tem até ${timeoutSeconds}s para completar.`)
   }
 
   return (
@@ -517,6 +519,25 @@ export function LoopConfig({ data, onUpdate }: LoopConfigProps) {
             className="h-8 w-full rounded-md border border-input bg-background px-2.5 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
           />
         </div>
+      </div>
+
+      <div className="space-y-1.5">
+        <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          Timeout (segundos)
+        </label>
+        <input
+          type="number"
+          value={timeoutSeconds}
+          onChange={(e) =>
+            update({ timeout_seconds: parseInt(e.target.value, 10) || 300 })
+          }
+          min={1}
+          max={3600}
+          className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs outline-none focus:ring-1 focus:ring-primary"
+        />
+        <p className="text-[10px] text-muted-foreground">
+          Tempo máximo por invocação do sub-workflow. Default: 300s.
+        </p>
       </div>
 
       {/* ── Preview ── */}

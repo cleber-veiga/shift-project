@@ -25,10 +25,13 @@ import { NodeLibrary } from "@/components/workflow/node-library"
 import { NodeConfigModal, type UpstreamOutput } from "@/components/workflow/node-config-modal"
 import { ExecutionPanel } from "@/components/workflow/execution-panel"
 import { ExecutionsTab } from "@/components/workflow/executions/executions-tab"
+import { IoSchemaEditor, isIoSchemaValid } from "@/components/workflow/io-schema-editor"
+import { PublishVersionModal } from "@/components/workflow/publish-version-modal"
+import type { WorkflowIOSchema } from "@/lib/api/workflow-versions"
 import { getNodeDefinition, NODE_REGISTRY } from "@/lib/workflow/types"
 import { NodeExecutionContext, type NodeExecState } from "@/lib/workflow/execution-context"
 import { NodeActionsContext } from "@/lib/workflow/node-actions-context"
-import { History, Loader2, Plus, Workflow as WorkflowIcon } from "lucide-react"
+import { History, Loader2, Plus, Workflow as WorkflowIcon, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   getWorkflow,
@@ -118,6 +121,15 @@ function WorkflowEditorInner({
   // Workflow metadata (player_id, workflow_type, …)
   const [workflowMeta, setWorkflowMeta] = useState<Record<string, unknown>>({})
 
+  // ── I/O schema (inputs/outputs expostos quando chamado como sub-workflow) ──
+  const [ioSchema, setIoSchema] = useState<WorkflowIOSchema>({
+    inputs: [],
+    outputs: [],
+  })
+  const [showIoSchemaEditor, setShowIoSchemaEditor] = useState(false)
+  const [showPublishModal, setShowPublishModal] = useState(false)
+  const [dirty, setDirty] = useState(false)
+
   // ── Schedule state (cron agendado no Prefect) ───────────────────────────
   const [scheduleStatus, setScheduleStatus] = useState<WorkflowScheduleStatus | null>(null)
 
@@ -155,6 +167,12 @@ function WorkflowEditorInner({
         setNodes(loadedNodes)
         setEdges((def.edges as Edge[]) ?? [])
         setWorkflowMeta((def.meta as Record<string, unknown>) ?? {})
+        const loadedIoSchema = def.io_schema as WorkflowIOSchema | undefined
+        setIoSchema({
+          inputs: loadedIoSchema?.inputs ?? [],
+          outputs: loadedIoSchema?.outputs ?? [],
+        })
+        setDirty(false)
         // Store workspace_id for later use (auth scope in test endpoint)
         if (wf.workspace_id) setWorkflowWorkspaceId(wf.workspace_id)
         // Pre-populate exec states from pinned outputs so data is visible immediately
@@ -318,8 +336,14 @@ function WorkflowEditorInner({
         targetHandle: e.targetHandle ?? null,
       })),
       meta: workflowMeta,
+      io_schema: ioSchema,
     }
   }
+
+  // Mark dirty on relevant state changes
+  useEffect(() => {
+    setDirty(true)
+  }, [nodes, edges, workflowMeta, ioSchema, name, description])
 
   // ── Export workflow as JSON file ─────────────────────────────────────────
   const handleExport = useCallback(() => {
@@ -366,6 +390,13 @@ function WorkflowEditorInner({
         setNodes(def.nodes as Node[])
         setEdges(def.edges as Edge[])
         if (def.meta) setWorkflowMeta(def.meta as Record<string, unknown>)
+        if (def.io_schema) {
+          const imported = def.io_schema as WorkflowIOSchema
+          setIoSchema({
+            inputs: imported.inputs ?? [],
+            outputs: imported.outputs ?? [],
+          })
+        }
         if (typeof data.name === "string" && data.name) setName(data.name)
         if (typeof data.description === "string") setDescription(data.description)
         if (data.status === "draft" || data.status === "published") setStatus(data.status)
@@ -394,6 +425,7 @@ function WorkflowEditorInner({
         description: description || null,
         definition: buildDefinition(),
       })
+      setDirty(false)
       setStatusMessage("Salvo com sucesso!")
       setTimeout(() => setStatusMessage(null), 2500)
       // Reflete eventuais mudancas no agendamento (adicao/remocao de no cron)
@@ -609,6 +641,22 @@ function WorkflowEditorInner({
           onExecute={handleExecute}
           onExport={handleExport}
           onImport={handleImport}
+          onOpenIoSchema={workflowId !== "new" ? () => setShowIoSchemaEditor(true) : undefined}
+          onOpenPublish={
+            workflowId !== "new"
+              ? () => {
+                  if (!isIoSchemaValid(ioSchema)) {
+                    setStatusMessage(
+                      "Schema de I/O inválido: corrija nomes duplicados ou com padrão inválido antes de publicar.",
+                    )
+                    setTimeout(() => setStatusMessage(null), 4000)
+                    setShowIoSchemaEditor(true)
+                    return
+                  }
+                  setShowPublishModal(true)
+                }
+              : undefined
+          }
           scheduleStatus={scheduleStatus}
           isSaving={isSaving}
           isExecuting={isExecuting}
@@ -740,6 +788,64 @@ function WorkflowEditorInner({
                   },
                 },
               }))
+            }}
+          />
+        )}
+
+        {/* I/O Schema drawer */}
+        {showIoSchemaEditor && (
+          <div
+            className="fixed inset-0 z-40 flex items-stretch justify-end bg-black/30 backdrop-blur-[2px]"
+            onClick={() => setShowIoSchemaEditor(false)}
+          >
+            <div
+              className="flex h-full w-full max-w-3xl flex-col border-l border-border bg-background shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
+                <div>
+                  <h2 className="text-sm font-semibold text-foreground">
+                    Schema de I/O
+                  </h2>
+                  <p className="text-[10px] text-muted-foreground">
+                    Declare os inputs e outputs expostos quando este workflow é
+                    chamado como sub-workflow.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowIoSchemaEditor(false)}
+                  aria-label="Fechar"
+                  className="flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  <X className="size-4" />
+                </button>
+              </header>
+              <IoSchemaEditor value={ioSchema} onChange={setIoSchema} />
+              <footer className="flex shrink-0 items-center justify-end border-t border-border px-4 py-2">
+                <button
+                  type="button"
+                  onClick={() => setShowIoSchemaEditor(false)}
+                  className="inline-flex h-8 items-center rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
+                >
+                  Aplicar
+                </button>
+              </footer>
+            </div>
+          </div>
+        )}
+
+        {/* Publish version modal */}
+        {showPublishModal && workflowId !== "new" && (
+          <PublishVersionModal
+            workflowId={workflowId}
+            ioSchema={ioSchema}
+            hasUnsavedChanges={dirty}
+            onSaveBeforePublish={handleSave}
+            onClose={() => setShowPublishModal(false)}
+            onPublished={(v) => {
+              setStatusMessage(`Versão v${v.version} publicada com sucesso!`)
+              setTimeout(() => setStatusMessage(null), 4000)
             }}
           />
         )}

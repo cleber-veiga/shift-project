@@ -2,6 +2,7 @@
 Exports centralizados dos modelos ORM.
 """
 
+from .ai_chat_memory import AiChatMemory
 from .connection import Connection
 from .connection_schema import ConnectionSchema
 from .custom_node_definition import CustomNodeDefinition
@@ -34,6 +35,7 @@ from .workspace import (
 )
 
 __all__ = [
+    "AiChatMemory",
     "Connection",
     "ConnectionSchema",
     "CustomNodeDefinition",

@@ -11,6 +11,7 @@ import {
   PencilLine,
   Play,
   Power,
+  RefreshCw,
   Trash2,
   XCircle,
 } from "lucide-react"
@@ -242,6 +243,14 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
   const Icon        = getNodeIcon(customIcon ?? definition?.icon ?? "Database")
   const label       = nodeData.label as string | undefined
   const enabled     = nodeData.enabled !== false          // default: enabled
+  const retryPolicy = nodeData.retry_policy as
+    | { max_attempts?: number; backoff_strategy?: string }
+    | null
+    | undefined
+  const retryActive =
+    retryPolicy != null &&
+    typeof retryPolicy.max_attempts === "number" &&
+    retryPolicy.max_attempts > 1
   const execState   = useNodeExecution(id)
   const summaryRows = getNodeSummaryRows(type ?? "", nodeData)
 
@@ -386,6 +395,15 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
             <PencilLine
               className="size-2.5 shrink-0 text-muted-foreground/40 opacity-0 transition-opacity group-hover/node:opacity-100"
             />
+            {retryActive && (
+              <span
+                className="flex shrink-0 items-center gap-0.5 rounded bg-sky-500/10 px-1 py-0.5 text-[9px] font-medium text-sky-600 dark:text-sky-400"
+                title={`Retry: ${retryPolicy?.max_attempts} tentativas (${retryPolicy?.backoff_strategy ?? "none"})`}
+              >
+                <RefreshCw className="size-2.5" />
+                {retryPolicy?.max_attempts}x
+              </span>
+            )}
           </div>
           <p className="mt-0.5 truncate text-[11px] leading-tight text-muted-foreground">
             {!enabled

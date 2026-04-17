@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   Bookmark,
   Bot,
+  Brain,
   ChevronDown,
   ChevronRight,
   Clock,
@@ -38,7 +39,10 @@ import {
   updateSavedQuery,
   deleteSavedQuery,
   streamAiChat,
+  getAiChatCapabilities,
+  recordAiChatMemory,
   type AiChatMessage,
+  type AiChatCapabilities,
   type Connection,
   type SchemaTable,
   type PlaygroundQueryResponse,
@@ -247,6 +251,9 @@ interface ChatMessage {
   content: string
   timestamp: Date
   toolCalls?: { name: string; status: "calling" | "done" }[]
+  reasoning?: string
+  reasoningModel?: string
+  deepReasoning?: boolean
 }
 
 // ─── Markdown code block with "Apply" button ─────────────────────────────────
@@ -306,6 +313,9 @@ const TOOL_LABELS: Record<string, string> = {
   describe_table: "Descrevendo tabela",
   find_columns: "Buscando colunas",
   execute_select: "Executando consulta",
+  get_sample_rows: "Amostrando dados",
+  explain_query: "Analisando plano",
+  get_relationships: "Mapeando relacionamentos",
 }
 
 function ToolBadge({ name, status }: { name: string; status: "calling" | "done" }) {
@@ -318,6 +328,56 @@ function ToolBadge({ name, status }: { name: string; status: "calling" | "done" 
         <Check className="size-3 text-green-600 dark:text-green-400" />
       )}
       <span>{label}{status === "calling" ? "..." : ""}</span>
+    </div>
+  )
+}
+
+// ─── Reasoning (pensamento) block ────────────────────────────────────────────
+
+function ReasoningBlock({
+  text,
+  streaming,
+  model,
+}: {
+  text: string
+  streaming: boolean
+  model?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const hasText = text.trim().length > 0
+
+  return (
+    <div className="mb-2 rounded-md border border-border/60 bg-muted/30">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-muted"
+      >
+        {streaming ? (
+          <Loader2 className="size-3 shrink-0 animate-spin text-primary" />
+        ) : (
+          <Brain className="size-3 shrink-0 text-primary" />
+        )}
+        <span className="font-medium">
+          {streaming ? "Pensando" : "Raciocinio"}
+          {model ? ` · ${model}` : ""}
+        </span>
+        {hasText && (
+          <span className="ml-auto flex items-center gap-1 text-[10px]">
+            {open ? "ocultar" : "ver"}
+            {open ? (
+              <ChevronDown className="size-3" />
+            ) : (
+              <ChevronRight className="size-3" />
+            )}
+          </span>
+        )}
+      </button>
+      {open && hasText && (
+        <div className="border-t border-border/60 px-3 py-2 text-[11px] italic leading-relaxed text-muted-foreground whitespace-pre-wrap">
+          {text}
+        </div>
+      )}
     </div>
   )
 }
@@ -337,8 +397,35 @@ function ChatPanel({
   const [input, setInput] = useState("")
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState("")
+  const [deepReasoning, setDeepReasoning] = useState(false)
+  const [capabilities, setCapabilities] = useState<AiChatCapabilities | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    let active = true
+    getAiChatCapabilities()
+      .then((caps) => {
+        if (active) setCapabilities(caps)
+      })
+      .catch(() => {
+        /* sem capabilities — UI apenas esconde o toggle */
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  // Wrapper do onApply: aplica no editor + registra como memoria util do usuario
+  const handleApplySql = useCallback(
+    (sql: string) => {
+      onApplyQuery?.(sql)
+      recordAiChatMemory(connectionId, sql).catch(() => {
+        /* memoria e opcional — falha silenciosa */
+      })
+    },
+    [connectionId, onApplyQuery],
+  )
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
@@ -370,6 +457,8 @@ function ChatPanel({
       content: "",
       timestamp: new Date(),
       toolCalls: [],
+      reasoning: "",
+      deepReasoning,
     }
 
     setMessages((prev) => [...prev, userMsg, assistantMsg])
@@ -387,12 +476,39 @@ function ChatPanel({
       connectionId,
       messagesForApi,
       {
+        onMeta: (meta) => {
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            if (last && last.role === "assistant") {
+              updated[updated.length - 1] = {
+                ...last,
+                reasoningModel: meta.model,
+                deepReasoning: meta.reasoning,
+              }
+            }
+            return updated
+          })
+        },
         onDelta: (delta) => {
           setMessages((prev) => {
             const updated = [...prev]
             const last = updated[updated.length - 1]
             if (last && last.role === "assistant") {
               updated[updated.length - 1] = { ...last, content: last.content + delta }
+            }
+            return updated
+          })
+        },
+        onReasoningDelta: (delta) => {
+          setMessages((prev) => {
+            const updated = [...prev]
+            const last = updated[updated.length - 1]
+            if (last && last.role === "assistant") {
+              updated[updated.length - 1] = {
+                ...last,
+                reasoning: (last.reasoning || "") + delta,
+              }
             }
             return updated
           })
@@ -432,6 +548,7 @@ function ChatPanel({
         },
       },
       controller.signal,
+      { deepReasoning },
     ).catch(() => {
       // AbortError or network error
       setStreaming(false)
@@ -515,6 +632,18 @@ function ChatPanel({
                   </div>
                 ) : (
                   <div className="text-[13px] leading-relaxed text-foreground">
+                    {/* Reasoning (pensamento) */}
+                    {msg.deepReasoning && (
+                      <ReasoningBlock
+                        text={msg.reasoning || ""}
+                        streaming={
+                          streaming &&
+                          msg === messages[messages.length - 1] &&
+                          !msg.content
+                        }
+                        model={msg.reasoningModel}
+                      />
+                    )}
                     {/* Tool call badges */}
                     {msg.toolCalls && msg.toolCalls.length > 0 && (
                       <div className="mb-2 flex flex-wrap gap-1">
@@ -532,7 +661,7 @@ function ChatPanel({
                             const isBlock = className?.startsWith("language-")
                             if (isBlock) {
                               return (
-                                <CodeBlock className={className} onApply={onApplyQuery}>
+                                <CodeBlock className={className} onApply={handleApplySql}>
                                   {children}
                                 </CodeBlock>
                               )
@@ -604,7 +733,7 @@ function ChatPanel({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Pergunte algo..."
+            placeholder={deepReasoning ? "Pergunta complexa..." : "Pergunte algo..."}
             rows={1}
             className="flex-1 resize-none bg-transparent text-[13px] leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
             style={{ maxHeight: 80 }}
@@ -614,6 +743,29 @@ function ChatPanel({
               el.style.height = Math.min(el.scrollHeight, 80) + "px"
             }}
           />
+          {capabilities?.reasoning_enabled && (
+            <Tooltip
+              text={
+                deepReasoning
+                  ? "Raciocinio profundo ATIVO (mais lento, melhor em queries complexas)"
+                  : "Ativar raciocinio profundo"
+              }
+              side="top"
+            >
+              <button
+                type="button"
+                onClick={() => setDeepReasoning((v) => !v)}
+                disabled={streaming}
+                className={`shrink-0 rounded-md p-1 transition-colors disabled:opacity-50 ${
+                  deepReasoning
+                    ? "bg-primary/15 text-primary hover:bg-primary/25"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
+              >
+                <Brain className="size-4" />
+              </button>
+            </Tooltip>
+          )}
           {streaming ? (
             <button
               type="button"

@@ -17,6 +17,13 @@ import { SqlScriptConfig } from "@/components/workflow/nodes/sql-script-config"
 import { LoopConfig } from "@/components/workflow/nodes/loop-config"
 import { CronConfig } from "@/components/workflow/nodes/cron-config"
 import { WebhookConfig } from "@/components/workflow/nodes/webhook-config"
+import { WorkflowInputConfig } from "@/components/workflow/nodes/workflow-input-config"
+import { WorkflowOutputConfig } from "@/components/workflow/nodes/workflow-output-config"
+import { CallWorkflowConfig } from "@/components/workflow/nodes/call-workflow-config"
+import {
+  RetryPolicyEditor,
+  type RetryPolicyValue,
+} from "@/components/workflow/retry-policy-editor"
 import type { WebhookCapture } from "@/lib/api/webhooks"
 
 interface NodeConfigPanelProps {
@@ -35,6 +42,8 @@ const categoryBgMap: Record<string, string> = {
   orange: "bg-orange-500/10",
   pink: "bg-pink-500/10",
   slate: "bg-slate-500/10",
+  indigo: "bg-indigo-500/10",
+  red: "bg-red-500/10",
 }
 
 const categoryTextMap: Record<string, string> = {
@@ -45,6 +54,8 @@ const categoryTextMap: Record<string, string> = {
   orange: "text-orange-500",
   pink: "text-pink-500",
   slate: "text-slate-500",
+  indigo: "text-indigo-500",
+  red: "text-red-500",
 }
 
 function ConfigField({
@@ -166,11 +177,56 @@ export function NodeConfigFields({
 }) {
   const data = node.data as Record<string, unknown>
   const nodeType = (data.type as string) ?? node.type
+  const definition = getNodeDefinition(nodeType)
+  const supportsRetry = definition ? definition.category !== "trigger" : false
 
   function update(field: string, value: unknown) {
     onUpdate(node.id, { ...data, [field]: value })
   }
 
+  const retryPolicy = (data.retry_policy as RetryPolicyValue | null | undefined) ?? null
+  const retrySection = supportsRetry ? (
+    <RetryPolicyEditor
+      value={retryPolicy}
+      onChange={(policy) => onUpdate(node.id, { ...data, retry_policy: policy })}
+    />
+  ) : null
+
+  const specific = renderNodeSpecificFields({
+    nodeType,
+    node,
+    data,
+    workflowId,
+    onUpdate,
+    onWebhookTestEvent,
+    update,
+  })
+
+  return (
+    <div className="space-y-4">
+      {specific}
+      {retrySection}
+    </div>
+  )
+}
+
+function renderNodeSpecificFields({
+  nodeType,
+  node,
+  data,
+  workflowId,
+  onUpdate,
+  onWebhookTestEvent,
+  update,
+}: {
+  nodeType: string
+  node: Node
+  data: Record<string, unknown>
+  workflowId?: string
+  onUpdate: (nodeId: string, data: Record<string, unknown>) => void
+  onWebhookTestEvent?: (capture: WebhookCapture) => void
+  update: (field: string, value: unknown) => void
+}) {
   switch (nodeType) {
     case "manual":
       return (
@@ -529,6 +585,30 @@ export function NodeConfigFields({
         <LoopConfig
           data={data}
           onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "workflow_input":
+      return (
+        <WorkflowInputConfig
+          data={data}
+          onUpdate={(patch) => onUpdate(node.id, patch)}
+        />
+      )
+
+    case "workflow_output":
+      return (
+        <WorkflowOutputConfig
+          data={data}
+          onUpdate={(patch) => onUpdate(node.id, patch)}
+        />
+      )
+
+    case "call_workflow":
+      return (
+        <CallWorkflowConfig
+          data={data}
+          onUpdate={(patch) => onUpdate(node.id, patch)}
         />
       )
 

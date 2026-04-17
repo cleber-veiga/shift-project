@@ -384,6 +384,300 @@ class TestRunWorkflowOnErrorBranch:
         assert n3_exec["output_summary"] == {"reason": "skipped_by_branch"}
 
 
+class TestRetryExhaustedTriggersOnErrorBranch:
+    """Integracao retry_policy + on_error branch no workflow real.
+
+    Os componentes isolados (``_run_with_retry`` e on_error) sao cobertos
+    em ``test_retry_policy.py`` e em ``TestRunWorkflowOnErrorBranch``.
+    Esta classe cobre o encontro deles no ``run_workflow``: a ordem
+    esperada e "retry primeiro ate esgotar -> se ainda falha, on_error
+    decide". Os testes usam ``backoff_strategy='none'`` para nao dormir.
+    """
+
+    @pytest.mark.asyncio
+    async def test_retry_exhausted_activates_on_error_branch(self, monkeypatch) -> None:
+        """Retry esgotado + edge on_error -> branch on_error ativa.
+
+        Cenario: n1 tem retry_policy (max_attempts=3) e edge on_error
+        para n2. O fake sempre falha com NodeProcessingError. Esperado:
+        n1 e tentado 3 vezes, workflow nao derruba, n2 roda como
+        fallback e recebe o resultado handled_error como upstream.
+        """
+        attempt_count = 0
+        events: list[dict[str, Any]] = []
+
+        async def sink(evt: dict[str, Any]) -> None:
+            events.append(evt)
+
+        seen_upstream: dict[str, Any] = {}
+
+        async def fake_execute_registered_node(
+            node_id: str,
+            node_type: str,
+            config: dict[str, Any],
+            context: dict[str, Any],
+        ) -> dict[str, Any]:
+            nonlocal attempt_count
+            if node_id == "n1":
+                attempt_count += 1
+                raise NodeProcessingError("falha simulada")
+            seen_upstream.update(context.get("upstream_results", {}))
+            return {"status": "success", "fallback": True}
+
+        monkeypatch.setattr(runner_mod, "execute_registered_node", fake_execute_registered_node)
+
+        payload = {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "mapper",
+                    "data": {
+                        "type": "mapper",
+                        "label": "Fonte",
+                        "retry_policy": {
+                            "max_attempts": 3,
+                            "backoff_strategy": "none",
+                            "backoff_seconds": 0.1,
+                            "retry_on": [],
+                        },
+                    },
+                },
+                {
+                    "id": "n2",
+                    "type": "mapper",
+                    "data": {"type": "mapper", "label": "Fallback"},
+                },
+            ],
+            "edges": [
+                {"source": "n1", "target": "n2", "sourceHandle": "on_error"},
+            ],
+        }
+
+        result = await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-retry-on-error",
+            execution_id="exec-retry-on-error",
+            event_sink=sink,
+        )
+
+        assert attempt_count == 3, "retry policy deve tentar todas as 3 vezes antes de desistir"
+        assert result["status"] == "completed"
+        n1_result = result["node_results"]["n1"]
+        assert n1_result["status"] == "handled_error"
+        assert n1_result["active_handle"] == "on_error"
+        assert "falha simulada" in str(n1_result.get("error", ""))
+
+        # n2 (fallback) deve ter executado com n1 como upstream handled_error
+        assert "n2" in result["node_results"]
+        n2_exec = next(evt for evt in result["node_executions"] if evt["node_id"] == "n2")
+        assert n2_exec["status"] == "success"
+        assert seen_upstream["n1"]["status"] == "handled_error"
+        assert seen_upstream["n1"]["active_handle"] == "on_error"
+
+        # Eventos: >=2 node_retry (apos tentativas 1 e 2) e 1 node_error_handled
+        retry_events = [e for e in events if e.get("type") == "node_retry"]
+        error_handled_events = [e for e in events if e.get("type") == "node_error_handled"]
+        assert len(retry_events) >= 2
+        assert all(e["node_id"] == "n1" for e in retry_events)
+        assert len(error_handled_events) == 1
+        assert error_handled_events[0]["node_id"] == "n1"
+
+    @pytest.mark.asyncio
+    async def test_retry_exhausted_without_on_error_edge_fails_workflow(
+        self, monkeypatch
+    ) -> None:
+        """Sem edge on_error, retry esgotado derruba workflow como antes.
+
+        Garantia de backward-compat: workflow antigo (sem edge on_error)
+        que ganhou retry_policy continua falhando quando retry esgota,
+        em vez de silenciar o erro.
+        """
+        attempt_count = 0
+
+        async def fake_execute_registered_node(
+            node_id: str,
+            node_type: str,
+            config: dict[str, Any],
+            context: dict[str, Any],
+        ) -> dict[str, Any]:
+            nonlocal attempt_count
+            if node_id == "n1":
+                attempt_count += 1
+                raise NodeProcessingError("falha simulada")
+            return {"status": "success"}
+
+        monkeypatch.setattr(runner_mod, "execute_registered_node", fake_execute_registered_node)
+
+        payload = {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "mapper",
+                    "data": {
+                        "type": "mapper",
+                        "retry_policy": {
+                            "max_attempts": 3,
+                            "backoff_strategy": "none",
+                            "backoff_seconds": 0.1,
+                        },
+                    },
+                },
+                {"id": "n2", "type": "mapper", "data": {"type": "mapper"}},
+            ],
+            "edges": [
+                {"source": "n1", "target": "n2", "sourceHandle": "success"},
+            ],
+        }
+
+        result = await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-retry-no-on-error",
+            execution_id="exec-retry-no-on-error",
+        )
+
+        assert attempt_count == 3, "retry deve executar todas as tentativas"
+        assert result["status"] == "failed"
+        assert result["failed_by"] == "n1"
+        assert "falha simulada" in str(result.get("error", ""))
+
+    @pytest.mark.asyncio
+    async def test_retry_succeeds_before_exhaustion_skips_on_error(
+        self, monkeypatch
+    ) -> None:
+        """Retry que sucede antes de esgotar nao ativa on_error.
+
+        Happy path: n1 falha na 1a e sucede na 2a tentativa. A edge
+        on_error existe, mas nao deve ser ativada; n2 (fallback) fica
+        como ``skipped_by_branch``.
+        """
+        attempt_count = 0
+        events: list[dict[str, Any]] = []
+
+        async def sink(evt: dict[str, Any]) -> None:
+            events.append(evt)
+
+        async def fake_execute_registered_node(
+            node_id: str,
+            node_type: str,
+            config: dict[str, Any],
+            context: dict[str, Any],
+        ) -> dict[str, Any]:
+            nonlocal attempt_count
+            if node_id == "n1":
+                attempt_count += 1
+                if attempt_count == 1:
+                    raise NodeProcessingError("falha transiente")
+                return {"status": "success", "recovered_on_attempt": attempt_count}
+            return {"status": "success"}
+
+        monkeypatch.setattr(runner_mod, "execute_registered_node", fake_execute_registered_node)
+
+        payload = {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "mapper",
+                    "data": {
+                        "type": "mapper",
+                        "retry_policy": {
+                            "max_attempts": 3,
+                            "backoff_strategy": "none",
+                            "backoff_seconds": 0.1,
+                        },
+                    },
+                },
+                {"id": "n2", "type": "mapper", "data": {"type": "mapper"}},
+            ],
+            "edges": [
+                {"source": "n1", "target": "n2", "sourceHandle": "on_error"},
+            ],
+        }
+
+        result = await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-retry-success",
+            execution_id="exec-retry-success",
+            event_sink=sink,
+        )
+
+        assert attempt_count == 2, "deve parar assim que a tentativa 2 sucede"
+        assert result["status"] == "completed"
+        n1_result = result["node_results"]["n1"]
+        assert n1_result["status"] == "success"
+        assert n1_result.get("active_handle") != "on_error"
+
+        # n2 (conectado via on_error) deve ter sido pulado pelo branch
+        n2_exec = next(evt for evt in result["node_executions"] if evt["node_id"] == "n2")
+        assert n2_exec["status"] == "skipped"
+        assert n2_exec["output_summary"] == {"reason": "skipped_by_branch"}
+
+        # Nenhum node_error_handled deve ter sido emitido.
+        error_handled_events = [e for e in events if e.get("type") == "node_error_handled"]
+        assert error_handled_events == []
+
+    @pytest.mark.asyncio
+    async def test_retry_on_filter_non_matching_triggers_on_error_immediately(
+        self, monkeypatch
+    ) -> None:
+        """retry_on sem match: 1 tentativa apenas, mas on_error ainda ativa.
+
+        Filtro ``retry_on=['timeout']`` nao casa com "erro de validacao".
+        O runner nao deve tentar de novo, mas como a edge on_error existe,
+        o branch ativa em vez de derrubar o workflow.
+        """
+        attempt_count = 0
+
+        async def fake_execute_registered_node(
+            node_id: str,
+            node_type: str,
+            config: dict[str, Any],
+            context: dict[str, Any],
+        ) -> dict[str, Any]:
+            nonlocal attempt_count
+            if node_id == "n1":
+                attempt_count += 1
+                raise NodeProcessingError("erro de validacao no payload")
+            return {"status": "success", "fallback": True}
+
+        monkeypatch.setattr(runner_mod, "execute_registered_node", fake_execute_registered_node)
+
+        payload = {
+            "nodes": [
+                {
+                    "id": "n1",
+                    "type": "mapper",
+                    "data": {
+                        "type": "mapper",
+                        "retry_policy": {
+                            "max_attempts": 5,
+                            "backoff_strategy": "none",
+                            "backoff_seconds": 0.1,
+                            "retry_on": ["timeout"],
+                        },
+                    },
+                },
+                {"id": "n2", "type": "mapper", "data": {"type": "mapper"}},
+            ],
+            "edges": [
+                {"source": "n1", "target": "n2", "sourceHandle": "on_error"},
+            ],
+        }
+
+        result = await run_workflow(
+            workflow_payload=payload,
+            workflow_id="wf-retry-filter",
+            execution_id="exec-retry-filter",
+        )
+
+        assert attempt_count == 1, "filtro retry_on sem match nao deve disparar retry"
+        assert result["status"] == "completed"
+        n1_result = result["node_results"]["n1"]
+        assert n1_result["status"] == "handled_error"
+        assert n1_result["active_handle"] == "on_error"
+        n2_exec = next(evt for evt in result["node_executions"] if evt["node_id"] == "n2")
+        assert n2_exec["status"] == "success"
+
+
 # ---------------------------------------------------------------------------
 # _extract_row_counts — heuristicas de contagem para persistencia
 # ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 import sqlalchemy as sa
 
+from app.schemas.workflow import CompositeBlueprint, CompositeTableStep
 from app.services.load_service import (
     _build_upsert_sql,
     load_service,
@@ -458,3 +459,208 @@ class TestUpsertValidation:
                 },
                 make_context(db_path, "src"),
             )
+
+
+# ---------------------------------------------------------------------------
+# Backward-compat: blueprints salvos antes da Fase 2
+# ---------------------------------------------------------------------------
+
+
+class TestBackwardCompatPreFase2:
+    """Blueprints salvos antes da Fase 2 nao tem conflict_mode/conflict_keys/update_columns.
+
+    Pydantic deve aplicar defaults corretos e o processor deve comportar-se
+    como INSERT puro (comportamento pre-Fase-2).
+    """
+
+    def test_legacy_step_parses_with_default_insert_mode(self) -> None:
+        """Dict sem os 3 campos novos carrega com defaults conservadores."""
+        legacy_step: dict[str, Any] = {
+            "alias": "nota",
+            "table": "NOTA",
+            "role": "header",
+            "columns": ["numero", "cliente_id", "valor"],
+            "returning": ["id"],
+        }
+
+        step = CompositeTableStep.model_validate(legacy_step)
+
+        assert step.conflict_mode == "insert"
+        assert step.conflict_keys == []
+        assert step.update_columns is None
+        # Campos legados preservados.
+        assert step.alias == "nota"
+        assert step.columns == ["numero", "cliente_id", "valor"]
+        assert step.returning == ["id"]
+
+    def test_legacy_blueprint_with_multiple_steps_parses(self) -> None:
+        """Blueprint com N steps todos legados: todos recebem defaults."""
+        legacy_blueprint: dict[str, Any] = {
+            "tables": [
+                {
+                    "alias": "nota",
+                    "table": "NOTA",
+                    "role": "header",
+                    "columns": ["numero", "cliente_id", "valor"],
+                    "returning": ["id"],
+                },
+                {
+                    "alias": "item",
+                    "table": "NOTAITEM",
+                    "role": "child",
+                    "parent_alias": "nota",
+                    "fk_map": [
+                        {"child_column": "nota_id", "parent_returning": "id"}
+                    ],
+                    "columns": ["produto", "quantidade"],
+                    "returning": [],
+                },
+            ]
+        }
+
+        blueprint = CompositeBlueprint.model_validate(legacy_blueprint)
+
+        assert len(blueprint.tables) == 2
+        for step in blueprint.tables:
+            assert step.conflict_mode == "insert"
+            assert step.conflict_keys == []
+            assert step.update_columns is None
+
+    def test_blueprint_mixing_legacy_and_new_steps(self) -> None:
+        """Step 1 sem campos (legado) + Step 2 com conflict_mode='upsert' coexistem."""
+        mixed_blueprint: dict[str, Any] = {
+            "tables": [
+                {
+                    # Legado — sem os 3 campos.
+                    "alias": "nota",
+                    "table": "NOTA",
+                    "role": "header",
+                    "columns": ["numero", "cliente_id"],
+                    "returning": ["id"],
+                },
+                {
+                    # Moderno — com upsert configurado.
+                    "alias": "item",
+                    "table": "NOTAITEM",
+                    "role": "child",
+                    "parent_alias": "nota",
+                    "fk_map": [
+                        {"child_column": "nota_id", "parent_returning": "id"}
+                    ],
+                    "columns": ["produto", "quantidade"],
+                    "returning": [],
+                    "conflict_mode": "upsert",
+                    "conflict_keys": ["nota_id", "produto"],
+                    "update_columns": ["quantidade"],
+                },
+            ]
+        }
+
+        blueprint = CompositeBlueprint.model_validate(mixed_blueprint)
+
+        # Step 1 (legado) com defaults.
+        step_nota = blueprint.tables[0]
+        assert step_nota.conflict_mode == "insert"
+        assert step_nota.conflict_keys == []
+        assert step_nota.update_columns is None
+
+        # Step 2 (moderno) mantem sua configuracao.
+        step_item = blueprint.tables[1]
+        assert step_item.conflict_mode == "upsert"
+        assert step_item.conflict_keys == ["nota_id", "produto"]
+        assert step_item.update_columns == ["quantidade"]
+
+    def test_processor_executes_legacy_blueprint_as_pure_insert(
+        self,
+        dest_sqlite_upsert: str,
+        tmp_path: Path,
+    ) -> None:
+        """Blueprint sem campos da Fase 2 passa pelo processor e insere normalmente.
+
+        Garantia: comportamento pre-Fase-2 preservado para dados existentes.
+        Tentar reinserir a mesma chave UNIQUE deve falhar (INSERT puro, sem upsert).
+        """
+        legacy_blueprint: dict[str, Any] = {
+            "tables": [
+                {
+                    "alias": "nota",
+                    "table": "NOTA",
+                    "role": "header",
+                    "columns": ["numero", "cliente_id", "valor"],
+                    "returning": ["id"],
+                    # sem conflict_mode / conflict_keys / update_columns
+                },
+            ]
+        }
+        field_mapping = {
+            "nota.numero": "NUM",
+            "nota.cliente_id": "CLIENTE",
+            "nota.valor": "VALOR",
+        }
+        source_rows = [
+            {"NUM": "L001", "CLIENTE": 10, "VALOR": 100.0},
+            {"NUM": "L002", "CLIENTE": 11, "VALOR": 200.0},
+        ]
+
+        db_path = tmp_path / "src_legacy.duckdb"
+        create_duckdb_with_rows(db_path, "src", source_rows)
+
+        processor = CompositeInsertProcessor()
+        output = processor.process(
+            "legacy-insert",
+            {
+                "connection_string": dest_sqlite_upsert,
+                "blueprint": legacy_blueprint,
+                "field_mapping": field_mapping,
+            },
+            make_context(db_path, "src"),
+        )
+
+        assert output["status"] == "success"
+        assert output["rows_written"] == 2
+        assert _count(dest_sqlite_upsert, "NOTA") == 2
+
+        # Reexecutar com o mesmo dado -> INSERT puro deve falhar em UNIQUE.
+        db_path2 = tmp_path / "src_legacy_dup.duckdb"
+        create_duckdb_with_rows(
+            db_path2,
+            "src",
+            [{"NUM": "L001", "CLIENTE": 99, "VALOR": 999.0}],
+        )
+
+        dup_output = processor.process(
+            "legacy-insert-dup",
+            {
+                "connection_string": dest_sqlite_upsert,
+                "blueprint": legacy_blueprint,
+                "field_mapping": field_mapping,
+            },
+            make_context(db_path2, "src"),
+        )
+
+        # Comportamento INSERT puro: o processor reporta erro, nao upsert/ignore.
+        assert dup_output["status"] == "error"
+        assert dup_output["failed_at_alias"] == "nota"
+        err_msg = str(dup_output.get("error_message", "")).lower()
+        assert "unique" in err_msg or "constraint" in err_msg
+        # Base nao mudou — INSERT falhou sem afetar a linha original.
+        assert _count(dest_sqlite_upsert, "NOTA") == 2
+
+    def test_legacy_blueprint_without_conflict_keys_not_validation_error(self) -> None:
+        """Validator de conflict_keys so e estrito quando conflict_mode != 'insert'.
+
+        Em blueprint legado, conflict_mode cai no default 'insert' e a ausencia
+        de conflict_keys e aceitavel. Nao deve levantar ValidationError.
+        """
+        legacy_step: dict[str, Any] = {
+            "alias": "nota",
+            "table": "NOTA",
+            "role": "header",
+            "columns": ["numero", "valor"],
+            "returning": [],
+        }
+
+        # Nao deve levantar.
+        step = CompositeTableStep.model_validate(legacy_step)
+        assert step.conflict_mode == "insert"
+        assert step.conflict_keys == []

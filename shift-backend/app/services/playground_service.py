@@ -18,6 +18,7 @@ from app.models.connection import Connection
 from app.models.connection_schema import ConnectionSchema
 from app.schemas.connection import ConnectionType
 from app.schemas.playground import (
+    ForeignKey,
     PlaygroundQueryResponse,
     SchemaColumn,
     SchemaResponse,
@@ -324,22 +325,71 @@ class PlaygroundService:
             inspector = sa.inspect(engine)
             tables: list[SchemaTable] = []
 
+            def _norm(name: str | None) -> str | None:
+                if name is None:
+                    return None
+                return name.upper() if is_oracle else name
+
             def _collect(schema: str | None) -> None:
-                # Oracle: o SQLAlchemy normaliza nomes para lowercase — revertemos para uppercase
                 display_schema = schema if schema is not None else default_schema
                 for raw_name in sorted(inspector.get_table_names(schema=schema)):
-                    display_name = raw_name.upper() if is_oracle else raw_name
+                    display_name = _norm(raw_name) or raw_name
+
+                    # Primary key
+                    try:
+                        pk_info = inspector.get_pk_constraint(raw_name, schema=schema) or {}
+                        pk_cols = {
+                            (_norm(c) or c)
+                            for c in (pk_info.get("constrained_columns") or [])
+                        }
+                    except Exception:
+                        pk_cols = set()
+
+                    # Columns (com flag de PK)
                     cols = []
                     for col in inspector.get_columns(raw_name, schema=schema):
-                        col_name = col["name"].upper() if is_oracle else col["name"]
+                        col_name = _norm(col["name"]) or col["name"]
                         cols.append(
                             SchemaColumn(
                                 name=col_name,
                                 type=str(col["type"]),
                                 nullable=col.get("nullable", True),
+                                primary_key=col_name in pk_cols,
                             )
                         )
-                    tables.append(SchemaTable(name=display_name, schema=display_schema, columns=cols))
+
+                    # Foreign keys
+                    fks: list[ForeignKey] = []
+                    try:
+                        for fk in inspector.get_foreign_keys(raw_name, schema=schema) or []:
+                            ref_table = fk.get("referred_table")
+                            if not ref_table:
+                                continue
+                            fks.append(
+                                ForeignKey(
+                                    columns=[
+                                        _norm(c) or c
+                                        for c in (fk.get("constrained_columns") or [])
+                                    ],
+                                    ref_table=_norm(ref_table) or ref_table,
+                                    ref_columns=[
+                                        _norm(c) or c
+                                        for c in (fk.get("referred_columns") or [])
+                                    ],
+                                    ref_schema=_norm(fk.get("referred_schema")),
+                                )
+                            )
+                    except Exception:
+                        pass
+
+                    tables.append(
+                        SchemaTable(
+                            name=display_name,
+                            schema_name=display_schema,
+                            columns=cols,
+                            foreign_keys=fks,
+                        )
+                    )
 
             # Schema padrão (usuário conectado)
             _collect(None)
@@ -348,6 +398,12 @@ class PlaygroundService:
                 normalized = extra.strip().upper()
                 if normalized:
                     _collect(normalized)
+
+            # Row counts (best-effort, dialect-specific)
+            try:
+                _populate_row_counts(engine, tables, conn_type)
+            except Exception:
+                pass
 
             return SchemaResponse(tables=tables)
         finally:
@@ -380,6 +436,60 @@ class PlaygroundService:
             )
             table_names = [row[0] for row in cur.fetchall()]
 
+            # Primary keys: table -> set(col)
+            pks_map: dict[str, set[str]] = {}
+            try:
+                cur.execute(
+                    "SELECT TRIM(rc.rdb$relation_name), TRIM(sg.rdb$field_name) "
+                    "FROM rdb$relation_constraints rc "
+                    "JOIN rdb$index_segments sg ON sg.rdb$index_name = rc.rdb$index_name "
+                    "WHERE rc.rdb$constraint_type = 'PRIMARY KEY'"
+                )
+                for tname, col in cur.fetchall():
+                    pks_map.setdefault(tname, set()).add(col)
+            except Exception:
+                pass
+
+            # Foreign keys: table -> list of FK
+            fks_map: dict[str, list[ForeignKey]] = {}
+            try:
+                cur.execute(
+                    "SELECT "
+                    "  TRIM(rc.rdb$relation_name), "
+                    "  TRIM(rc.rdb$constraint_name), "
+                    "  TRIM(sg.rdb$field_name), "
+                    "  TRIM(rc2.rdb$relation_name) AS ref_table, "
+                    "  TRIM(sg2.rdb$field_name) AS ref_col, "
+                    "  sg.rdb$field_position "
+                    "FROM rdb$relation_constraints rc "
+                    "JOIN rdb$ref_constraints refc ON refc.rdb$constraint_name = rc.rdb$constraint_name "
+                    "JOIN rdb$relation_constraints rc2 ON rc2.rdb$constraint_name = refc.rdb$const_name_uq "
+                    "JOIN rdb$index_segments sg ON sg.rdb$index_name = rc.rdb$index_name "
+                    "JOIN rdb$index_segments sg2 ON sg2.rdb$index_name = rc2.rdb$index_name "
+                    "  AND sg2.rdb$field_position = sg.rdb$field_position "
+                    "WHERE rc.rdb$constraint_type = 'FOREIGN KEY' "
+                    "ORDER BY rc.rdb$relation_name, rc.rdb$constraint_name, sg.rdb$field_position"
+                )
+                # agrupa por (tabela, constraint)
+                grouped: dict[tuple[str, str], dict[str, Any]] = {}
+                for tname, cname, col, ref_t, ref_c, _pos in cur.fetchall():
+                    key = (tname, cname)
+                    entry = grouped.setdefault(
+                        key, {"ref_table": ref_t, "columns": [], "ref_columns": []}
+                    )
+                    entry["columns"].append(col)
+                    entry["ref_columns"].append(ref_c)
+                for (tname, _cname), entry in grouped.items():
+                    fks_map.setdefault(tname, []).append(
+                        ForeignKey(
+                            columns=entry["columns"],
+                            ref_table=entry["ref_table"],
+                            ref_columns=entry["ref_columns"],
+                        )
+                    )
+            except Exception:
+                pass
+
             tables: list[SchemaTable] = []
             for table_name in table_names:
                 cur.execute(
@@ -406,18 +516,22 @@ class PlaygroundService:
                     "ORDER BY rf.rdb$field_position",
                     (table_name,),
                 )
+                pk_cols = pks_map.get(table_name, set())
                 cols = [
                     SchemaColumn(
                         name=row[0].strip() if row[0] else row[0],
                         type=row[1].strip() if row[1] else "UNKNOWN",
                         nullable=row[2] is None,
+                        primary_key=(row[0] and row[0].strip() in pk_cols),
                     )
                     for row in cur.fetchall()
                 ]
+                table_display = table_name.strip() if table_name else table_name
                 tables.append(
                     SchemaTable(
-                        name=table_name.strip() if table_name else table_name,
+                        name=table_display,
                         columns=cols,
+                        foreign_keys=fks_map.get(table_name, []),
                     )
                 )
 
@@ -429,6 +543,85 @@ class PlaygroundService:
                     fb_conn.close()
                 except Exception:
                     pass
+
+
+def _populate_row_counts(
+    engine: sa.Engine, tables: list[SchemaTable], conn_type: str
+) -> None:
+    """Preenche row_count_estimate usando estatísticas nativas (best-effort)."""
+    if not tables:
+        return
+
+    if conn_type == ConnectionType.postgresql.value:
+        sql = (
+            "SELECT schemaname, relname, n_live_tup "
+            "FROM pg_stat_user_tables"
+        )
+        with engine.connect() as db_conn:
+            rows = db_conn.execute(sa.text(sql)).fetchall()
+        counts = {(r[0], r[1]): int(r[2] or 0) for r in rows}
+        for t in tables:
+            key = (t.schema_name, t.name) if t.schema_name else None
+            if key and key in counts:
+                t.row_count_estimate = counts[key]
+            else:
+                # fallback: match só por nome (schema público)
+                for (_, name), val in counts.items():
+                    if name == t.name:
+                        t.row_count_estimate = val
+                        break
+        return
+
+    if conn_type == ConnectionType.oracle.value:
+        sql = (
+            "SELECT owner, table_name, num_rows "
+            "FROM all_tables "
+            "WHERE num_rows IS NOT NULL"
+        )
+        with engine.connect() as db_conn:
+            rows = db_conn.execute(sa.text(sql)).fetchall()
+        counts = {(str(r[0]).upper(), str(r[1]).upper()): int(r[2]) for r in rows}
+        for t in tables:
+            schema = (t.schema_name or "").upper()
+            key = (schema, t.name.upper())
+            if key in counts:
+                t.row_count_estimate = counts[key]
+        return
+
+    if conn_type == ConnectionType.mysql.value:
+        sql = (
+            "SELECT table_schema, table_name, table_rows "
+            "FROM information_schema.tables "
+            "WHERE table_schema NOT IN "
+            "('information_schema','mysql','performance_schema','sys')"
+        )
+        with engine.connect() as db_conn:
+            rows = db_conn.execute(sa.text(sql)).fetchall()
+        counts = {(r[0], r[1]): int(r[2] or 0) for r in rows}
+        for t in tables:
+            for (_, name), val in counts.items():
+                if name == t.name:
+                    t.row_count_estimate = val
+                    break
+        return
+
+    if conn_type == ConnectionType.sqlserver.value:
+        sql = (
+            "SELECT s.name, t.name, SUM(p.rows) AS rowcnt "
+            "FROM sys.tables t "
+            "JOIN sys.schemas s ON s.schema_id = t.schema_id "
+            "JOIN sys.partitions p ON p.object_id = t.object_id "
+            "WHERE p.index_id IN (0, 1) "
+            "GROUP BY s.name, t.name"
+        )
+        with engine.connect() as db_conn:
+            rows = db_conn.execute(sa.text(sql)).fetchall()
+        counts = {(r[0], r[1]): int(r[2] or 0) for r in rows}
+        for t in tables:
+            for (_, name), val in counts.items():
+                if name == t.name:
+                    t.row_count_estimate = val
+                    break
 
 
 def _fetch_with_encoding_fallback(cur: Any, count: int) -> list:

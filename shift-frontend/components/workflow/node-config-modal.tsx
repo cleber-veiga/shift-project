@@ -59,6 +59,9 @@ const iconBgMap: Record<string, string> = {
   emerald: "bg-emerald-100 dark:bg-emerald-500/20",
   orange:  "bg-orange-100 dark:bg-orange-500/20",
   pink:    "bg-pink-100 dark:bg-pink-500/20",
+  indigo:  "bg-indigo-100 dark:bg-indigo-500/20",
+  red:     "bg-red-100 dark:bg-red-500/20",
+  slate:   "bg-slate-100 dark:bg-slate-500/20",
 }
 
 const iconColorMap: Record<string, string> = {
@@ -68,6 +71,9 @@ const iconColorMap: Record<string, string> = {
   emerald: "text-emerald-600 dark:text-emerald-400",
   orange:  "text-orange-600 dark:text-orange-400",
   pink:    "text-pink-600 dark:text-pink-400",
+  indigo:  "text-indigo-600 dark:text-indigo-400",
+  red:     "text-red-600 dark:text-red-400",
+  slate:   "text-slate-600 dark:text-slate-400",
 }
 
 // ─── Type detection helpers ──────────────────────────────────────────────────
