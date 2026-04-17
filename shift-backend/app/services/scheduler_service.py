@@ -5,13 +5,16 @@ APScheduler roda dentro do proprio processo FastAPI. Jobs sao persistidos
 via ``SQLAlchemyJobStore`` no mesmo Postgres da aplicacao (tabela
 ``apscheduler_jobs``), entao sobrevivem a restarts.
 
-Regra de negocio preservada:
+Regra de negocio:
   Um workflow tem schedule ATIVO se, e somente se:
-    1. workflow.status == "published"
-    2. workflow.definition contem um no do tipo "cron" com cron_expression
+    1. workflow.status == "published"  (modo "Producao" na UI)
+    2. workflow.is_published is True   (flag "Publicado" na UI)
+    3. workflow.definition contem um no do tipo "cron" com cron_expression
        nao vazia.
 
-Em qualquer outra combinacao, o job correspondente e removido.
+Em qualquer outra combinacao, o job correspondente e removido. A UI expoe
+os dois toggles separadamente ("Producao" e "Publicado") e o agendamento
+so liga quando ambos estao ativos alem de existir um no cron valido.
 """
 
 from __future__ import annotations
@@ -198,8 +201,9 @@ def register_workflow_schedule(workflow: Workflow) -> bool:
     """
     workflow_id = str(workflow.id)
     cron = extract_cron_trigger(workflow.definition)
-    is_published = getattr(workflow, "status", "draft") == "published"
-    should_schedule = is_published and cron is not None
+    is_production = getattr(workflow, "status", "draft") == "published"
+    is_public = bool(getattr(workflow, "is_published", False))
+    should_schedule = is_production and is_public and cron is not None
 
     try:
         if should_schedule:
@@ -265,13 +269,19 @@ def get_schedule_status(workflow: Workflow) -> dict[str, Any]:
     ``shift-frontend/lib/auth.ts::WorkflowScheduleStatus``.
     """
     cron = extract_cron_trigger(workflow.definition)
-    is_published = getattr(workflow, "status", "draft") == "published"
-    is_active = is_published and cron is not None
+    is_production = getattr(workflow, "status", "draft") == "published"
+    is_public = bool(getattr(workflow, "is_published", False))
+    is_active = is_production and is_public and cron is not None
 
+    # Mantemos ``is_published`` no payload refletindo ``status == "published"``
+    # (UI chama esse toggle de "Producao") para nao quebrar o contrato
+    # historico. Adicionamos ``is_public`` como o novo requisito
+    # independente (UI chama de "Publicado").
     return {
         "workflow_id": str(workflow.id),
         "is_active": is_active,
-        "is_published": is_published,
+        "is_published": is_production,
+        "is_public": is_public,
         "has_cron_node": cron is not None,
         "cron_expression": cron[0] if cron else None,
         "timezone": cron[1] if cron else None,
@@ -301,8 +311,9 @@ async def bootstrap_schedules() -> None:
     removed = 0
     for workflow in workflows:
         cron = extract_cron_trigger(workflow.definition)
-        is_published = getattr(workflow, "status", "draft") == "published"
-        if is_published and cron is not None:
+        is_production = getattr(workflow, "status", "draft") == "published"
+        is_public = bool(getattr(workflow, "is_published", False))
+        if is_production and is_public and cron is not None:
             if register_workflow_schedule(workflow):
                 registered += 1
         else:

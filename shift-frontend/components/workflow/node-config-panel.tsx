@@ -13,11 +13,15 @@ import { SwitchConfig } from "@/components/workflow/nodes/switch-config"
 import { TruncateTableConfig } from "@/components/workflow/nodes/truncate-table-config"
 import { BulkInsertConfig } from "@/components/workflow/nodes/bulk-insert-config"
 import { CronConfig } from "@/components/workflow/nodes/cron-config"
+import { WebhookConfig } from "@/components/workflow/nodes/webhook-config"
+import type { WebhookCapture } from "@/lib/api/webhooks"
 
 interface NodeConfigPanelProps {
   node: Node
+  workflowId: string
   onClose: () => void
   onUpdate: (nodeId: string, data: Record<string, unknown>) => void
+  onWebhookTestEvent?: (capture: WebhookCapture) => void
 }
 
 const categoryBgMap: Record<string, string> = {
@@ -146,10 +150,14 @@ function CheckboxInput({
 /** Render config fields based on the node type */
 export function NodeConfigFields({
   node,
+  workflowId,
   onUpdate,
+  onWebhookTestEvent,
 }: {
   node: Node
+  workflowId?: string
   onUpdate: (nodeId: string, data: Record<string, unknown>) => void
+  onWebhookTestEvent?: (capture: WebhookCapture) => void
 }) {
   const data = node.data as Record<string, unknown>
   const nodeType = (data.type as string) ?? node.type
@@ -181,7 +189,15 @@ export function NodeConfigFields({
       )
 
     case "webhook":
-      return <div className="space-y-4"><p className="text-xs text-muted-foreground">Nenhuma configuração necessária.</p></div>
+      return (
+        <WebhookConfig
+          workflowId={workflowId ?? ""}
+          nodeId={node.id}
+          data={data}
+          onUpdate={(patch) => onUpdate(node.id, { ...data, ...patch })}
+          onTestEvent={onWebhookTestEvent}
+        />
+      )
 
     case "polling":
       return (
@@ -573,7 +589,13 @@ export function NodeConfigFields({
   }
 }
 
-export function NodeConfigPanel({ node, onClose, onUpdate }: NodeConfigPanelProps) {
+export function NodeConfigPanel({
+  node,
+  workflowId,
+  onClose,
+  onUpdate,
+  onWebhookTestEvent,
+}: NodeConfigPanelProps) {
   const definition = getNodeDefinition(node.type ?? "")
   const Icon = getNodeIcon(definition?.icon ?? "Database")
   const color = definition?.color ?? "blue"
@@ -599,7 +621,12 @@ export function NodeConfigPanel({ node, onClose, onUpdate }: NodeConfigPanelProp
 
       {/* Config form */}
       <div className="flex-1 overflow-y-auto px-3 py-4">
-        <NodeConfigFields node={node} onUpdate={onUpdate} />
+        <NodeConfigFields
+          node={node}
+          workflowId={workflowId}
+          onUpdate={onUpdate}
+          onWebhookTestEvent={onWebhookTestEvent}
+        />
       </div>
 
       {/* Footer */}

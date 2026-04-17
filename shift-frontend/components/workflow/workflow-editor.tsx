@@ -24,10 +24,12 @@ import { WorkflowToolbar } from "@/components/workflow/workflow-toolbar"
 import { NodeLibrary } from "@/components/workflow/node-library"
 import { NodeConfigModal, type UpstreamOutput } from "@/components/workflow/node-config-modal"
 import { ExecutionPanel } from "@/components/workflow/execution-panel"
+import { ExecutionsTab } from "@/components/workflow/executions/executions-tab"
 import { getNodeDefinition, NODE_REGISTRY } from "@/lib/workflow/types"
 import { NodeExecutionContext, type NodeExecState } from "@/lib/workflow/execution-context"
 import { NodeActionsContext } from "@/lib/workflow/node-actions-context"
-import { Loader2, Plus } from "lucide-react"
+import { History, Loader2, Plus, Workflow as WorkflowIcon } from "lucide-react"
+import { cn } from "@/lib/utils"
 import {
   getWorkflow,
   getWorkflowSchedule,
@@ -103,6 +105,9 @@ function WorkflowEditorInner({
 
   const [showLibrary, setShowLibrary] = useState(false)
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
+
+  // Aba ativa: "editor" (canvas) ou "executions" (historico de runs).
+  const [activeTab, setActiveTab] = useState<"editor" | "executions">("editor")
 
   // Workflow metadata (player_id, workflow_type, …)
   const [workflowMeta, setWorkflowMeta] = useState<Record<string, unknown>>({})
@@ -560,8 +565,27 @@ function WorkflowEditorInner({
           </div>
         )}
 
+        {/* Tabs: Editor (canvas) | Executions (historico) */}
+        <div className="flex shrink-0 items-center gap-1 border-b border-border bg-muted/20 px-4">
+          <TabSwitch
+            active={activeTab === "editor"}
+            onClick={() => setActiveTab("editor")}
+            icon={<WorkflowIcon className="size-3.5" />}
+            label="Editor"
+          />
+          <TabSwitch
+            active={activeTab === "executions"}
+            onClick={() => setActiveTab("executions")}
+            icon={<History className="size-3.5" />}
+            label="Executions"
+          />
+        </div>
+
         {/* Main area: canvas + config panel */}
-        <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div className={cn(
+          "flex min-h-0 flex-1 overflow-hidden",
+          activeTab !== "editor" && "hidden",
+        )}>
           {/* Canvas */}
           <div className="relative flex-1" ref={reactFlowWrapper}>
             {/* + button to toggle node library */}
@@ -627,16 +651,40 @@ function WorkflowEditorInner({
 
         </div>
 
+        {/* Executions tab — monta somente quando ativa para evitar poll desnecessario */}
+        {activeTab === "executions" && (
+          <div className="flex min-h-0 flex-1 overflow-hidden">
+            <ExecutionsTab workflowId={workflowId} active={activeTab === "executions"} />
+          </div>
+        )}
+
         {/* Node config modal (3-column: INPUT | PARAMS | OUTPUT) */}
         {currentSelectedNode && (
           <NodeConfigModal
             node={currentSelectedNode}
+            workflowId={workflowId}
             upstreamOutputs={upstreamOutputs}
             currentOutput={selectedNodeExecState}
             isExecuting={isExecuting}
             onClose={() => setSelectedNode(null)}
             onUpdate={onUpdateNodeData}
             onExecute={() => handleExecute(currentSelectedNode.id)}
+            onWebhookTestEvent={(capture) => {
+              // Expoe o payload recebido pelo "Listen for test event" no
+              // painel OUTPUT do no selecionado.
+              setNodeExecStates((prev) => ({
+                ...prev,
+                [currentSelectedNode.id]: {
+                  status: "success",
+                  output: {
+                    method: capture.method,
+                    headers: capture.headers,
+                    query_params: capture.query_params,
+                    data: capture.body,
+                  },
+                },
+              }))
+            }}
           />
         )}
 
@@ -652,6 +700,34 @@ function WorkflowEditorInner({
       </div>
     </NodeExecutionContext.Provider>
     </NodeActionsContext.Provider>
+  )
+}
+
+function TabSwitch({
+  active,
+  onClick,
+  icon,
+  label,
+}: {
+  active: boolean
+  onClick: () => void
+  icon: React.ReactNode
+  label: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-xs transition-colors",
+        active
+          ? "border-primary font-semibold text-foreground"
+          : "border-transparent text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {icon}
+      {label}
+    </button>
   )
 }
 

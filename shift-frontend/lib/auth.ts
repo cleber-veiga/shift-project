@@ -514,7 +514,7 @@ function dispatchSessionExpired() {
   }
 }
 
-async function authorizedRequest<T>(path: string, init: RequestInit): Promise<T> {
+export async function authorizedRequest<T>(path: string, init: RequestInit): Promise<T> {
   const session = await getValidSession()
   if (!session) {
     dispatchSessionExpired()
@@ -1321,7 +1321,13 @@ export async function executeWorkflow(
 export type WorkflowScheduleStatus = {
   workflow_id: string
   is_active: boolean
+  // ``is_published`` aqui reflete ``workflow.status === "published"``
+  // (toggle "Produção" na UI). Nome preservado por compatibilidade.
   is_published: boolean
+  // ``is_public`` reflete ``workflow.is_published`` do model
+  // (toggle "Publicado" na UI). Junto com ``is_published`` forma o
+  // pré-requisito para o schedule ficar ativo.
+  is_public: boolean
   has_cron_node: boolean
   cron_expression: string | null
   timezone: string | null

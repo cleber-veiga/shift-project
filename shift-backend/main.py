@@ -2,6 +2,8 @@
 Ponto de entrada da aplicacao FastAPI - Shift Backend.
 """
 
+import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -21,6 +23,7 @@ from app.api.v1.lookups import router as lookups_router
 from app.api.v1.organizations import router as organizations_router
 from app.api.v1.projects import router as projects_router
 from app.api.v1.webhooks import router as webhook_router
+from app.api.v1.webhooks_admin import router as webhook_admin_router
 from app.api.v1.workflows import router as workflow_router
 from app.api.v1.playground import router as playground_router
 from app.api.v1.saved_queries import router as saved_queries_router
@@ -29,11 +32,25 @@ from app.api.v1.workspaces import router as workspaces_router
 from app.core.logging import get_logger
 from app.core.middleware import RequestIDMiddleware
 from app.core.rate_limit import limiter
-from app.db.session import engine
+from app.db.session import async_session_factory, engine
+from app.services import webhook_service
 from app.services.scheduler_service import bootstrap_schedules, scheduler
 from app.services.workflow_service import cleanup_orphaned_executions
 
 logger = get_logger(__name__)
+
+
+async def _purge_webhook_captures_loop(interval_seconds: float = 300.0) -> None:
+    """Limpa capturas expiradas da tabela webhook_test_captures em loop."""
+    while True:
+        try:
+            async with async_session_factory() as session:
+                removed = await webhook_service.purge_expired_captures(session)
+                if removed:
+                    logger.info("webhook.capture.purged", count=removed)
+        except Exception:  # noqa: BLE001
+            logger.exception("webhook.capture.purge_failed")
+        await asyncio.sleep(interval_seconds)
 
 
 @asynccontextmanager
@@ -43,10 +60,16 @@ async def lifespan(app: FastAPI):
     await cleanup_orphaned_executions()
     scheduler.start()
     await bootstrap_schedules()
+    purge_task = asyncio.create_task(
+        _purge_webhook_captures_loop(), name="webhook-capture-purge"
+    )
     logger.info("scheduler.started")
     try:
         yield
     finally:
+        purge_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await purge_task
         scheduler.shutdown(wait=True)
         logger.info("scheduler.stopped")
         await engine.dispose()
@@ -98,6 +121,7 @@ app.include_router(organizations_router, prefix="/api/v1")
 app.include_router(workspaces_router, prefix="/api/v1")
 app.include_router(projects_router, prefix="/api/v1")
 app.include_router(webhook_router, prefix="/api/v1")
+app.include_router(webhook_admin_router, prefix="/api/v1")
 app.include_router(workflow_router, prefix="/api/v1")
 app.include_router(workflow_crud_router, prefix="/api/v1")
 app.include_router(playground_router, prefix="/api/v1")

@@ -4,8 +4,19 @@ Modelos ORM: Workflow e WorkflowExecution.
 
 import uuid
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -81,6 +92,14 @@ class WorkflowExecution(Base):
     )
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="PENDING"
+    )
+    triggered_by: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default="manual",
+        server_default="manual",
+        index=True,
+        comment="Origem do disparo: manual (UI via /test), api (POST /execute), cron, webhook",
     )
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -163,4 +182,51 @@ class WorkflowNodeExecution(Base):
 
     execution: Mapped["WorkflowExecution"] = relationship(
         back_populates="node_executions",
+    )
+
+
+class WebhookTestCapture(Base):
+    """Buffer de curta duracao para capturas da URL de teste do webhook.
+
+    Cada linha representa a ultima requisicao recebida por
+    (workflow_id, node_id) na rota /webhook-test. A UI (botao
+    "Listen for test event") faz polling ou aguarda notificacao
+    via asyncio.Event para pegar o payload. TTL curto via
+    expires_at + limpeza em background.
+    """
+
+    __tablename__ = "webhook_test_captures"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_id", "node_id", name="uq_webhook_test_workflow_node"
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    workflow_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    node_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    method: Mapped[str] = mapped_column(String(10), nullable=False)
+    headers: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    query_params: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    body: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    raw_body_b64: Mapped[str | None] = mapped_column(Text, nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )

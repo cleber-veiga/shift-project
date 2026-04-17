@@ -111,7 +111,24 @@
       "Bash(python -m pytest tests/test_workflow_integration_parity.py tests/test_workflow_test_service_streaming.py -x --tb=short -q)",
       "Bash(python -m pytest tests/ -q --tb=short)",
       "Bash(python -m pytest tests/test_if_switch_gate_mode.py tests/test_workflow_integration_parity.py tests/test_workflow_test_service_streaming.py tests/test_dynamic_runner.py -v)",
-      "Bash(python -c \"from app.services.workflow_service import workflow_service; from app.services.workflow_test_service import workflow_test_service; from app.orchestration.flows.dynamic_runner import run_workflow, EventSink; print\\('imports OK'\\)\")"
+      "Bash(python -c \"from app.services.workflow_service import workflow_service; from app.services.workflow_test_service import workflow_test_service; from app.orchestration.flows.dynamic_runner import run_workflow, EventSink; print\\('imports OK'\\)\")",
+      "Bash(python -c \"from app.api.v1 import workflows; print\\('OK'\\)\")",
+      "Bash(.venv/Scripts/python -c \"from app.api.v1 import workflows; print\\('OK'\\)\")",
+      "Bash(venv/Scripts/python -c \"from app.api.v1 import workflows; print\\('OK'\\)\")",
+      "Bash(venv/Scripts/python -c \"import aiosqlite; print\\(aiosqlite.__version__\\)\")",
+      "Bash(venv/Scripts/python -m pytest tests/test_workflow_executions_api.py -x)",
+      "Bash(venv/Scripts/python -m pytest tests/test_workflow_executions_api.py)",
+      "Bash(venv/Scripts/python -m pytest)",
+      "Bash(npm run *)",
+      "Bash(python -m pytest tests/ -x -q --ignore=tests/test_workflow_executions_api.py -k \"scheduler or schedule\")",
+      "Bash(python -m pytest tests/ -q --ignore=tests/test_workflow_executions_api.py)",
+      "Bash(python -m pytest tests/test_webhook_endpoint.py -x --tb=short)",
+      "Bash(python -m pytest tests/test_workflow_executions_api.py -x --tb=short)",
+      "Bash(cd /d D:\\\\Labs\\\\shift-project\\\\shift-backend)",
+      "Bash(python -m pytest tests/test_webhook_endpoint.py -v --tb=short)",
+      "Bash(./venv/Scripts/python -m pytest tests/test_webhook_endpoint.py -v --tb=short)",
+      "Bash(./venv/Scripts/python -m pytest tests/ -v --tb=short -k \"execution or scheduler or webhook\")",
+      "Bash(git check-ignore *)"
     ]
   }
 }

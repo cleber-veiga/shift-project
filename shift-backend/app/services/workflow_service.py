@@ -100,6 +100,7 @@ class WorkflowExecutionService:
         execution = WorkflowExecution(
             workflow_id=workflow.id,
             status="RUNNING",
+            triggered_by=triggered_by,
             started_at=datetime.now(timezone.utc),
         )
         db.add(execution)
@@ -146,7 +147,7 @@ class WorkflowExecutionService:
         workflow_id: UUID,
         *,
         event_sink: EventSink,
-        triggered_by: str = "test",
+        triggered_by: str = "manual",
         input_data: dict[str, Any] | None = None,
         mode: str | None = None,
         target_node_id: str | None = None,
@@ -173,11 +174,11 @@ class WorkflowExecutionService:
         workflow_id: UUID,
         input_data: dict[str, Any] | None = None,
     ) -> ExecutionResponse:
-        """Mantem compatibilidade com a rota manual existente."""
+        """Mantem compatibilidade com a rota POST /execute (HTTP publica)."""
         return await self.run(
             db=db,
             workflow_id=workflow_id,
-            triggered_by="manual",
+            triggered_by="api",
             input_data=input_data,
             mode="production",
         )
@@ -345,6 +346,7 @@ class WorkflowExecutionService:
         return ExecutionStatusResponse(
             execution_id=execution.id,
             status=execution.status,
+            triggered_by=execution.triggered_by,
             result=execution.result,
             error_message=execution.error_message,
             started_at=execution.started_at,

@@ -199,10 +199,73 @@ class ManualTriggerNodeConfig(BaseModel):
     type: Literal["manual"]
 
 
+class WebhookAuthConfig(BaseModel):
+    """Configuracao de autenticacao para o webhook de entrada.
+
+    TODO: mover secrets para connections_encrypted quando o loader
+    suportar referencias indiretas. Por enquanto os valores ficam em
+    claro no definition do workflow.
+    """
+
+    type: Literal["none", "header", "basic", "jwt"] = "none"
+    # header auth
+    header_name: str | None = None
+    header_value: str | None = None
+    # basic auth
+    username: str | None = None
+    password: str | None = None
+    # jwt
+    jwt_secret: str | None = None
+    jwt_algorithm: Literal["HS256", "HS384", "HS512", "RS256"] = "HS256"
+
+
 class WebhookTriggerNodeConfig(BaseModel):
-    """Configuracao do no de trigger webhook."""
+    """Configuracao do no de trigger webhook (estilo n8n)."""
 
     type: Literal["webhook"]
+
+    http_method: Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"] = "POST"
+    path: str | None = Field(
+        default=None,
+        description=(
+            "Path opcional para expor a URL customizada. Se omitido, a URL "
+            "publica usa o workflow_id. Pode conter letras, numeros, hifen "
+            "e barras."
+        ),
+        pattern=r"^[a-zA-Z0-9/_\-]+$",
+        max_length=255,
+    )
+
+    authentication: WebhookAuthConfig = Field(default_factory=WebhookAuthConfig)
+
+    respond_mode: Literal[
+        "immediately",
+        "on_finish",
+        "using_respond_node",
+    ] = "immediately"
+    response_code: int = Field(default=200, ge=100, le=599)
+    response_data: Literal[
+        "first_entry_json",
+        "all_entries",
+        "no_body",
+    ] = "first_entry_json"
+    response_headers: dict[str, str] = Field(default_factory=dict)
+
+    raw_body: bool = Field(
+        default=False,
+        description="Quando True, nao tenta parse JSON - guarda bytes em base64.",
+    )
+    binary_property: str | None = Field(
+        default=None,
+        description="Se informado, encaminha o body como arquivo binario nesta chave.",
+    )
+
+    allowed_origins: str | None = Field(
+        default=None,
+        description="CSV de origens permitidas (ou '*'); None desabilita CORS.",
+    )
+
+    output_field: str = "data"
 
 
 class CronTriggerNodeConfig(BaseModel):
@@ -399,6 +462,7 @@ class ExecutionStatusResponse(BaseModel):
 
     execution_id: UUID
     status: str
+    triggered_by: str = "manual"
     result: dict[str, Any] | None = None
     error_message: str | None = None
     started_at: datetime | None = None
@@ -412,11 +476,37 @@ class ExecutionDetailResponse(BaseModel):
 
     execution_id: UUID
     status: str
+    triggered_by: str = "manual"
     result: dict[str, Any] | None = None
     error_message: str | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
     nodes: list[NodeExecutionResponse] = []
+
+
+class ExecutionSummaryResponse(BaseModel):
+    """Linha enxuta usada nas listagens da aba Executions."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    workflow_id: UUID
+    status: str
+    triggered_by: str
+    duration_ms: int | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    node_count: int = 0
+    error_message: str | None = None
+
+
+class ExecutionListResponse(BaseModel):
+    """Resposta paginada de execucoes de um workflow."""
+
+    items: list[ExecutionSummaryResponse]
+    total: int
+    page: int
+    size: int
 
 
 # --- Schemas de CRUD de Workflow ---
@@ -472,3 +562,29 @@ class WorkflowCloneRequest(BaseModel):
         default_factory=dict,
         description="Mapeamento de connection_id originais para novos: {'uuid_velho': 'uuid_novo'}",
     )
+
+
+# --- Schemas de suporte para o no Webhook (UI) ---
+
+class WebhookUrlsResponse(BaseModel):
+    """URLs de test e producao resolvidas para o no webhook do workflow."""
+
+    node_id: str | None
+    http_method: str
+    path: str
+    test_url: str
+    production_url: str
+    production_ready: bool
+
+
+class WebhookCaptureResponse(BaseModel):
+    """Payload capturado pela URL de teste do webhook (listen inbox)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    method: str
+    headers: dict[str, str]
+    query_params: dict[str, Any]
+    body: Any | None = None
+    captured_at: datetime

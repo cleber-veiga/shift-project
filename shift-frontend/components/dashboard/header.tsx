@@ -349,7 +349,7 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
                 placeholder="Sem organizacao"
                 isOpen={orgMenuOpen}
                 onClick={() => setOrgMenuOpen((current) => !current)}
-                aria-label="Selecione a Organização"
+                ariaLabel="Selecione a Organização"
               />
             </Tooltip>
 
@@ -393,7 +393,7 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
                 placeholder="Sem workspace"
                 isOpen={workspaceMenuOpen}
                 onClick={() => setWorkspaceMenuOpen((current) => !current)}
-                aria-label="Selecione o Espaço de Trabalho"
+                ariaLabel="Selecione o Espaço de Trabalho"
               />
             </Tooltip>
 

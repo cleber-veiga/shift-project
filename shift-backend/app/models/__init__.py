@@ -17,7 +17,7 @@ from .organization import (
 )
 from .project import Project, ProjectMember, ProjectRole
 from .user import User
-from .workflow import Workflow, WorkflowExecution
+from .workflow import WebhookTestCapture, Workflow, WorkflowExecution
 from .workspace import (
     Workspace,
     WorkspaceMember,
@@ -44,6 +44,7 @@ __all__ = [
     "ProjectMember",
     "ProjectRole",
     "User",
+    "WebhookTestCapture",
     "Workflow",
     "WorkflowExecution",
     "Workspace",

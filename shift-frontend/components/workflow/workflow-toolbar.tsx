@@ -194,7 +194,7 @@ export function WorkflowToolbar({
             title={
               scheduleStatus.is_active
                 ? `Agendamento ativo: ${scheduleStatus.cron_expression} (${scheduleStatus.timezone})`
-                : "Cron configurado, mas inativo. Mude para Produção para agendar."
+                : "Cron configurado, mas inativo. Ative Produção e Publicado para agendar."
             }
           >
             <Clock className="size-3.5" />

@@ -28,7 +28,7 @@ export function WorkflowEdge({
 }: EdgeProps) {
   const { setEdges } = useReactFlow()
   const [hovered, setHovered] = useState(false)
-  const timerRef = useRef<ReturnType<typeof setTimeout>>()
+  const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
   const [edgePath, labelX, labelY] = getBezierPath({
     sourceX,

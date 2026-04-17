@@ -25,6 +25,7 @@ import { getNodeDefinition } from "@/lib/workflow/types"
 import { getNodeIcon } from "@/lib/workflow/node-icons"
 import { NodeConfigFields } from "@/components/workflow/node-config-panel"
 import type { NodeExecState } from "@/lib/workflow/execution-context"
+import type { WebhookCapture } from "@/lib/api/webhooks"
 import { UpstreamFieldsContext, UsedSourcesContext } from "@/lib/workflow/upstream-fields-context"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -38,12 +39,14 @@ export interface UpstreamOutput {
 
 interface NodeConfigModalProps {
   node: Node
+  workflowId: string
   upstreamOutputs: UpstreamOutput[]
   currentOutput: NodeExecState | null
   isExecuting?: boolean
   onClose: () => void
   onUpdate: (nodeId: string, data: Record<string, unknown>) => void
   onExecute: () => void
+  onWebhookTestEvent?: (capture: WebhookCapture) => void
 }
 
 // ─── Color maps ───────────────────────────────────────────────────────────────
@@ -123,12 +126,14 @@ const _savedPanelWidths: { left: number | null; center: number | null } = {
 
 export function NodeConfigModal({
   node,
+  workflowId,
   upstreamOutputs,
   currentOutput,
   isExecuting: isExecutingProp,
   onClose,
   onUpdate,
   onExecute,
+  onWebhookTestEvent,
 }: NodeConfigModalProps) {
   const definition = getNodeDefinition(node.type ?? "")
   const color = definition?.color ?? "blue"
@@ -343,7 +348,12 @@ export function NodeConfigModal({
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
               <UpstreamFieldsContext.Provider value={upstreamColumns}>
-                <NodeConfigFields node={node} onUpdate={onUpdate} />
+                <NodeConfigFields
+                  node={node}
+                  workflowId={workflowId}
+                  onUpdate={onUpdate}
+                  onWebhookTestEvent={onWebhookTestEvent}
+                />
               </UpstreamFieldsContext.Provider>
             </div>
           </div>

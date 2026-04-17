@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     FRONTEND_BASE_URL: str = "http://localhost:3000"
     INVITATION_EXPIRE_DAYS: int = 7
 
+    # --- Webhooks ---
+    # URL publica do backend usada para montar as URLs de webhook exibidas
+    # na UI. Em desenvolvimento, usa-se tipicamente http://localhost:8000.
+    # Em producao, apontar para o dominio publico (atras do proxy/tunel).
+    EXTERNAL_BASE_URL: str | None = None
+
     # --- AI / LLM (SQL Assistant) ---
     # Identificador LiteLLM do modelo. Prefixo define o provider:
     #   anthropic/claude-sonnet-4-20250514, gpt-4o, gemini/gemini-2.0-flash, ollama/llama3.2
