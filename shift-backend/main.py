@@ -12,12 +12,17 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from app.api.v1.agent import router as agent_router
+from app.api.v1.agent_audit import router as agent_audit_router
+from app.api.v1.agent_keys import router as agent_keys_router
+from app.api.v1.agent_mcp import router as agent_mcp_router
 from app.api.v1.ai_chat import router as ai_chat_router
 from app.api.v1.input_models import router as input_models_router
 from app.api.v1.input_model_rows import router as input_model_rows_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.connections import router as connections_router
 from app.api.v1.composite_preview import router as composite_preview_router
+from app.api.v1.nodes import router as nodes_router
 from app.api.v1.custom_node_definitions import router as custom_node_definitions_router
 from app.api.v1.dead_letters import router as dead_letters_router
 from app.api.v1.economic_groups import router as economic_groups_router
@@ -38,6 +43,9 @@ from app.core.middleware import RequestIDMiddleware
 from app.core.rate_limit import limiter
 from app.db.session import async_session_factory, engine
 from app.services import webhook_service
+from app.services.agent.graph.checkpointer import close_checkpointer
+from app.services.agent.safety.expiration_job import register_agent_expiration_job
+from app.core.config import settings
 from app.services.scheduler_service import bootstrap_schedules, scheduler
 from app.services.workflow_service import cleanup_orphaned_executions
 
@@ -64,6 +72,11 @@ async def lifespan(app: FastAPI):
     await cleanup_orphaned_executions()
     scheduler.start()
     await bootstrap_schedules()
+    if settings.AGENT_ENABLED:
+        register_agent_expiration_job(
+            scheduler,
+            interval_minutes=settings.AGENT_EXPIRATION_JOB_INTERVAL_MINUTES,
+        )
     purge_task = asyncio.create_task(
         _purge_webhook_captures_loop(), name="webhook-capture-purge"
     )
@@ -76,6 +89,7 @@ async def lifespan(app: FastAPI):
             await purge_task
         scheduler.shutdown(wait=True)
         logger.info("scheduler.stopped")
+        await close_checkpointer()
         await engine.dispose()
 
 
@@ -120,6 +134,7 @@ Instrumentator(
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(connections_router, prefix="/api/v1")
 app.include_router(composite_preview_router, prefix="/api/v1")
+app.include_router(nodes_router, prefix="/api/v1")
 app.include_router(custom_node_definitions_router, prefix="/api/v1")
 app.include_router(dead_letters_router, prefix="/api/v1")
 app.include_router(economic_groups_router, prefix="/api/v1")
@@ -130,10 +145,18 @@ app.include_router(projects_router, prefix="/api/v1")
 app.include_router(webhook_router, prefix="/api/v1")
 app.include_router(webhook_admin_router, prefix="/api/v1")
 app.include_router(workflow_router, prefix="/api/v1")
-app.include_router(workflow_crud_router, prefix="/api/v1")
+# IMPORTANTE: workflow_versions_router precisa vir antes do workflow_crud_router
+# porque define rotas literais como `/workflows/callable` que colidem com o
+# padrão `/workflows/{workflow_id}` registrado pelo crud — sem essa ordem,
+# "callable" seria capturado como workflow_id e rejeitado como UUID inválido.
 app.include_router(workflow_versions_router, prefix="/api/v1")
+app.include_router(workflow_crud_router, prefix="/api/v1")
 app.include_router(playground_router, prefix="/api/v1")
 app.include_router(saved_queries_router, prefix="/api/v1")
+app.include_router(agent_router, prefix="/api/v1")
+app.include_router(agent_audit_router, prefix="/api/v1")
+app.include_router(agent_keys_router, prefix="/api/v1")
+app.include_router(agent_mcp_router, prefix="/api/v1")
 app.include_router(ai_chat_router, prefix="/api/v1")
 app.include_router(input_models_router, prefix="/api/v1")
 app.include_router(input_model_rows_router, prefix="/api/v1")

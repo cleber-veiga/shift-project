@@ -1,7 +1,7 @@
-import { AlertTriangle, Boxes, Building2, FileSpreadsheet, GitBranch, Home, Plug2, ShieldCheck, Users, type LucideIcon } from "lucide-react"
+import { Activity, AlertTriangle, Boxes, Building2, FileSpreadsheet, GitBranch, Home, KeyRound, Plug2, ShieldCheck, Users, type LucideIcon } from "lucide-react"
 
 export type DashboardScope = "space" | "project"
-export type DashboardSection = "visao-geral" | "grupo-economico" | "conexoes" | "fluxos" | "nos-personalizados" | "modelos-entrada" | "dead-letters" | "membros" | "controle-acesso"
+export type DashboardSection = "visao-geral" | "grupo-economico" | "conexoes" | "fluxos" | "nos-personalizados" | "modelos-entrada" | "dead-letters" | "membros" | "controle-acesso" | "agent-activity" | "chaves-api"
 
 type SectionDefinition = {
   slug: DashboardSection
@@ -90,6 +90,20 @@ const sectionDefinitions: SectionDefinition[] = [
     icon: ShieldCheck,
     minWorkspaceRole: "MANAGER",
   },
+  {
+    slug: "agent-activity",
+    label: "Atividade do Agente",
+    description: "Audite chamadas do Platform Agent: ferramentas executadas, aprovacoes e avisos de seguranca.",
+    icon: Activity,
+    minWorkspaceRole: "MANAGER",
+  },
+  {
+    slug: "chaves-api",
+    label: "Chaves de API",
+    description: "Emita e revogue chaves para o MCP Server do Shift (Claude Desktop, n8n, integrações externas).",
+    icon: KeyRound,
+    minWorkspaceRole: "MANAGER",
+  },
 ]
 
 const sectionMap = Object.fromEntries(sectionDefinitions.map((section) => [section.slug, section])) as Record<
@@ -123,11 +137,27 @@ export function getDashboardSectionMeta(scope: DashboardScope, section: Dashboar
 function buildNavigationItems(scope: DashboardScope) {
   if (scope === "project") {
     return sectionDefinitions
-      .filter((section) => section.slug !== "grupo-economico" && section.slug !== "modelos-entrada" && section.slug !== "controle-acesso" && section.slug !== "dead-letters")
+      .filter(
+        (section) =>
+          section.slug !== "grupo-economico" &&
+          section.slug !== "modelos-entrada" &&
+          section.slug !== "controle-acesso" &&
+          section.slug !== "dead-letters" &&
+          section.slug !== "membros" &&
+          section.slug !== "agent-activity" &&
+          section.slug !== "chaves-api",
+      )
       .map((section) => getDashboardSectionMeta(scope, section.slug))
   }
 
   return sectionDefinitions
+    .filter(
+      (section) =>
+        section.slug !== "agent-activity" &&
+        section.slug !== "membros" &&
+        section.slug !== "controle-acesso" &&
+        section.slug !== "chaves-api",
+    )
     .map((section) => getDashboardSectionMeta(scope, section.slug))
 }
 
@@ -165,6 +195,23 @@ export function getHeaderMetaFromPathname(pathname: string): HeaderMeta {
     return {
       groupTitle: "Projeto",
       pageTitle: sectionMap[projectMatch[1]].label,
+    }
+  }
+
+  if (pathname.startsWith("/configuracoes")) {
+    const tabMap: Record<string, string> = {
+      "/configuracoes/aparencia": "Aparência",
+      "/configuracoes/espaco/membros": "Membros (Espaço)",
+      "/configuracoes/espaco/controle-acesso": "Controle de Acesso",
+      "/configuracoes/espaco/chaves-api": "Chaves de API (Espaço)",
+      "/configuracoes/projeto/membros": "Membros (Projeto)",
+      "/configuracoes/projeto/atividade-agente": "Atividade do Agente",
+      "/configuracoes/projeto/chaves-api": "Chaves de API (Projeto)",
+    }
+    const match = Object.keys(tabMap).find((p) => pathname === p || pathname.startsWith(`${p}/`))
+    return {
+      groupTitle: "Configurações",
+      pageTitle: match ? tabMap[match] : "Configurações",
     }
   }
 

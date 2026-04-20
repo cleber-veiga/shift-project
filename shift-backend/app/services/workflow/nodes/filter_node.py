@@ -29,6 +29,7 @@ from app.services.workflow.nodes.exceptions import NodeProcessingError
 _SQL_OPERATORS: dict[str, str] = {
     "eq": "=",
     "ne": "!=",
+    "neq": "!=",
     "gt": ">",
     "lt": "<",
     "gte": ">=",
@@ -40,6 +41,8 @@ _SQL_OPERATORS: dict[str, str] = {
     "is_null": "IS NULL",
     "is_not_null": "IS NOT NULL",
     "contains": "LIKE",
+    "startswith": "LIKE",
+    "endswith": "LIKE",
 }
 
 
@@ -136,6 +139,14 @@ def _build_sql_clause(condition: dict[str, Any], node_id: str) -> str:
     if operator == "contains":
         escaped = str(value).replace("'", "''")
         return f"{col} LIKE '%{escaped}%'"
+
+    if operator == "startswith":
+        escaped = str(value).replace("'", "''")
+        return f"{col} LIKE '{escaped}%'"
+
+    if operator == "endswith":
+        escaped = str(value).replace("'", "''")
+        return f"{col} LIKE '%{escaped}'"
 
     sql_op = _SQL_OPERATORS.get(operator)
     if sql_op is None:

@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils"
 import { SqlDatabaseConfig } from "@/components/workflow/nodes/sql-database-config"
 import { MapperConfig } from "@/components/workflow/nodes/mapper-config"
 import { FilterConfig } from "@/components/workflow/nodes/filter-config"
+import { DeduplicationConfig } from "@/components/workflow/nodes/deduplication-config"
 import { IfConfig } from "@/components/workflow/nodes/if-config"
 import { SwitchConfig } from "@/components/workflow/nodes/switch-config"
 import { TruncateTableConfig } from "@/components/workflow/nodes/truncate-table-config"
@@ -25,6 +26,7 @@ import {
   type RetryPolicyValue,
 } from "@/components/workflow/retry-policy-editor"
 import type { WebhookCapture } from "@/lib/api/webhooks"
+import type { WorkflowIOSchema } from "@/lib/api/workflow-versions"
 
 interface NodeConfigPanelProps {
   node: Node
@@ -32,6 +34,7 @@ interface NodeConfigPanelProps {
   onClose: () => void
   onUpdate: (nodeId: string, data: Record<string, unknown>) => void
   onWebhookTestEvent?: (capture: WebhookCapture) => void
+  ioSchema?: WorkflowIOSchema
 }
 
 const categoryBgMap: Record<string, string> = {
@@ -169,11 +172,13 @@ export function NodeConfigFields({
   workflowId,
   onUpdate,
   onWebhookTestEvent,
+  ioSchema,
 }: {
   node: Node
   workflowId?: string
   onUpdate: (nodeId: string, data: Record<string, unknown>) => void
   onWebhookTestEvent?: (capture: WebhookCapture) => void
+  ioSchema?: WorkflowIOSchema
 }) {
   const data = node.data as Record<string, unknown>
   const nodeType = (data.type as string) ?? node.type
@@ -200,6 +205,7 @@ export function NodeConfigFields({
     onUpdate,
     onWebhookTestEvent,
     update,
+    ioSchema,
   })
 
   return (
@@ -218,6 +224,7 @@ function renderNodeSpecificFields({
   onUpdate,
   onWebhookTestEvent,
   update,
+  ioSchema,
 }: {
   nodeType: string
   node: Node
@@ -226,6 +233,7 @@ function renderNodeSpecificFields({
   onUpdate: (nodeId: string, data: Record<string, unknown>) => void
   onWebhookTestEvent?: (capture: WebhookCapture) => void
   update: (field: string, value: unknown) => void
+  ioSchema?: WorkflowIOSchema
 }) {
   switch (nodeType) {
     case "manual":
@@ -455,6 +463,14 @@ function renderNodeSpecificFields({
         />
       )
 
+    case "deduplication":
+      return (
+        <DeduplicationConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
     case "if_node":
       return (
         <IfConfig
@@ -593,6 +609,7 @@ function renderNodeSpecificFields({
         <WorkflowInputConfig
           data={data}
           onUpdate={(patch) => onUpdate(node.id, patch)}
+          ioSchema={ioSchema}
         />
       )
 
@@ -609,6 +626,7 @@ function renderNodeSpecificFields({
         <CallWorkflowConfig
           data={data}
           onUpdate={(patch) => onUpdate(node.id, patch)}
+          currentWorkflowId={workflowId}
         />
       )
 
@@ -704,6 +722,7 @@ export function NodeConfigPanel({
   onClose,
   onUpdate,
   onWebhookTestEvent,
+  ioSchema,
 }: NodeConfigPanelProps) {
   const definition = getNodeDefinition(node.type ?? "")
   const Icon = getNodeIcon(definition?.icon ?? "Database")
@@ -735,6 +754,7 @@ export function NodeConfigPanel({
           workflowId={workflowId}
           onUpdate={onUpdate}
           onWebhookTestEvent={onWebhookTestEvent}
+          ioSchema={ioSchema}
         />
       </div>
 

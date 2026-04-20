@@ -2,9 +2,11 @@
 
 import { Grid2X2, List, Loader2, Plus, Search, Workflow, FolderOpen, Play, Trash2 } from "lucide-react"
 import Link from "next/link"
-import { useRouter } from "next/navigation"
-import { useCallback, useEffect, useState } from "react"
+import { useRouter, usePathname } from "next/navigation"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useDashboard } from "@/lib/context/dashboard-context"
+import { useRegisterAIContext } from "@/lib/context/ai-context"
+import type { AIContext } from "@/lib/types/ai-context"
 import {
   type DashboardScope,
   type DashboardSection,
@@ -13,6 +15,9 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { hasWorkspacePermission } from "@/lib/permissions"
 import { AccessMatrixSection } from "@/components/dashboard/access-matrix-section"
+import { AgentActivitySection } from "@/components/agent/audit/agent-activity-section"
+import { AgentKeysSection } from "@/components/dashboard/agent-keys-section"
+import { ProjectApiKeysSection } from "@/components/agent/api-keys/project-api-keys-section"
 import { ConnectionsSection } from "@/components/dashboard/connections-section"
 import { CustomNodeDefinitionsSection } from "@/components/dashboard/custom-node-definitions-section"
 import { DeadLettersSection } from "@/components/dashboard/dead-letters-section"
@@ -36,7 +41,7 @@ function FlowsSection({
   scopeName: string
 }) {
   const router = useRouter()
-  const { selectedWorkspace } = useDashboard()
+  const { selectedWorkspace, selectedProject } = useDashboard()
   const wsRole = selectedWorkspace?.my_role ?? null
   const canCreateFlow = hasWorkspacePermission(wsRole, "CONSULTANT")
   const canDeleteFlow = hasWorkspacePermission(wsRole, "MANAGER")
@@ -49,6 +54,30 @@ function FlowsSection({
   const [workflows, setWorkflows] = useState<WorkflowType[]>([])
   const [players, setPlayers] = useState<WorkspacePlayer[]>([])
   const [loading, setLoading] = useState(true)
+
+  const aiContext = useMemo<AIContext | null>(() => {
+    if (loading) return null
+    return {
+      section: "workflows_list",
+      scope: scope === "space" ? "workspace" : "project",
+      workspaceId: selectedWorkspace?.id ?? null,
+      workspaceName: selectedWorkspace?.name ?? null,
+      projectId: selectedProject?.id ?? null,
+      projectName: selectedProject?.name ?? null,
+      userRole: {
+        workspace: (wsRole ?? null) as "VIEWER" | "CONSULTANT" | "MANAGER" | null,
+        project: null,
+      },
+      workflows: workflows.map((w) => ({
+        id: w.id,
+        name: w.name,
+        status: w.is_published ? ("active" as const) : ("draft" as const),
+        lastExecution: { status: null, at: null },
+      })),
+    }
+  }, [loading, workflows, scope, selectedWorkspace, selectedProject, wsRole])
+
+  useRegisterAIContext(aiContext)
   const [deleteTarget, setDeleteTarget] = useState<WorkflowType | null>(null)
   const [deleting, setDeleting] = useState(false)
 
@@ -348,7 +377,30 @@ function FlowsSection({
 
 export function ContextSectionPage({ scope, section }: ContextSectionPageProps) {
   const { selectedOrganization, selectedWorkspace, selectedProject } = useDashboard()
+  const pathname = usePathname()
   const meta = getDashboardSectionMeta(scope, section)
+
+  // Secoes com sub-componentes proprios registram contexto mais rico — aqui apenas o fallback.
+  // "visao-geral" e tratado por home/page.tsx. "fluxos"/"conexoes"/"membros" (project) tem sub-componentes.
+  const aiContext = useMemo<AIContext | null>(() => {
+    const skipSections: string[] = ["visao-geral", "fluxos", "conexoes"]
+    if (skipSections.includes(section)) return null
+    if (section === "membros" && scope === "project") return null
+    return {
+      section: "other",
+      pathname,
+      workspaceId: selectedWorkspace?.id ?? null,
+      workspaceName: selectedWorkspace?.name ?? null,
+      projectId: selectedProject?.id ?? null,
+      projectName: selectedProject?.name ?? null,
+      userRole: {
+        workspace: (selectedWorkspace?.my_role ?? null) as "VIEWER" | "CONSULTANT" | "MANAGER" | null,
+        project: null,
+      },
+    }
+  }, [section, scope, pathname, selectedWorkspace, selectedProject])
+
+  useRegisterAIContext(aiContext)
   const Icon = meta.icon
   const scopeLabel = scope === "space" ? "Espaço" : "Projeto"
   const scopeName =
@@ -434,6 +486,15 @@ export function ContextSectionPage({ scope, section }: ContextSectionPageProps) 
 
   if (section === "controle-acesso") {
     return <AccessMatrixSection />
+  }
+
+  if (section === "agent-activity") {
+    return <AgentActivitySection scope={scope} />
+  }
+
+  if (section === "chaves-api") {
+    if (scope === "project") return <ProjectApiKeysSection />
+    return <AgentKeysSection />
   }
 
   return (

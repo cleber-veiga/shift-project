@@ -51,6 +51,8 @@ import {
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { useToast } from "@/lib/context/toast-context"
+import { useDashboard } from "@/lib/context/dashboard-context"
+import { useRegisterAIContext } from "@/lib/context/ai-context"
 import { MorphLoader } from "@/components/ui/morph-loader"
 import { SqlEditor } from "@/components/ui/sql-editor"
 import { Tooltip } from "@/components/ui/tooltip"
@@ -796,10 +798,33 @@ export default function PlaygroundPage({ params }: PageProps) {
   const { connectionId } = use(params)
   const router = useRouter()
   const toast = useToast()
+  const { selectedWorkspace, selectedProject } = useDashboard()
 
   const [connection, setConnection] = useState<Connection | null>(null)
   const [tables, setTables] = useState<SchemaTable[]>([])
   const [schemaLoading, setSchemaLoading] = useState(true)
+
+  const aiContext = useMemo(() => {
+    if (!connection) return null
+    return {
+      section: "playground" as const,
+      workspaceId: selectedWorkspace?.id ?? null,
+      workspaceName: selectedWorkspace?.name ?? null,
+      projectId: selectedProject?.id ?? null,
+      projectName: selectedProject?.name ?? null,
+      userRole: {
+        workspace: (selectedWorkspace?.my_role ?? null) as "VIEWER" | "CONSULTANT" | "MANAGER" | null,
+        project: null,
+      },
+      connection: {
+        id: connection.id,
+        name: connection.name,
+        type: connection.type,
+      },
+    }
+  }, [connection, selectedWorkspace, selectedProject])
+
+  useRegisterAIContext(aiContext)
   const [schemaRefreshing, setSchemaRefreshing] = useState(false)
   const [schemaUpdatedAt, setSchemaUpdatedAt] = useState<string | null>(null)
   const [schemaCached, setSchemaCached] = useState(false)

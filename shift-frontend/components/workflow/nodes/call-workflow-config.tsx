@@ -23,9 +23,10 @@ type VersionSpec = number | "latest"
 interface CallWorkflowConfigProps {
   data: Record<string, unknown>
   onUpdate: (data: Record<string, unknown>) => void
+  currentWorkflowId?: string
 }
 
-export function CallWorkflowConfig({ data, onUpdate }: CallWorkflowConfigProps) {
+export function CallWorkflowConfig({ data, onUpdate, currentWorkflowId }: CallWorkflowConfigProps) {
   const workflowId = (data.workflow_id as string) ?? ""
   const version = (data.version as VersionSpec) ?? "latest"
   const inputMapping =
@@ -48,11 +49,20 @@ export function CallWorkflowConfig({ data, onUpdate }: CallWorkflowConfigProps) 
   const [versionsError, setVersionsError] = useState<string | null>(null)
   const [versionsReloadKey, setVersionsReloadKey] = useState(0)
 
+  // Track which input field is currently being dragged over (for highlight)
+  const [dragOverField, setDragOverField] = useState<string | null>(null)
+
   function loadWorkflows() {
     setWorkflowsLoading(true)
     setWorkflowsError(null)
     listCallableWorkflows()
-      .then((rows) => setWorkflows(rows))
+      .then((rows) =>
+        setWorkflows(
+          currentWorkflowId
+            ? rows.filter((w) => w.workflow_id !== currentWorkflowId)
+            : rows,
+        ),
+      )
       .catch((err) => {
         setWorkflows([])
         setWorkflowsError(
@@ -156,6 +166,49 @@ export function CallWorkflowConfig({ data, onUpdate }: CallWorkflowConfigProps) 
       next[name] = value
     }
     update({ input_mapping: next })
+  }
+
+  function handleFieldDragOver(e: React.DragEvent, paramName: string) {
+    if (
+      e.dataTransfer.types.includes("application/x-shift-field-ref") ||
+      e.dataTransfer.types.includes("application/x-shift-field")
+    ) {
+      e.preventDefault()
+      e.stopPropagation()
+      e.dataTransfer.dropEffect = "copy"
+      setDragOverField(paramName)
+    }
+  }
+
+  function handleFieldDrop(e: React.DragEvent, paramName: string) {
+    e.preventDefault()
+    e.stopPropagation()
+    setDragOverField(null)
+
+    // Preferir a ref enriquecida: call_workflow executa UMA vez — precisa
+    // de um caminho completo contra ``context``. Sem o nodeId do upstream
+    // o template nao resolve (``{{unidade}}`` procura em context root).
+    const refRaw = e.dataTransfer.getData("application/x-shift-field-ref")
+    if (refRaw) {
+      try {
+        const ref = JSON.parse(refRaw) as { nodeId?: string; field?: string }
+        if (ref.nodeId && ref.field) {
+          setInputMappingValue(
+            paramName,
+            `{{upstream_results.${ref.nodeId}.rows.0.${ref.field}}}`,
+          )
+          return
+        }
+      } catch {
+        // fallback para o payload legado abaixo
+      }
+    }
+
+    // Fallback (sem nodeId no payload): insere nome cru — o usuario edita.
+    const field = e.dataTransfer.getData("application/x-shift-field")
+    if (field) {
+      setInputMappingValue(paramName, field)
+    }
   }
 
   const filteredWorkflows = search.trim()
@@ -398,11 +451,16 @@ export function CallWorkflowConfig({ data, onUpdate }: CallWorkflowConfigProps) 
                       onChange={(e) =>
                         setInputMappingValue(param.name, e.target.value)
                       }
+                      onDragOver={(e) => handleFieldDragOver(e, param.name)}
+                      onDragLeave={() => setDragOverField(null)}
+                      onDrop={(e) => handleFieldDrop(e, param.name)}
                       placeholder={placeholder}
                       aria-invalid={isInvalid}
-                      className={`h-7 w-full rounded-md border bg-background px-2 font-mono text-xs outline-none focus:ring-1 ${
+                      className={`h-7 w-full rounded-md border bg-background px-2 font-mono text-xs outline-none transition-colors focus:ring-1 ${
                         isInvalid
                           ? "border-destructive focus:ring-destructive"
+                          : dragOverField === param.name
+                          ? "border-primary bg-primary/5 ring-1 ring-primary"
                           : "border-input focus:ring-primary"
                       }`}
                     />

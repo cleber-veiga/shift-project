@@ -1,6 +1,8 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
+import { useRegisterAIContext } from "@/lib/context/ai-context"
+import type { AIContext } from "@/lib/types/ai-context"
 import {
   Clock,
   Loader2,
@@ -134,6 +136,29 @@ export function MembersSection({ scope }: MembersSectionProps) {
   const [members, setMembers] = useState<Member[]>([])
   const [invitations, setInvitations] = useState<Invitation[]>([])
   const [loading, setLoading] = useState(true)
+
+  const aiContext = useMemo<AIContext | null>(() => {
+    // Apenas membros de projeto tem roles CLIENT/EDITOR; workspace usa outro contexto
+    if (loading || scope !== "project" || !selectedProject) return null
+    return {
+      section: "project_members",
+      workspaceId: selectedWorkspace?.id ?? null,
+      workspaceName: selectedWorkspace?.name ?? null,
+      projectId: selectedProject.id,
+      projectName: selectedProject.name,
+      userRole: {
+        workspace: (selectedWorkspace?.my_role ?? null) as "VIEWER" | "CONSULTANT" | "MANAGER" | null,
+        project: null,
+      },
+      members: members.map((m) => ({
+        userId: m.user_id,
+        email: m.email,
+        role: m.role as "CLIENT" | "EDITOR",
+      })),
+    }
+  }, [loading, scope, members, selectedWorkspace, selectedProject])
+
+  useRegisterAIContext(aiContext)
   const [searchTerm, setSearchTerm] = useState("")
   const [showInviteModal, setShowInviteModal] = useState(false)
 

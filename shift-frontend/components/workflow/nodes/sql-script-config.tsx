@@ -346,6 +346,22 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
                         ? "NOME_COLUNA"
                         : "upstream.no.campo"
                     }
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault()
+                      const refRaw = e.dataTransfer.getData("application/x-shift-field-ref")
+                      if (refRaw) {
+                        try {
+                          const ref = JSON.parse(refRaw) as { nodeId?: string; field?: string }
+                          if (ref.nodeId && ref.field) {
+                            updateParameter(i, { value: `upstream_results.${ref.nodeId}.${ref.field}` })
+                            return
+                          }
+                        } catch { /* fallthrough */ }
+                      }
+                      const col = e.dataTransfer.getData("application/x-shift-field")
+                      if (col) updateParameter(i, { value: col })
+                    }}
                     className="h-7 flex-1 rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
                   />
                 )}

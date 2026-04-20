@@ -7,6 +7,7 @@ import {
   createWorkspaceProject,
   createWorkspace,
   updateProject,
+  deleteProject,
   fetchMe,
   getSelectedOrganizationId,
   getSelectedProjectId,
@@ -57,6 +58,7 @@ interface DashboardContextType {
   updateProjectAndRefresh: (
     payload: { project_id: string; workspace_id: string } & CreateProjectPayload
   ) => Promise<Project>
+  deleteProjectAndRefresh: (payload: { project_id: string; workspace_id: string }) => Promise<void>
 }
 
 const DashboardContext = createContext<DashboardContextType | undefined>(undefined)
@@ -203,6 +205,11 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     return updated
   }
 
+  async function deleteProjectAndRefresh(payload: { project_id: string; workspace_id: string }) {
+    await deleteProject(payload.project_id)
+    await loadProjectsForWorkspace(payload.workspace_id)
+  }
+
   useEffect(() => {
     async function init() {
       try {
@@ -271,6 +278,7 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
         createWorkspaceAndSelect,
         createProjectAndSelect,
         updateProjectAndRefresh,
+        deleteProjectAndRefresh,
       }}
     >
       {children}

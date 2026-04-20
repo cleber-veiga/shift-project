@@ -27,6 +27,7 @@ class WorkflowTestService:
         workflow_id: UUID,
         target_node_id: str | None = None,
         mode: str | None = None,
+        input_data: dict[str, Any] | None = None,
     ) -> AsyncGenerator[str, None]:
         # Import tardio evita ciclo em alguns setups de teste
         # (workflow_service importa modelos que podem puxar outras rotas).
@@ -48,6 +49,7 @@ class WorkflowTestService:
                         event_sink=sink,
                         mode=mode,
                         target_node_id=target_node_id,
+                        input_data=input_data,
                     )
                 except ValueError as exc:
                     # Workflow nao encontrado / projeto orfao — reporta via fila.

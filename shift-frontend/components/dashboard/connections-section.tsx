@@ -1,6 +1,8 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { useRegisterAIContext } from "@/lib/context/ai-context"
+import type { AIContext } from "@/lib/types/ai-context"
 import { useRouter } from "next/navigation"
 import {
   Building2,
@@ -77,6 +79,30 @@ export function ConnectionsSection({ scope }: ConnectionsSectionProps) {
   const [players, setPlayers] = useState<WorkspacePlayer[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
+
+  const aiContext = useMemo<AIContext | null>(() => {
+    if (loading) return null
+    return {
+      section: "connections",
+      scope: scope === "space" ? "workspace" : "project",
+      workspaceId: selectedWorkspace?.id ?? null,
+      workspaceName: selectedWorkspace?.name ?? null,
+      projectId: selectedProject?.id ?? null,
+      projectName: selectedProject?.name ?? null,
+      userRole: {
+        workspace: (selectedWorkspace?.my_role ?? null) as "VIEWER" | "CONSULTANT" | "MANAGER" | null,
+        project: null,
+      },
+      connections: connections.map((c) => ({
+        id: c.id,
+        name: c.name,
+        type: c.type,
+        isPublic: c.is_public,
+      })),
+    }
+  }, [loading, connections, scope, selectedWorkspace, selectedProject])
+
+  useRegisterAIContext(aiContext)
   const [search, setSearch] = useState("")
   const [view, setView] = useState<"list" | "card">("list")
   const [typeFilter, setTypeFilter] = useState<"todos" | ConnectionType>("todos")

@@ -78,11 +78,19 @@ class SqlScriptProcessor(BaseNodeProcessor):
             )
         _assert_no_interpolation(node_id, raw_script)
 
-        other_config = {k: v for k, v in config.items() if k != "script"}
+        # ``parameters`` espera dotted paths (``input_data.x``, ``upstream.Y.z``)
+        # que sao resolvidos adiante por ``_resolve_context_parameters``.
+        # NAO rodar ``resolve_data`` sobre eles: se o usuario escrever
+        # ``{{input_data.unidade}}``, o template seria pre-resolvido pro
+        # valor escalar (ex.: ``"M2"``) e o resolver de parameters tentaria
+        # interpretar ``"M2"`` como caminho, levantando erro confuso.
+        other_config = {
+            k: v for k, v in config.items() if k not in ("script", "parameters")
+        }
         resolved = self.resolve_data(other_config, context)
 
         connection_string = resolved.get("connection_string")
-        parameters_raw = resolved.get("parameters") or {}
+        parameters_raw = config.get("parameters") or {}
         mode = str(resolved.get("mode") or "query").strip().lower()
         output_schema_raw = resolved.get("output_schema") or []
         output_field = str(resolved.get("output_field") or "sql_result")

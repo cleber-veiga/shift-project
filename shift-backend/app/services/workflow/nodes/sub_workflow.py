@@ -32,16 +32,155 @@ via ``call_stack`` + ``max_depth``.
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
+import decimal as _decimal
+import re as _re
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
+import duckdb
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.logging import get_logger
+from app.data_pipelines.duckdb_storage import (
+    build_table_ref,
+    find_duckdb_reference,
+)
 from app.db.session import async_session_factory
 from app.models.workflow import Workflow, WorkflowVersion
 from app.services.workflow.nodes import BaseNodeProcessor, register_processor
 from app.services.workflow.nodes.exceptions import NodeProcessingError
+
+_logger = get_logger(__name__)
+
+# Cap de seguranca ao rehydratar um upstream DuckDB pra dentro do
+# ``context`` antes de resolver os templates de ``input_mapping``. Para
+# iterar sobre datasets grandes use ``loop`` (For Each), nao call_workflow.
+_SUBWORKFLOW_REHYDRATE_ROW_CAP = 1000
+
+# Captura referencias a ``upstream_results.<nodeId>.rows`` em qualquer
+# lugar dentro de uma string de template (aceita chaves simples, {{…}}
+# ou ``{…}``). Usado pra decidir QUAIS upstreams precisam ser carregados.
+_UPSTREAM_ROWS_REF_RE = _re.compile(
+    r"upstream_results\.([A-Za-z0-9_\-]+)\.rows\b",
+)
+
+
+def _serialize_duckdb_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, _decimal.Decimal):
+        return float(value)
+    if isinstance(value, (_dt.date, _dt.datetime)):
+        return value.isoformat()
+    return value
+
+
+def _load_duckdb_rows(
+    database_path: str,
+    table_name: str,
+    dataset_name: str | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Le ate ``limit`` linhas de uma tabela DuckDB e devolve dicts."""
+    conn = duckdb.connect(database_path, read_only=True)
+    try:
+        table_ref = build_table_ref(
+            {
+                "storage_type": "duckdb",
+                "database_path": database_path,
+                "table_name": table_name,
+                "dataset_name": dataset_name,
+            }
+        )
+        cursor = conn.execute(f"SELECT * FROM {table_ref} LIMIT {int(limit)}")
+        columns = [desc[0] for desc in cursor.description or []]
+        raw_rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    return [
+        {col: _serialize_duckdb_value(val) for col, val in zip(columns, row)}
+        for row in raw_rows
+    ]
+
+
+def _referenced_upstream_ids(input_mapping: dict[str, Any]) -> set[str]:
+    """Coleta os ``nodeId`` de upstreams citados via ``.rows`` no mapping."""
+    ids: set[str] = set()
+    for raw_expr in input_mapping.values():
+        if isinstance(raw_expr, str):
+            for match in _UPSTREAM_ROWS_REF_RE.finditer(raw_expr):
+                ids.add(match.group(1))
+    return ids
+
+
+def _rehydrate_upstream_rows(
+    context: dict[str, Any],
+    input_mapping: dict[str, Any],
+    node_id: str,
+) -> dict[str, Any]:
+    """Devolve um contexto local com ``rows`` preenchido pros upstreams.
+
+    Nos materializados em DuckDB (mapper/filter/dedup/aggregator) guardam
+    as linhas em disco e publicam no ``upstream_results`` apenas um ref
+    ``{storage_type: duckdb, database_path, table_name}``. Templates como
+    ``{{upstream_results.<id>.rows.0.campo}}`` nao resolvem contra isso.
+
+    Esta funcao detecta quais upstreams sao citados via ``.rows`` no
+    ``input_mapping``, carrega ate ``_SUBWORKFLOW_REHYDRATE_ROW_CAP`` linhas
+    de cada um e injeta a chave ``rows`` num clone raso do upstream —
+    suficiente pro resolver de templates. O contexto original fica intacto.
+    """
+    upstream_results = context.get("upstream_results")
+    if not isinstance(upstream_results, dict):
+        return context
+
+    referenced = _referenced_upstream_ids(input_mapping)
+    if not referenced:
+        return context
+
+    patched_upstream: dict[str, Any] = dict(upstream_results)
+    changed = False
+    for upstream_id in referenced:
+        entry = patched_upstream.get(upstream_id)
+        if not isinstance(entry, dict):
+            continue
+        if isinstance(entry.get("rows"), list):
+            continue  # ja tem rows inline — nao precisa rehydratar
+        ref = find_duckdb_reference(entry)
+        if ref is None:
+            continue
+        try:
+            rows = _load_duckdb_rows(
+                database_path=str(ref["database_path"]),
+                table_name=str(ref["table_name"]),
+                dataset_name=ref.get("dataset_name"),
+                limit=_SUBWORKFLOW_REHYDRATE_ROW_CAP,
+            )
+        except duckdb.Error as exc:
+            raise NodeProcessingError(
+                f"No call_workflow '{node_id}': falha ao carregar linhas do "
+                f"upstream '{upstream_id}' para resolver input_mapping — {exc}."
+            ) from exc
+        patched_entry = dict(entry)
+        patched_entry["rows"] = rows
+        patched_upstream[upstream_id] = patched_entry
+        changed = True
+        _logger.info(
+            "call_workflow.rehydrate_rows",
+            node_id=node_id,
+            upstream_id=upstream_id,
+            rows_loaded=len(rows),
+            capped=len(rows) >= _SUBWORKFLOW_REHYDRATE_ROW_CAP,
+        )
+
+    if not changed:
+        return context
+    patched = dict(context)
+    patched["upstream_results"] = patched_upstream
+    return patched
 
 
 @register_processor("workflow_input")
@@ -105,8 +244,11 @@ class WorkflowOutputProcessor(BaseNodeProcessor):
 class CallWorkflowProcessor(BaseNodeProcessor):
     """Invoca uma versao publicada de outro workflow como sub-rotina.
 
-    Executa sincronamente dentro do thread do processor (``asyncio.run``
-    cria um event loop novo — o processor ja roda em ``asyncio.to_thread``).
+    O processor roda em thread via ``asyncio.to_thread``. A coroutine
+    async que invoca o sub-workflow e despachada de volta ao event loop
+    principal do runner (``context['_main_loop']``) via
+    ``asyncio.run_coroutine_threadsafe``, porque recursos async globais
+    (engine SQLAlchemy/asyncpg, etc.) estao ligados aquele loop.
     """
 
     def process(
@@ -136,27 +278,49 @@ class CallWorkflowProcessor(BaseNodeProcessor):
                 f"No call_workflow '{node_id}': input_mapping deve ser um dict."
             )
 
-        # Resolve mapeamento de inputs contra o contexto do pai.
+        # Rehydratacao sob demanda: se algum template referencia
+        # ``upstream_results.<id>.rows`` e esse upstream publicou apenas
+        # um ref DuckDB, carrega as linhas pra dentro de um contexto
+        # local antes de resolver. Evita "None" silencioso vira erro de
+        # "input obrigatorio nao foi fornecido".
+        resolve_context = _rehydrate_upstream_rows(
+            context, input_mapping_raw, node_id
+        )
+
+        # Resolve mapeamento de inputs contra o contexto (ja rehydratado).
         mapped_inputs: dict[str, Any] = {}
         for name, raw_expr in input_mapping_raw.items():
             if isinstance(raw_expr, str):
-                mapped_inputs[name] = self.resolve_template(raw_expr, context)
+                mapped_inputs[name] = self.resolve_template(
+                    raw_expr, resolve_context
+                )
             else:
                 mapped_inputs[name] = raw_expr
 
         call_stack = list(context.get("call_stack") or [])
 
-        # Carrega a versao + valida inputs + executa sub-workflow.
-        result = asyncio.run(
-            _invoke_subworkflow(
-                node_id=node_id,
-                target_workflow_id=target_workflow_id,
-                version_spec=version_spec,
-                mapped_inputs=mapped_inputs,
-                call_stack=call_stack,
-                timeout_seconds=timeout_seconds,
-            )
+        coro = _invoke_subworkflow(
+            node_id=node_id,
+            target_workflow_id=target_workflow_id,
+            version_spec=version_spec,
+            mapped_inputs=mapped_inputs,
+            call_stack=call_stack,
+            timeout_seconds=timeout_seconds,
         )
+
+        main_loop = context.get("_main_loop")
+        if isinstance(main_loop, asyncio.AbstractEventLoop) and main_loop.is_running():
+            # Dispatch para o loop principal do runner — recursos async
+            # globais (engine/asyncpg) estao ligados a ele. Adicionamos
+            # margem ao ``timeout`` do futures.result() porque o timeout
+            # "duro" ja e aplicado dentro de ``_invoke_subworkflow``.
+            future = asyncio.run_coroutine_threadsafe(coro, main_loop)
+            result = future.result(timeout=timeout_seconds + 30)
+        else:
+            # Fallback (testes unit ou ambiente sem loop rodando): cria
+            # um loop local. Pode falhar se o engine global ja estiver
+            # ligado a outro loop.
+            result = asyncio.run(coro)
 
         return {
             "node_id": node_id,
@@ -207,6 +371,12 @@ async def _invoke_subworkflow(
             workspace_id=workspace_id,
         )
 
+    # execution_id UNICO por invocacao — garante isolamento de arquivos
+    # DuckDB por iteracao. Sem isso, loops paralelos colidem no mesmo
+    # diretorio ``executions/<id>/<node_id>.duckdb`` (erro "file being
+    # used by another process" no Windows e "write-write conflict" no
+    # catalog do DuckDB).
+    sub_execution_id = f"sub-{uuid4()}"
     try:
         sub_result = await asyncio.wait_for(
             run_workflow(
@@ -214,7 +384,7 @@ async def _invoke_subworkflow(
                 workflow_id=str(target_workflow_id),
                 triggered_by="subworkflow",
                 input_data=mapped_inputs,
-                execution_id=None,
+                execution_id=sub_execution_id,
                 resolved_connections=resolved_connections,
                 mode="production",
                 call_stack=call_stack,

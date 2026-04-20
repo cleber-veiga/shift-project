@@ -2,8 +2,11 @@
 
 import { DashboardProvider } from "@/lib/context/dashboard-context"
 import { DashboardHeaderProvider } from "@/lib/context/header-context"
+import { AIContextProvider } from "@/lib/context/ai-context"
+import { AIPanelProvider } from "@/lib/context/ai-panel-context"
 import { Sidebar } from "@/components/dashboard/sidebar"
 import { Header } from "@/components/dashboard/header"
+import { AIPanel } from "@/components/agent/ai-panel"
 import { useState } from "react"
 import { usePathname } from "next/navigation"
 import { useDashboard } from "@/lib/context/dashboard-context"
@@ -35,22 +38,28 @@ function PrivateLayoutContent({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <DashboardHeaderProvider>
-      <div className={`bg-background text-foreground ${isFullBleed ? "flex h-screen flex-col overflow-hidden" : "min-h-screen"}`}>
-        <div className={`flex ${isFullBleed ? "flex-1 overflow-hidden min-w-0" : "min-h-screen"}`}>
-          {sidebarVisible && <Sidebar />}
-          <div className={`flex flex-col ${isFullBleed ? "flex-1 overflow-hidden min-w-0" : "flex-1"}`}>
-            <Header
-              sidebarVisible={sidebarVisible}
-              setSidebarVisible={setSidebarVisible}
-            />
-            <main className={`${isFullBleed ? "flex-1 overflow-hidden min-w-0 min-h-0" : "flex-1 p-5 sm:p-7"}`}>
-              {children}
-            </main>
+    <AIPanelProvider>
+      <DashboardHeaderProvider>
+        <AIContextProvider>
+          <div className={`bg-background text-foreground ${isFullBleed ? "flex h-screen flex-col overflow-hidden" : "min-h-screen"}`}>
+            <div className={`flex ${isFullBleed ? "flex-1 overflow-hidden min-w-0" : "min-h-screen"}`}>
+              {sidebarVisible && <Sidebar />}
+              <div className={`flex flex-col ${isFullBleed ? "flex-1 overflow-hidden min-w-0" : "flex-1"}`}>
+                <Header
+                  sidebarVisible={sidebarVisible}
+                  setSidebarVisible={setSidebarVisible}
+                />
+                <main className={`${isFullBleed ? "flex-1 overflow-hidden min-w-0 min-h-0" : "flex-1 p-5 sm:p-7"}`}>
+                  {children}
+                </main>
+              </div>
+              {/* Painel AI — sempre renderizado, controla visibilidade internamente */}
+              <AIPanel />
+            </div>
           </div>
-        </div>
-      </div>
-    </DashboardHeaderProvider>
+        </AIContextProvider>
+      </DashboardHeaderProvider>
+    </AIPanelProvider>
   )
 }
 

@@ -98,15 +98,29 @@ class BaseNodeProcessor(ABC):
         return data
 
     def _resolve_path(self, path: str, context: dict[str, Any]) -> Any:
-        """Resolve um caminho com notacao de pontos dentro do contexto."""
-        current: Any = context
+        """Resolve um caminho com notacao de pontos dentro do contexto.
+
+        Quando o path e ``upstream_results.<node_id>.*`` e o node_id nao esta
+        nos upstreams diretos do no atual, faz fallback em ``_all_results``
+        (dict acumulativo de todos os nos ja executados no workflow). Isso
+        permite referenciar ancestrais nao-diretos sem alterar a semantica de
+        roteamento dos nos que dependem so dos pais imediatos.
+        """
         if not path:
             return None
 
-        for raw_part in path.split("."):
-            part = raw_part.strip()
+        parts = [p.strip() for p in path.split(".") if p.strip()]
+        current: Any = context
+        is_upstream_path = len(parts) > 1 and parts[0] == "upstream_results"
+
+        for i, part in enumerate(parts):
             if isinstance(current, dict):
-                current = current.get(part)
+                val = current.get(part)
+                # Fallback: upstream_results.<node_id> ausente nos upstreams
+                # diretos — tenta em _all_results para ancestrais indiretos.
+                if val is None and is_upstream_path and i == 1:
+                    val = context.get("_all_results", {}).get(part)
+                current = val
             elif isinstance(current, list) and part.isdigit():
                 index = int(part)
                 if 0 <= index < len(current):

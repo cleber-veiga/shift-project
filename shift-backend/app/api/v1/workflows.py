@@ -63,6 +63,7 @@ async def execute_workflow(
 )
 async def test_workflow(
     workflow_id: UUID,
+    request: Request,
     target_node_id: Optional[str] = Query(None, description="Se informado, executa somente ate este no (inclusive)."),
     mode: Optional[str] = Query(None, description="Override do modo: 'test' ou 'production'. Se omitido, usa o status do workflow (draft→test, published→production)."),
     _=Depends(require_permission("workspace", "CONSULTANT")),
@@ -83,11 +84,25 @@ async def test_workflow(
     """
     effective_mode = mode if mode in ("test", "production") else None
 
+    # Body opcional: ``{"input_data": {...}}`` permite simular a chamada
+    # deste workflow como sub-workflow (alimenta o no workflow_input).
+    input_data: dict[str, Any] | None = None
+    if request.headers.get("content-length") not in (None, "", "0"):
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = None
+        if isinstance(body, dict):
+            raw = body.get("input_data")
+            if isinstance(raw, dict):
+                input_data = raw
+
     async def event_stream():
         async for chunk in workflow_test_service.run_streaming(
             workflow_id=workflow_id,
             target_node_id=target_node_id,
             mode=effective_mode,
+            input_data=input_data,
         ):
             yield chunk
 

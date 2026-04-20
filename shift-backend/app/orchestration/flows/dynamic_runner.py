@@ -701,6 +701,13 @@ async def run_workflow(
         "mode": mode,
         "call_stack": current_stack,
         "max_depth": max_depth,
+        # Loop do runner (main loop do FastAPI). Processors sincronos que
+        # precisam chamar codigo async com recursos ligados a este loop
+        # (ex.: engine SQLAlchemy/asyncpg) devem usar
+        # ``asyncio.run_coroutine_threadsafe(coro, _main_loop)`` em vez
+        # de ``asyncio.run`` — o ultimo cria um loop novo e falha com
+        # "Future attached to a different loop".
+        "_main_loop": asyncio.get_running_loop(),
         # Marcador: este run foi disparado de dentro de um no ``loop``
         # (direto ou indireto). Usado pelo processor ``loop`` para
         # rejeitar loops aninhados ja na entrada do sub-workflow.
@@ -941,6 +948,10 @@ async def run_workflow(
                             **execution_context,
                             "upstream_results": upstream_results,
                             "edge_handles": edge_handles,
+                            # Todos os resultados executados ate agora (por referencia —
+                            # reflete o estado vivo). Permite que _resolve_path acesse
+                            # nos ancestrais nao-diretos via "upstream_results.<id>.*".
+                            "_all_results": results,
                         }
                         node_timing[node_id] = {
                             "started_at": datetime.now(timezone.utc),
@@ -1276,7 +1287,12 @@ async def run_workflow(
                                 "node_id": node_id,
                                 "node_type": node_type_for_event,
                                 "label": label_for_event,
-                                "output": output_summary,
+                                # Emite o resultado completo para a UI (inclui a
+                                # referencia DuckDB em ``data`` necessaria para
+                                # renderizar o preview em tabela). O
+                                # ``output_summary`` segue sendo usado apenas
+                                # para persistencia em DB (snapshot de auditoria).
+                                "output": result,
                                 "duration_ms": duration_ms,
                                 "row_count_in": row_in,
                                 "row_count_out": row_out,

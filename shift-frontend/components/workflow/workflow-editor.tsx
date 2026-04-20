@@ -45,6 +45,7 @@ import {
   type WorkflowTestEvent,
 } from "@/lib/auth"
 import { useDashboard } from "@/lib/context/dashboard-context"
+import { useRegisterAIContext } from "@/lib/context/ai-context"
 import { CustomNodesContext, findCustomNode } from "@/lib/workflow/custom-nodes-context"
 
 /** Build nodeTypes map — all custom node types share one component */
@@ -97,6 +98,7 @@ function WorkflowEditorInner({
   const [name, setName] = useState(initialName || "Novo Fluxo")
   const [description, setDescription] = useState(initialDescription)
   const [status, setStatus] = useState<"draft" | "published">("draft")
+  const [workflowUpdatedAt, setWorkflowUpdatedAt] = useState<string | null>(null)
   const [isTemplate, setIsTemplate] = useState(false)
   const [isPublished, setIsPublished] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
@@ -149,6 +151,31 @@ function WorkflowEditorInner({
   const [showExecPanel, setShowExecPanel] = useState(false)
   const abortControllerRef = useRef<AbortController | null>(null)
 
+  const aiContext = useMemo(() => {
+    if (isLoading || workflowId === "new") return null
+    return {
+      section: "workflow_editor" as const,
+      workspaceId: selectedWorkspace?.id ?? null,
+      workspaceName: selectedWorkspace?.name ?? null,
+      projectId: null,
+      projectName: null,
+      userRole: {
+        workspace: (selectedWorkspace?.my_role ?? null) as "VIEWER" | "CONSULTANT" | "MANAGER" | null,
+        project: null,
+      },
+      workflow: {
+        id: workflowId,
+        name,
+        status,
+        nodeCount: nodes.length,
+        lastSavedAt: workflowUpdatedAt,
+      },
+      selectedNodeIds: selectedNode ? [selectedNode.id] : [],
+    }
+  }, [isLoading, workflowId, name, status, nodes.length, workflowUpdatedAt, selectedNode, selectedWorkspace])
+
+  useRegisterAIContext(aiContext)
+
   // ── Load existing workflow ───────────────────────────────────────────────
   useEffect(() => {
     if (workflowId === "new") return
@@ -173,6 +200,7 @@ function WorkflowEditorInner({
           outputs: loadedIoSchema?.outputs ?? [],
         })
         setDirty(false)
+        setWorkflowUpdatedAt(wf.updated_at)
         // Store workspace_id for later use (auth scope in test endpoint)
         if (wf.workspace_id) setWorkflowWorkspaceId(wf.workspace_id)
         // Pre-populate exec states from pinned outputs so data is visible immediately
@@ -507,6 +535,16 @@ function WorkflowEditorInner({
 
     const scopeId = workflowWorkspaceId ?? selectedWorkspace?.id
 
+    // Mock inputs declarados no nó workflow_input — usados apenas ao testar
+    // o sub-workflow isoladamente. Em chamadas reais via call_workflow, o pai
+    // sobrescreve estes valores.
+    const inputNode = nodes.find((n) => n.type === "workflow_input")
+    const mockInputs = (inputNode?.data as Record<string, unknown> | undefined)?.mock_inputs
+    const inputData =
+      mockInputs && typeof mockInputs === "object" && !Array.isArray(mockInputs)
+        ? (mockInputs as Record<string, unknown>)
+        : undefined
+
     await testWorkflowStream(
       workflowId,
       scopeId,
@@ -561,6 +599,7 @@ function WorkflowEditorInner({
       },
       controller.signal,
       targetNodeId,
+      inputData,
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workflowId, name, description, nodes, edges, workflowMeta, workflowWorkspaceId, selectedWorkspace])
@@ -582,18 +621,37 @@ function WorkflowEditorInner({
     ? nodes.find((n) => n.id === selectedNode.id) ?? null
     : null
 
-  // Compute upstream outputs for the selected node's INPUT panel
+  // Compute upstream outputs via BFS to collect ALL ancestors (not just direct parents)
   const upstreamOutputs: UpstreamOutput[] = useMemo(() => {
     if (!currentSelectedNode) return []
-    const sourceEdges = edges.filter((e) => e.target === currentSelectedNode.id)
-    return sourceEdges.map((e) => {
-      const srcNode = nodes.find((n) => n.id === e.source)
+
+    const visited = new Set<string>()
+    const queue: Array<{ nodeId: string; depth: number }> = [{ nodeId: currentSelectedNode.id, depth: 0 }]
+    const ordered: Array<{ nodeId: string; depth: number }> = []
+
+    while (queue.length > 0) {
+      const item = queue.shift()!
+      const parents = edges
+        .filter((e) => e.target === item.nodeId)
+        .map((e) => e.source)
+      for (const parentId of parents) {
+        if (!visited.has(parentId)) {
+          visited.add(parentId)
+          ordered.push({ nodeId: parentId, depth: item.depth + 1 })
+          queue.push({ nodeId: parentId, depth: item.depth + 1 })
+        }
+      }
+    }
+
+    return ordered.map(({ nodeId, depth }) => {
+      const srcNode = nodes.find((n) => n.id === nodeId)
       const srcData = (srcNode?.data ?? {}) as Record<string, unknown>
       return {
-        nodeId: e.source,
-        label: (srcData.label as string) ?? srcNode?.type ?? e.source,
+        nodeId,
+        label: (srcData.label as string) ?? srcNode?.type ?? nodeId,
         nodeType: srcNode?.type ?? "unknown",
-        output: nodeExecStates[e.source]?.output ?? null,
+        output: nodeExecStates[nodeId]?.output ?? null,
+        depth,
       }
     })
   }, [currentSelectedNode, edges, nodes, nodeExecStates])
@@ -770,6 +828,7 @@ function WorkflowEditorInner({
             upstreamOutputs={upstreamOutputs}
             currentOutput={selectedNodeExecState}
             isExecuting={isExecuting}
+            ioSchema={ioSchema}
             onClose={() => setSelectedNode(null)}
             onUpdate={onUpdateNodeData}
             onExecute={() => handleExecute(currentSelectedNode.id)}

@@ -1,0 +1,189 @@
+{
+  "definition": {
+    "nodes": [
+      {
+        "id": "n_input",
+        "type": "workflow_input",
+        "position": { "x": 0, "y": 200 },
+        "data": {
+          "type": "workflow_input",
+          "label": "Entrada: Unidade",
+          "output_field": "data"
+        }
+      },
+      {
+        "id": "n_check",
+        "type": "sql_script",
+        "position": { "x": 300, "y": 200 },
+        "data": {
+          "type": "sql_script",
+          "label": "Verificar existência",
+          "connection_id": "SUBSTITUIR-PELO-UUID-DA-CONEXAO-ORACLE",
+          "script": "SELECT CASE WHEN EXISTS (SELECT 1 FROM VIASOFTBASE.UNIDADE WHERE UNIDADE = :unidade) THEN 1 ELSE 0 END AS EXISTE FROM DUAL",
+          "parameters": {
+            "unidade": "{input_data.unidade}"
+          },
+          "mode": "query",
+          "output_schema": [
+            { "name": "EXISTE", "type": "BIGINT" }
+          ],
+          "output_field": "check_result",
+          "timeout_seconds": 30
+        }
+      },
+      {
+        "id": "n_if",
+        "type": "if_node",
+        "position": { "x": 620, "y": 200 },
+        "data": {
+          "type": "if_node",
+          "label": "Já existe?",
+          "conditions": [
+            {
+              "field": "EXISTE",
+              "operator": "eq",
+              "value": 1
+            }
+          ],
+          "logic": "and",
+          "output_field": "data"
+        }
+      },
+      {
+        "id": "n_update",
+        "type": "sql_script",
+        "position": { "x": 940, "y": 60 },
+        "data": {
+          "type": "sql_script",
+          "label": "Atualizar descrição",
+          "connection_id": "SUBSTITUIR-PELO-UUID-DA-CONEXAO-ORACLE",
+          "script": "UPDATE VIASOFTBASE.UNIDADE SET DESCRICAO = :descricao, ULTALT = SYSDATE WHERE UNIDADE = :unidade",
+          "parameters": {
+            "unidade": "{input_data.unidade}",
+            "descricao": "{input_data.descricao}"
+          },
+          "mode": "execute",
+          "output_field": "update_result",
+          "timeout_seconds": 30
+        }
+      },
+      {
+        "id": "n_insert",
+        "type": "sql_script",
+        "position": { "x": 940, "y": 380 },
+        "data": {
+          "type": "sql_script",
+          "label": "Inserir nova unidade",
+          "connection_id": "SUBSTITUIR-PELO-UUID-DA-CONEXAO-ORACLE",
+          "script": "INSERT INTO VIASOFTBASE.UNIDADE (UNIDADE, DESCRICAO, DECIMAIS, ULTALT) VALUES (:unidade, :descricao, 3, SYSDATE)",
+          "parameters": {
+            "unidade": "{input_data.unidade}",
+            "descricao": "{input_data.descricao}"
+          },
+          "mode": "execute",
+          "output_field": "insert_result",
+          "timeout_seconds": 30
+        }
+      },
+      {
+        "id": "n_out_updated",
+        "type": "workflow_output",
+        "position": { "x": 1260, "y": 60 },
+        "data": {
+          "type": "workflow_output",
+          "label": "Saída: atualizado",
+          "mapping": {
+            "unidade": "{input_data.unidade}",
+            "descricao": "{input_data.descricao}",
+            "action": "updated"
+          }
+        }
+      },
+      {
+        "id": "n_out_inserted",
+        "type": "workflow_output",
+        "position": { "x": 1260, "y": 380 },
+        "data": {
+          "type": "workflow_output",
+          "label": "Saída: inserido",
+          "mapping": {
+            "unidade": "{input_data.unidade}",
+            "descricao": "{input_data.descricao}",
+            "action": "inserted"
+          }
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "e_input_check",
+        "source": "n_input",
+        "target": "n_check"
+      },
+      {
+        "id": "e_check_if",
+        "source": "n_check",
+        "target": "n_if"
+      },
+      {
+        "id": "e_if_update",
+        "source": "n_if",
+        "target": "n_update",
+        "sourceHandle": "true"
+      },
+      {
+        "id": "e_if_insert",
+        "source": "n_if",
+        "target": "n_insert",
+        "sourceHandle": "false"
+      },
+      {
+        "id": "e_update_out",
+        "source": "n_update",
+        "target": "n_out_updated"
+      },
+      {
+        "id": "e_insert_out",
+        "source": "n_insert",
+        "target": "n_out_inserted"
+      }
+    ]
+  },
+  "io_schema": {
+    "input_schema": [
+      {
+        "name": "unidade",
+        "type": "string",
+        "required": true,
+        "description": "Código da unidade de medida (ex: KG, UN, CX)"
+      },
+      {
+        "name": "descricao",
+        "type": "string",
+        "required": false,
+        "default": "",
+        "description": "Descrição da unidade de medida"
+      }
+    ],
+    "output_schema": [
+      {
+        "name": "unidade",
+        "type": "string",
+        "required": true,
+        "description": "Código da unidade processada"
+      },
+      {
+        "name": "descricao",
+        "type": "string",
+        "required": true,
+        "description": "Descrição da unidade processada"
+      },
+      {
+        "name": "action",
+        "type": "string",
+        "required": true,
+        "description": "Ação executada: 'inserted' ou 'updated'"
+      }
+    ]
+  }
+}

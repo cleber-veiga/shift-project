@@ -15,6 +15,7 @@ import {
   UserRound,
   X,
 } from "lucide-react"
+import { AIPanelToggle } from "@/components/agent/ai-panel-toggle"
 import { cn } from "@/lib/utils"
 import { roleLabel, roleTextClass } from "@/components/dashboard/role-badge"
 import { getHeaderMetaFromPathname } from "@/lib/dashboard-navigation"
@@ -25,7 +26,6 @@ import { useToast } from "@/lib/context/toast-context"
 import { useDashboardHeader } from "@/lib/context/header-context"
 import { useState, useRef, useEffect } from "react"
 import { usePathname, useRouter } from "next/navigation"
-import { PreferencesModal } from "@/components/dashboard/preferences-modal"
 import { MorphLoader } from "@/components/ui/morph-loader"
 import { Tooltip } from "@/components/ui/tooltip"
 import Link from "next/link"
@@ -125,7 +125,6 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
   const [orgMenuOpen, setOrgMenuOpen] = useState(false)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [userMenuOpen, setUserMenuOpen] = useState(false)
-  const [preferencesOpen, setPreferencesOpen] = useState(false)
   const [createOrgOpen, setCreateOrgOpen] = useState(false)
   const [orgName, setOrgName] = useState("")
   const [isCreatingOrg, setIsCreatingOrg] = useState(false)
@@ -455,6 +454,8 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
             <Bell className="size-4" />
           </button>
 
+          <AIPanelToggle />
+
           <div ref={userMenuRef} className="relative">
             <button
               type="button"
@@ -475,17 +476,14 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
                   <UserRound className="size-4 text-muted-foreground" />
                   Perfil
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setUserMenuOpen(false)
-                    setPreferencesOpen(true)
-                  }}
+                <Link
+                  href="/configuracoes"
+                  onClick={() => setUserMenuOpen(false)}
                   className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm hover:bg-accent"
                 >
                   <Settings className="size-4 text-muted-foreground" />
-                  Preferencias
-                </button>
+                  Configurações
+                </Link>
                 <div className="my-1 border-t border-border" />
                 <button
                   type="button"
@@ -500,8 +498,6 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
           </div>
         </div>
       </header>
-
-      <PreferencesModal open={preferencesOpen} onOpenChange={setPreferencesOpen} />
 
       {createOrgOpen ? (
         <div

@@ -1,11 +1,12 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { AlertTriangle, Braces, CheckCircle2, DatabaseZap, Filter, Loader2, Square, Table2, X, XCircle } from "lucide-react"
+import { AlertTriangle, CheckCircle2, DatabaseZap, Loader2, Square, X, XCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { getNodeDefinition } from "@/lib/workflow/types"
 import { getNodeIcon } from "@/lib/workflow/node-icons"
 import type { WorkflowTestEvent } from "@/lib/auth"
+import { DataViewer } from "@/components/workflow/node-config-modal"
 
 // ─── Node state derived from events ──────────────────────────────────────────
 
@@ -295,12 +296,6 @@ function NodeListItem({
 // ─── Node detail panel ────────────────────────────────────────────────────────
 
 function NodeDetail({ node }: { node: NodeState }) {
-  const [tab, setTab] = useState<"table" | "json">("table")
-  const scrollRef = useRef<HTMLDivElement>(null)
-
-  // Reset to table view when switching nodes
-  useEffect(() => { setTab("table") }, [node.node_id])
-
   if (node.status === "running") {
     return (
       <div className="flex flex-1 items-center justify-center gap-2 text-xs text-muted-foreground">
@@ -336,9 +331,11 @@ function NodeDetail({ node }: { node: NodeState }) {
           </div>
         </div>
         <div className="min-h-0 flex-1 overflow-auto">
-          <pre className="p-3 font-mono text-[11px] text-foreground whitespace-pre-wrap break-all">
-            {JSON.stringify(node.output ?? {}, null, 2)}
-          </pre>
+          <DataViewer
+            output={node.output ?? {}}
+            sourceLabel={node.label}
+            sourceNodeType={node.node_type}
+          />
         </div>
       </div>
     )
@@ -373,149 +370,11 @@ function NodeDetail({ node }: { node: NodeState }) {
     )
   }
 
-  // ── Filter: mostra resumo de filtragem ───────────────────────────────────
-  const hasFilterMeta = typeof output.total_input === "number" && typeof output.filtered_out === "number"
-
-  const rowCount = typeof output.row_count === "number" ? output.row_count : undefined
-  const columns = Array.isArray(output.columns) ? (output.columns as string[]) : undefined
-  const rows = Array.isArray(output.rows)
-    ? (output.rows as Array<Record<string, unknown>>)
-    : undefined
-  const isSql = rowCount !== undefined && columns !== undefined && rows !== undefined
-
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      {/* Tab bar */}
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border px-3">
-        <span className="mr-2 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-          Output
-        </span>
-        {isSql && (
-          <>
-            <TabButton
-              active={tab === "table"}
-              onClick={() => setTab("table")}
-              icon={<Table2 className="size-3" />}
-              label="Tabela"
-            />
-            <TabButton
-              active={tab === "json"}
-              onClick={() => setTab("json")}
-              icon={<Braces className="size-3" />}
-              label="JSON"
-            />
-            <span className="ml-auto text-[10px] text-muted-foreground tabular-nums">
-              {hasFilterMeta ? (
-                <span className="flex items-center gap-1">
-                  <Filter className="size-2.5" />
-                  {rowCount}/{output.total_input as number} · {columns!.length} col.
-                </span>
-              ) : (
-                <>{rowCount} linha{rowCount !== 1 ? "s" : ""} · {columns!.length} col.</>
-              )}
-            </span>
-          </>
-        )}
-      </div>
-
-      {/* Content */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
-        {isSql && tab === "table" ? (
-          <SqlTable columns={columns} rows={rows} />
-        ) : (
-          <pre className="p-3 font-mono text-[11px] text-foreground whitespace-pre-wrap break-all">
-            {JSON.stringify(output, null, 2)}
-          </pre>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function TabButton({
-  active,
-  onClick,
-  icon,
-  label,
-}: {
-  active: boolean
-  onClick: () => void
-  icon: React.ReactNode
-  label: string
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "flex items-center gap-1 rounded px-2 py-0.5 text-[11px] transition-colors",
-        active
-          ? "bg-accent font-semibold text-foreground"
-          : "text-muted-foreground hover:text-foreground",
-      )}
-    >
-      {icon}
-      {label}
-    </button>
-  )
-}
-
-// ─── SQL result table ─────────────────────────────────────────────────────────
-
-function SqlTable({
-  columns,
-  rows,
-}: {
-  columns: string[]
-  rows: Array<Record<string, unknown>>
-}) {
-  if (rows.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-        Nenhuma linha retornada.
-      </div>
-    )
-  }
-
-  return (
-    <table className="w-full min-w-max border-separate border-spacing-0 text-[11px]">
-      <thead className="sticky top-0 z-10">
-        <tr className="bg-muted/80 backdrop-blur-sm">
-          <th className="w-8 border-b border-r border-border px-2 py-1.5 text-center font-semibold text-muted-foreground">
-            #
-          </th>
-          {columns.map((col, ci) => (
-            <th
-              key={`${col}-${ci}`}
-              className="whitespace-nowrap border-b border-r border-border px-3 py-1.5 text-left font-semibold text-muted-foreground last:border-r-0"
-            >
-              {col}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row, i) => (
-          <tr key={i} className="hover:bg-muted/20">
-            <td className="border-b border-r border-border/40 px-2 py-1.5 text-center tabular-nums text-muted-foreground/50">
-              {i + 1}
-            </td>
-            {columns.map((col, ci) => (
-              <td
-                key={`${col}-${ci}`}
-                className="max-w-[220px] truncate border-b border-r border-border/40 px-3 py-1.5 text-foreground last:border-r-0"
-                title={row[col] != null ? String(row[col]) : undefined}
-              >
-                {row[col] == null ? (
-                  <span className="italic text-muted-foreground/40">null</span>
-                ) : (
-                  String(row[col])
-                )}
-              </td>
-            ))}
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <DataViewer
+      output={output}
+      sourceLabel={node.label}
+      sourceNodeType={node.node_type}
+    />
   )
 }

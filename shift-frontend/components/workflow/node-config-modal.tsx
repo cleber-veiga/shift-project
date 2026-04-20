@@ -27,7 +27,9 @@ import { getNodeIcon } from "@/lib/workflow/node-icons"
 import { NodeConfigFields } from "@/components/workflow/node-config-panel"
 import type { NodeExecState } from "@/lib/workflow/execution-context"
 import type { WebhookCapture } from "@/lib/api/webhooks"
-import { UpstreamFieldsContext, UsedSourcesContext } from "@/lib/workflow/upstream-fields-context"
+import type { WorkflowIOSchema } from "@/lib/api/workflow-versions"
+import { UpstreamFieldsContext, UpstreamOutputsContext, UsedSourcesContext, type UpstreamSummary } from "@/lib/workflow/upstream-fields-context"
+import { fetchDuckdbPreview, type DuckDbPreviewResponse } from "@/lib/auth"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,6 +38,7 @@ export interface UpstreamOutput {
   label: string
   nodeType: string
   output: Record<string, unknown> | null
+  depth?: number
 }
 
 interface NodeConfigModalProps {
@@ -48,6 +51,7 @@ interface NodeConfigModalProps {
   onUpdate: (nodeId: string, data: Record<string, unknown>) => void
   onExecute: () => void
   onWebhookTestEvent?: (capture: WebhookCapture) => void
+  ioSchema?: WorkflowIOSchema
 }
 
 // ─── Color maps ───────────────────────────────────────────────────────────────
@@ -141,6 +145,7 @@ export function NodeConfigModal({
   onUpdate,
   onExecute,
   onWebhookTestEvent,
+  ioSchema,
 }: NodeConfigModalProps) {
   const definition = getNodeDefinition(node.type ?? "")
   const color = definition?.color ?? "blue"
@@ -156,6 +161,19 @@ export function NodeConfigModal({
     }
     return []
   }, [upstreamOutputs])
+
+  // Resumo compacto dos upstreams (para pickers em node configs).
+  const upstreamSummaries = useMemo<UpstreamSummary[]>(
+    () =>
+      upstreamOutputs.map((u) => ({
+        nodeId: u.nodeId,
+        label: u.label,
+        nodeType: u.nodeType,
+        output: u.output,
+        depth: u.depth ?? 1,
+      })),
+    [upstreamOutputs],
+  )
 
   // Compute which source fields are already used (mappings, conditions, switch_field)
   const usedSources = useMemo(() => {
@@ -355,12 +373,15 @@ export function NodeConfigModal({
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
               <UpstreamFieldsContext.Provider value={upstreamColumns}>
-                <NodeConfigFields
-                  node={node}
-                  workflowId={workflowId}
-                  onUpdate={onUpdate}
-                  onWebhookTestEvent={onWebhookTestEvent}
-                />
+                <UpstreamOutputsContext.Provider value={upstreamSummaries}>
+                  <NodeConfigFields
+                    node={node}
+                    workflowId={workflowId}
+                    onUpdate={onUpdate}
+                    onWebhookTestEvent={onWebhookTestEvent}
+                    ioSchema={ioSchema}
+                  />
+                </UpstreamOutputsContext.Provider>
               </UpstreamFieldsContext.Provider>
             </div>
           </div>
@@ -413,42 +434,9 @@ export function NodeConfigModal({
 // ─── Input Panel (left) ──────────────────────────────────────────────────────
 
 function InputPanel({ upstreamOutputs }: { upstreamOutputs: UpstreamOutput[] }) {
-  const [selectedIdx, setSelectedIdx] = useState(0)
-
-  // Reset selection if upstream list changes
-  useEffect(() => {
-    setSelectedIdx(0)
-  }, [upstreamOutputs.length])
-
-  const selected = upstreamOutputs[selectedIdx] ?? null
-
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col">
       <PanelHeader label="Input" />
-
-      {/* Upstream node selector */}
-      {upstreamOutputs.length > 1 && (
-        <div className="shrink-0 border-b border-border px-2 py-1.5">
-          <div className="flex gap-1">
-            {upstreamOutputs.map((up, i) => (
-              <button
-                key={up.nodeId}
-                type="button"
-                onClick={() => setSelectedIdx(i)}
-                className={cn(
-                  "flex-1 truncate rounded-md px-2 py-1 text-[11px] font-medium transition-colors",
-                  i === selectedIdx
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-                title={up.label}
-              >
-                {up.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
 
       {upstreamOutputs.length === 0 ? (
         <EmptyState
@@ -456,18 +444,62 @@ function InputPanel({ upstreamOutputs }: { upstreamOutputs: UpstreamOutput[] }) 
           title="Sem nós conectados"
           subtitle="Conecte um nó anterior para ver os dados de entrada."
         />
-      ) : !selected?.output ? (
-        <EmptyState
-          icon={<Play className="size-5 text-muted-foreground/30" />}
-          title="Sem dados de entrada"
-          subtitle="Execute os nós anteriores para ver os dados aqui."
-        />
       ) : (
-        <DataViewer
-          output={selected.output}
-          sourceLabel={selected.label}
-          sourceNodeType={selected.nodeType}
-        />
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {upstreamOutputs.map((up) => (
+            <UpstreamAccordion key={up.nodeId} upstream={up} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function UpstreamAccordion({ upstream }: { upstream: UpstreamOutput }) {
+  const [open, setOpen] = useState((upstream.depth ?? 1) === 1)
+  const NodeIcon = getNodeIcon(getNodeDefinition(upstream.nodeType)?.icon ?? "Database")
+  const hasData = upstream.output !== null
+
+  return (
+    <div className="border-b border-border last:border-b-0">
+      {/* Header */}
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-2 px-3 py-2.5 text-left transition-colors hover:bg-muted/40"
+      >
+        {open
+          ? <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+          : <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />}
+        <NodeIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="flex-1 truncate text-[12px] font-medium text-foreground">
+          {upstream.label}
+        </span>
+        {hasData && upstream.output?.rows && Array.isArray(upstream.output.rows) && (
+          <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
+            {(upstream.output.rows as unknown[]).length}{" "}
+            {(upstream.output.rows as unknown[]).length === 1 ? "item" : "itens"}
+          </span>
+        )}
+        {!hasData && (
+          <span className="shrink-0 text-[10px] italic text-muted-foreground/50">sem dados</span>
+        )}
+      </button>
+
+      {/* Content */}
+      {open && (
+        hasData ? (
+          <DataViewer
+            output={upstream.output!}
+            sourceLabel={upstream.label}
+            sourceNodeType={upstream.nodeType}
+            sourceNodeId={upstream.nodeId}
+          />
+        ) : (
+          <div className="px-5 py-3 text-[11px] italic text-muted-foreground">
+            Execute os nós anteriores para ver os dados aqui.
+          </div>
+        )
       )}
     </div>
   )
@@ -582,27 +614,158 @@ function OutputPanel({
 
 type ViewTab = "schema" | "table" | "json"
 
-function DataViewer({
+function _extractDuckDbRef(
+  output: Record<string, unknown>,
+): { databasePath: string; tableName: string; datasetName?: string | null } | null {
+  const outputField = typeof output.output_field === "string" ? output.output_field : null
+  const candidates = outputField ? [output[outputField]] : Object.values(output)
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue
+    const c = candidate as Record<string, unknown>
+    // Formato sql_script: { reference: { storage_type, database_path, table_name } }
+    const ref = c.reference
+    if (ref && typeof ref === "object") {
+      const r = ref as Record<string, unknown>
+      if (r.storage_type === "duckdb" && typeof r.database_path === "string" && typeof r.table_name === "string") {
+        return {
+          databasePath: r.database_path,
+          tableName: r.table_name,
+          datasetName: typeof r.dataset_name === "string" ? r.dataset_name : null,
+        }
+      }
+    }
+    // Formato sql_database (dlt): { storage_type, database_path, table_name, dataset_name }
+    if (c.storage_type === "duckdb" && typeof c.database_path === "string" && typeof c.table_name === "string") {
+      return {
+        databasePath: c.database_path,
+        tableName: c.table_name,
+        datasetName: typeof c.dataset_name === "string" ? c.dataset_name : null,
+      }
+    }
+  }
+  return null
+}
+
+// Detector genérico de dados tabulares. Cobre:
+//  - Formato legado com ``columns``+``rows`` inline
+//  - Referência DuckDB (sql_script/sql_database) — requer fetch remoto
+//  - Array de objetos em ``output[output_field]`` ou em ``data``
+//
+// Usado para decidir quando exibir a aba "Tabela" e extrair dados para
+// visualização inline. Retorna null quando o output não é tabular.
+export type TableSource =
+  | { kind: "inline"; columns: string[]; rows: Array<Record<string, unknown>> }
+  | {
+      kind: "duckdb"
+      databasePath: string
+      tableName: string
+      datasetName: string | null
+    }
+
+export function extractTableSource(
+  output: Record<string, unknown>,
+): TableSource | null {
+  if (Array.isArray(output.columns) && Array.isArray(output.rows)) {
+    return {
+      kind: "inline",
+      columns: output.columns as string[],
+      rows: output.rows as Array<Record<string, unknown>>,
+    }
+  }
+
+  const duckDbRef = _extractDuckDbRef(output)
+  if (duckDbRef) {
+    return {
+      kind: "duckdb",
+      databasePath: duckDbRef.databasePath,
+      tableName: duckDbRef.tableName,
+      datasetName: duckDbRef.datasetName ?? null,
+    }
+  }
+
+  const outputField = typeof output.output_field === "string" ? output.output_field : null
+  const tried = new Set<string>()
+  const fieldCandidates = [outputField, "data", "rows"].filter(
+    (k): k is string => typeof k === "string" && k.length > 0,
+  )
+  for (const field of fieldCandidates) {
+    if (tried.has(field)) continue
+    tried.add(field)
+    const val = output[field]
+    if (
+      Array.isArray(val) &&
+      val.length > 0 &&
+      typeof val[0] === "object" &&
+      val[0] !== null &&
+      !Array.isArray(val[0])
+    ) {
+      const rows = val as Array<Record<string, unknown>>
+      const columns = Object.keys(rows[0])
+      return { kind: "inline", columns, rows }
+    }
+  }
+
+  return null
+}
+
+export function DataViewer({
   output,
   sourceLabel,
   sourceNodeType,
+  sourceNodeId,
 }: {
   output: Record<string, unknown>
   sourceLabel?: string
   sourceNodeType?: string
+  sourceNodeId?: string
 }) {
   const [tab, setTab] = useState<ViewTab>("schema")
+  const [duckDbData, setDuckDbData] = useState<DuckDbPreviewResponse | null>(null)
+  const [duckDbLoading, setDuckDbLoading] = useState(false)
+  const [duckDbError, setDuckDbError] = useState<string | null>(null)
 
-  const columns = Array.isArray(output.columns)
-    ? (output.columns as string[])
-    : undefined
-  const rows = Array.isArray(output.rows)
-    ? (output.rows as Array<Record<string, unknown>>)
-    : undefined
-  const hasTable = columns !== undefined && rows !== undefined
+  const tableSource = useMemo(() => extractTableSource(output), [output])
+  const isDuckDb = tableSource?.kind === "duckdb"
+  const isInline = tableSource?.kind === "inline"
 
-  // For schema view, get the first row as sample
-  const sampleRow = rows?.[0] ?? null
+  // Reset DuckDB state when the source ref changes (new execution, different node)
+  const duckDbKey = isDuckDb
+    ? `${tableSource.databasePath}::${tableSource.tableName}`
+    : null
+  useEffect(() => {
+    setDuckDbData(null)
+    setDuckDbError(null)
+  }, [duckDbKey])
+
+  // Auto-fetch DuckDB preview assim que o DataViewer tem uma ref — o Schema
+  // também depende dos dados (para montar a árvore de colunas N8N-style).
+  useEffect(() => {
+    if (!isDuckDb || duckDbData || duckDbLoading || duckDbError) return
+    const src = tableSource as Extract<TableSource, { kind: "duckdb" }>
+    setDuckDbLoading(true)
+    fetchDuckdbPreview(src.databasePath, src.tableName, src.datasetName)
+      .then((data) => setDuckDbData(data))
+      .catch((err) => setDuckDbError(err?.message ?? "Erro ao carregar dados."))
+      .finally(() => setDuckDbLoading(false))
+  }, [isDuckDb, tableSource, duckDbData, duckDbLoading, duckDbError])
+
+  const tableColumns = isInline
+    ? (tableSource as Extract<TableSource, { kind: "inline" }>).columns
+    : duckDbData?.columns ?? []
+  const tableRows = isInline
+    ? (tableSource as Extract<TableSource, { kind: "inline" }>).rows
+    : duckDbData?.rows ?? []
+  const sampleRow = tableRows[0] ?? null
+  const hasTable = tableSource !== null
+
+  const itemCount = isInline
+    ? tableRows.length
+    : duckDbData
+      ? duckDbData.row_count
+      : null
+  const itemCountLabel = itemCount !== null
+    ? `${itemCount}${duckDbData?.truncated ? " (prévia)" : ""} ${itemCount === 1 ? "item" : "itens"}`
+    : null
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -628,25 +791,39 @@ function DataViewer({
           icon={<Braces className="size-3" />}
           label="JSON"
         />
-        {hasTable && rows && (
-          <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">
-            {rows.length} {rows.length === 1 ? "item" : "itens"}
-          </span>
-        )}
+        <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">
+          {duckDbLoading ? (
+            <Loader2 className="size-3 animate-spin" />
+          ) : (
+            itemCountLabel
+          )}
+        </span>
       </div>
 
       {/* Content */}
       <div className="min-h-0 flex-1 overflow-auto">
         {tab === "schema" ? (
           <SchemaView
-            columns={columns}
+            columns={tableColumns.length > 0 ? tableColumns : undefined}
             sampleRow={sampleRow}
             output={output}
             sourceLabel={sourceLabel}
             sourceNodeType={sourceNodeType}
+            sourceNodeId={sourceNodeId}
           />
-        ) : hasTable && tab === "table" ? (
-          <MiniTable columns={columns!} rows={rows!} />
+        ) : tab === "table" ? (
+          duckDbLoading ? (
+            <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              Carregando prévia…
+            </div>
+          ) : duckDbError ? (
+            <div className="flex h-full items-center justify-center p-4 text-center text-xs text-destructive">
+              {duckDbError}
+            </div>
+          ) : (
+            <MiniTable columns={tableColumns} rows={tableRows} />
+          )
         ) : (
           <pre className="p-2.5 font-mono text-[10px] leading-relaxed text-foreground whitespace-pre-wrap break-all">
             {JSON.stringify(output, null, 2)}
@@ -665,12 +842,14 @@ function SchemaView({
   output,
   sourceLabel,
   sourceNodeType,
+  sourceNodeId,
 }: {
   columns?: string[]
   sampleRow: Record<string, unknown> | null
   output: Record<string, unknown>
   sourceLabel?: string
   sourceNodeType?: string
+  sourceNodeId?: string
 }) {
   const [expanded, setExpanded] = useState(true)
   const usedSources = useContext(UsedSourcesContext)
@@ -720,7 +899,18 @@ function SchemaView({
                   key={`${col}-${ci}`}
                   draggable
                   onDragStart={(e) => {
+                    // Legacy payload: bare column name — consumers que
+                    // operam por linha (mapper/filter/dedup/if) leem dai.
                     e.dataTransfer.setData("application/x-shift-field", col)
+                    // Ref enriquecida: consumers que precisam construir
+                    // um caminho completo (ex.: call_workflow → one-shot
+                    // contra upstream_results) leem dai o nodeId + campo.
+                    if (sourceNodeId) {
+                      e.dataTransfer.setData(
+                        "application/x-shift-field-ref",
+                        JSON.stringify({ nodeId: sourceNodeId, field: col }),
+                      )
+                    }
                     e.dataTransfer.effectAllowed = "copyMove"
                     // Custom drag image
                     const ghost = document.createElement("div")
@@ -772,7 +962,7 @@ function SchemaView({
     )
   }
 
-  // Fallback: show raw output as a schema-like key/value tree (also draggable)
+  // Fallback: show raw output as a recursive schema-like key/value tree (draggable)
   const entries = Object.entries(output)
   if (entries.length === 0) {
     return (
@@ -784,26 +974,86 @@ function SchemaView({
 
   return (
     <div className="py-2">
+      <SchemaTreeNodes
+        entries={entries}
+        sourceNodeId={sourceNodeId}
+        parentPath=""
+        depth={0}
+      />
+    </div>
+  )
+}
+
+function startDrag(
+  e: React.DragEvent,
+  field: string,
+  fullPath: string,
+  sourceNodeId: string | undefined,
+) {
+  e.stopPropagation()
+  e.dataTransfer.setData("application/x-shift-field", field)
+  if (sourceNodeId) {
+    e.dataTransfer.setData(
+      "application/x-shift-field-ref",
+      JSON.stringify({ nodeId: sourceNodeId, field: fullPath }),
+    )
+  }
+  e.dataTransfer.effectAllowed = "copyMove"
+  const ghost = document.createElement("div")
+  ghost.textContent = fullPath || field
+  ghost.style.cssText =
+    "position:fixed;top:-100px;left:-100px;padding:4px 12px;border-radius:6px;font-size:11px;font-weight:600;background:#3b82f6;color:#fff;white-space:nowrap;pointer-events:none;z-index:9999"
+  document.body.appendChild(ghost)
+  e.dataTransfer.setDragImage(ghost, 0, 0)
+  requestAnimationFrame(() => ghost.remove())
+}
+
+function SchemaTreeNodes({
+  entries,
+  sourceNodeId,
+  parentPath,
+  depth,
+}: {
+  entries: [string, unknown][]
+  sourceNodeId: string | undefined
+  parentPath: string
+  depth: number
+}) {
+  const usedSources = useContext(UsedSourcesContext)
+  const pl = depth === 0 ? "pl-4" : depth === 1 ? "pl-8" : "pl-12"
+
+  return (
+    <>
       {entries.map(([key, value]) => {
+        const fullPath = parentPath ? `${parentPath}.${key}` : key
+        const isObject = value !== null && typeof value === "object" && !Array.isArray(value)
+        const isArray = Array.isArray(value)
         const type = detectFieldType(value)
         const isUsed = usedSources.has(key)
+
+        if (isObject) {
+          return (
+            <SchemaTreeObjectNode
+              key={fullPath}
+              fieldKey={key}
+              fullPath={fullPath}
+              value={value as Record<string, unknown>}
+              sourceNodeId={sourceNodeId}
+              depth={depth}
+              pl={pl}
+              isUsed={isUsed}
+            />
+          )
+        }
+
         return (
           <div
-            key={key}
+            key={fullPath}
             draggable
-            onDragStart={(e) => {
-              e.dataTransfer.setData("application/x-shift-field", key)
-              e.dataTransfer.effectAllowed = "copyMove"
-              const ghost = document.createElement("div")
-              ghost.textContent = key
-              ghost.style.cssText =
-                "position:fixed;top:-100px;left:-100px;padding:4px 12px;border-radius:6px;font-size:11px;font-weight:600;background:#3b82f6;color:#fff;white-space:nowrap;pointer-events:none;z-index:9999"
-              document.body.appendChild(ghost)
-              e.dataTransfer.setDragImage(ghost, 0, 0)
-              requestAnimationFrame(() => ghost.remove())
-            }}
+            onDragStart={(e) => startDrag(e, key, fullPath, sourceNodeId)}
             className={cn(
-              "group flex cursor-grab items-center gap-2 py-1.5 pl-4 pr-3 transition-colors active:cursor-grabbing",
+              "group flex cursor-grab items-center gap-2 py-1.5 pr-3 transition-colors active:cursor-grabbing",
+              pl,
               isUsed
                 ? "bg-primary/[0.05] hover:bg-primary/[0.09]"
                 : "hover:bg-muted/30",
@@ -811,27 +1061,15 @@ function SchemaView({
           >
             <GripVertical className="size-3 shrink-0 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground/40" />
             <TypeIcon type={type} />
-            <span className={cn(
-              "shrink-0 text-[11px] font-medium",
-              isUsed ? "text-primary" : "text-foreground",
-            )}>
+            <span className={cn("shrink-0 text-[11px] font-medium", isUsed ? "text-primary" : "text-foreground")}>
               {key}
             </span>
-            {isUsed && (
-              <span
-                title="Campo já usado"
-                className="ml-1 size-1.5 shrink-0 rounded-full bg-primary/60"
-              />
-            )}
+            {isUsed && <span title="Campo já usado" className="ml-1 size-1.5 shrink-0 rounded-full bg-primary/60" />}
             <span className="ml-auto max-w-[60%] truncate text-right text-[11px] text-muted-foreground">
               {value == null ? (
                 <span className="italic text-muted-foreground/40">null</span>
-              ) : typeof value === "object" ? (
-                <span className="font-mono text-[10px]">
-                  {Array.isArray(value)
-                    ? `Array[${(value as unknown[]).length}]`
-                    : `{${Object.keys(value as object).length} campos}`}
-                </span>
+              ) : isArray ? (
+                <span className="font-mono text-[10px]">[{(value as unknown[]).length}]</span>
               ) : (
                 String(value)
               )}
@@ -839,6 +1077,67 @@ function SchemaView({
           </div>
         )
       })}
+    </>
+  )
+}
+
+function SchemaTreeObjectNode({
+  fieldKey,
+  fullPath,
+  value,
+  sourceNodeId,
+  depth,
+  pl,
+  isUsed,
+}: {
+  fieldKey: string
+  fullPath: string
+  value: Record<string, unknown>
+  sourceNodeId: string | undefined
+  depth: number
+  pl: string
+  isUsed: boolean
+}) {
+  const [expanded, setExpanded] = useState(true)
+  const childEntries = Object.entries(value)
+
+  return (
+    <div>
+      <div
+        draggable
+        onDragStart={(e) => startDrag(e, fieldKey, fullPath, sourceNodeId)}
+        className={cn(
+          "group flex cursor-grab items-center gap-2 py-1.5 pr-3 transition-colors active:cursor-grabbing",
+          pl,
+          isUsed ? "bg-primary/[0.05] hover:bg-primary/[0.09]" : "hover:bg-muted/30",
+        )}
+      >
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); setExpanded(!expanded) }}
+          className="flex items-center gap-1"
+        >
+          {expanded
+            ? <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+            : <ChevronRight className="size-3 shrink-0 text-muted-foreground" />}
+        </button>
+        <GripVertical className="size-3 shrink-0 text-muted-foreground/0 transition-colors group-hover:text-muted-foreground/40" />
+        <TypeIcon type="object" />
+        <span className={cn("shrink-0 text-[11px] font-medium", isUsed ? "text-primary" : "text-foreground")}>
+          {fieldKey}
+        </span>
+        <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+          {`{${childEntries.length} campos}`}
+        </span>
+      </div>
+      {expanded && childEntries.length > 0 && (
+        <SchemaTreeNodes
+          entries={childEntries}
+          sourceNodeId={sourceNodeId}
+          parentPath={fullPath}
+          depth={depth + 1}
+        />
+      )}
     </div>
   )
 }

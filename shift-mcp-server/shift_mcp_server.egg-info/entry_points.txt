@@ -1,0 +1,2 @@
+[console_scripts]
+shift-mcp-server = shift_mcp_server.cli:main

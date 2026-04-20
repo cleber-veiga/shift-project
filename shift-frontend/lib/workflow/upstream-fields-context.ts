@@ -19,3 +19,22 @@ export const UsedSourcesContext = createContext<Set<string>>(new Set())
 export function useUsedSources(): Set<string> {
   return useContext(UsedSourcesContext)
 }
+
+/**
+ * Summary of each upstream node available for the current config panel —
+ * usado por pickers (ex.: loop "Origem dos itens") para listar fontes
+ * de dataset sem o usuario precisar digitar dotted paths.
+ */
+export interface UpstreamSummary {
+  nodeId: string
+  label: string
+  nodeType: string
+  output: Record<string, unknown> | null
+  depth: number
+}
+
+export const UpstreamOutputsContext = createContext<UpstreamSummary[]>([])
+
+export function useUpstreamOutputs(): UpstreamSummary[] {
+  return useContext(UpstreamOutputsContext)
+}

@@ -2,6 +2,11 @@
 Exports centralizados dos modelos ORM.
 """
 
+from .agent_api_key import AgentApiKey
+from .agent_approval import AgentApproval
+from .agent_audit_log import AgentAuditLog
+from .agent_message import AgentMessage
+from .agent_thread import AgentThread
 from .ai_chat_memory import AiChatMemory
 from .connection import Connection
 from .connection_schema import ConnectionSchema
@@ -35,6 +40,11 @@ from .workspace import (
 )
 
 __all__ = [
+    "AgentApiKey",
+    "AgentApproval",
+    "AgentAuditLog",
+    "AgentMessage",
+    "AgentThread",
     "AiChatMemory",
     "Connection",
     "ConnectionSchema",

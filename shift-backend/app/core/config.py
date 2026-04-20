@@ -75,6 +75,26 @@ class Settings(BaseSettings):
     # Limite maior de tokens para respostas com reasoning (tokens internos + output).
     LLM_REASONING_MAX_TOKENS: int = 8192
 
+    # --- Platform Agent (LangGraph) ---
+    # Liga/desliga globalmente o agente de plataforma. Quando False,
+    # endpoints /agent retornam 404 e UI oculta o painel.
+    AGENT_ENABLED: bool = False
+
+    # Modelo LLM usado pelo Platform Agent (pode ser diferente do SQL assistant).
+    AGENT_LLM_MODEL: str = "anthropic/claude-sonnet-4-20250514"
+
+    # Timeout maximo em segundos para uma thread aguardando aprovacao humana
+    # antes de ser marcada como expirada.
+    AGENT_APPROVAL_TIMEOUT_SECONDS: int = 3600  # 1 hora
+
+    # Overrides de budget por workspace. JSON mapeando workspace_id (UUID str)
+    # -> dict parcial com campos de AgentBudget (messages_per_hour, etc.).
+    # Exemplo: {"11111111-...": {"messages_per_hour": 120}}
+    AGENT_BUDGET_OVERRIDES_JSON: str = ""
+
+    # Intervalo do job de expiracao de aprovacoes pendentes (minutos).
+    AGENT_EXPIRATION_JOB_INTERVAL_MINUTES: int = 5
+
     @property
     def DATABASE_URL_SYNC(self) -> str:
         """URL sincrona (psycopg2) para uso com Alembic."""

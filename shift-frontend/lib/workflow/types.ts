@@ -164,6 +164,20 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     defaultData: { type: "aggregator", group_by: [], aggregations: [] },
   },
   {
+    type: "deduplication",
+    label: "Remover Duplicatas",
+    description: "Mantém uma linha por combinação de colunas-chave",
+    category: "transform",
+    icon: "Copy",
+    color: "violet",
+    defaultData: {
+      type: "deduplication",
+      partition_by: [],
+      order_by: "",
+      keep: "first",
+    },
+  },
+  {
     type: "math",
     label: "Matemática",
     description: "Expressões matemáticas em colunas",

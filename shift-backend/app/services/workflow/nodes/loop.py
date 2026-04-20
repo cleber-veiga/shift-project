@@ -2,11 +2,23 @@
 Processador do no ``loop`` — iteracao sobre dataset chamando sub-workflow.
 
 Para cada item do dataset upstream, invoca a ``WorkflowVersion`` publicada
-indicada em ``workflow_id`` + ``workflow_version``. O item entra como input
-do sub-workflow via ``item_param_name`` (obrigatorio); opcionalmente um
-indice 0-based pode ser passado via ``index_param_name``. Outros inputs
-do sub-workflow podem vir de ``extra_inputs`` — dotted paths resolvidos
-contra o contexto do loop (mesma logica dos templates).
+indicada em ``workflow_id`` + ``workflow_version``.
+
+Modos de mapeamento de inputs
+-----------------------------
+1) **input_mapping** (recomendado, UX estilo call_workflow): dict
+   ``{param_name: template}`` onde cada template e resolvido por iteracao
+   contra o contexto estendido com ``item`` + ``idx``. Permite mapear
+   campos individuais do item para parametros individuais do sub-workflow.
+   Ex.: ``{"unidade": "{{item.cod_unidade}}", "descricao": "{{item.desc}}"}``.
+
+2) **Legado** (``item_param_name`` + ``index_param_name`` + ``extra_inputs``):
+   o item INTEIRO vai para ``item_param_name``; opcional indice 0-based em
+   ``index_param_name``. ``extra_inputs`` carrega dotted paths resolvidos
+   uma unica vez antes das iteracoes (constantes).
+
+Se ``input_mapping`` esta presente e nao-vazio, ele TEM PRECEDENCIA e o
+modo legado e ignorado.
 
 Modos
 -----
@@ -87,30 +99,52 @@ class LoopProcessor(BaseNodeProcessor):
             return _build_output(cfg, successes=[], failures=[], total=0)
 
         call_stack = list(context.get("call_stack") or [])
-        # Resolve extra_inputs UMA vez (nao depende do item corrente).
-        base_inputs: dict[str, Any] = {}
-        for name, path in cfg["extra_inputs"].items():
-            if isinstance(path, str):
-                base_inputs[name] = self.resolve_template(path, context)
-            else:
-                base_inputs[name] = path
+        use_mapping = bool(cfg["input_mapping"])
 
-        return asyncio.run(
-            _run_iterations(
-                node_id=node_id,
-                cfg=cfg,
-                items=items,
-                base_inputs=base_inputs,
-                call_stack=call_stack,
-            )
+        # Resolve extra_inputs UMA vez (modo legado — nao depende do item).
+        base_inputs: dict[str, Any] = {}
+        if not use_mapping:
+            for name, path in cfg["extra_inputs"].items():
+                if isinstance(path, str):
+                    base_inputs[name] = self.resolve_template(path, context)
+                else:
+                    base_inputs[name] = path
+
+        coro = _run_iterations(
+            node_id=node_id,
+            cfg=cfg,
+            items=items,
+            base_inputs=base_inputs,
+            call_stack=call_stack,
+            processor=self,
+            context=context,
         )
+
+        main_loop = context.get("_main_loop")
+        if isinstance(main_loop, asyncio.AbstractEventLoop) and main_loop.is_running():
+            # Dispatch para o loop principal — recursos async globais
+            # (engine/asyncpg) estao ligados a ele. ``asyncio.run`` em
+            # outro loop quebra com "Future attached to a different loop".
+            future = asyncio.run_coroutine_threadsafe(coro, main_loop)
+            return future.result()
+        return asyncio.run(coro)
 
     # ------------------------------------------------------------------
     # Validacao e materializacao do dataset
     # ------------------------------------------------------------------
 
     def _validate_config(self, node_id: str, config: dict[str, Any]) -> dict[str, Any]:
-        required = ("source_field", "workflow_id", "item_param_name")
+        raw_mapping = config.get("input_mapping") or {}
+        if raw_mapping and not isinstance(raw_mapping, dict):
+            raise NodeProcessingError(
+                f"No loop '{node_id}': input_mapping deve ser um dict."
+            )
+        input_mapping: dict[str, Any] = {str(k): v for k, v in raw_mapping.items()}
+
+        # Com input_mapping, item_param_name deixa de ser obrigatorio.
+        required = ("source_field", "workflow_id")
+        if not input_mapping:
+            required = required + ("item_param_name",)
         for key in required:
             if not config.get(key):
                 raise NodeProcessingError(
@@ -158,11 +192,14 @@ class LoopProcessor(BaseNodeProcessor):
             "source_field": str(config["source_field"]),
             "workflow_id": workflow_id,
             "workflow_version": config.get("workflow_version", "latest"),
-            "item_param_name": str(config["item_param_name"]),
+            "item_param_name": (
+                str(config["item_param_name"]) if config.get("item_param_name") else None
+            ),
             "index_param_name": (
                 str(config["index_param_name"]) if config.get("index_param_name") else None
             ),
             "extra_inputs": {str(k): v for k, v in extra.items()},
+            "input_mapping": input_mapping,
             "mode": mode,
             "max_parallelism": max_par,
             "on_item_error": on_err,
@@ -256,20 +293,29 @@ async def _run_iterations(
     items: list[dict[str, Any]],
     base_inputs: dict[str, Any],
     call_stack: list[str],
+    processor: BaseNodeProcessor,
+    context: dict[str, Any],
 ) -> dict[str, Any]:
     """Roteia para execucao sequencial ou paralela conforme cfg['mode']."""
     results: list[dict[str, Any] | None] = [None] * len(items)
     failures: list[dict[str, Any]] = []
     first_error: Exception | None = None
+    use_mapping = bool(cfg["input_mapping"])
 
     async def _run_one(idx: int, item: dict[str, Any]) -> None:
         nonlocal first_error
         if first_error is not None and cfg["on_item_error"] == "fail_fast":
             return
-        inputs = dict(base_inputs)
-        inputs[cfg["item_param_name"]] = item
-        if cfg["index_param_name"]:
-            inputs[cfg["index_param_name"]] = idx
+        if use_mapping:
+            iter_ctx = {**context, "item": item, "idx": idx}
+            inputs: dict[str, Any] = {}
+            for name, tmpl in cfg["input_mapping"].items():
+                inputs[name] = processor.resolve_data(tmpl, iter_ctx)
+        else:
+            inputs = dict(base_inputs)
+            inputs[cfg["item_param_name"]] = item
+            if cfg["index_param_name"]:
+                inputs[cfg["index_param_name"]] = idx
         try:
             sub = await _invoke_subworkflow(
                 node_id=node_id,
@@ -315,6 +361,9 @@ async def _run_iterations(
     return _build_output(cfg, successes=successes, failures=failures, total=len(items))
 
 
+_MAX_INLINE_FAILURES = 20
+
+
 def _build_output(
     cfg: dict[str, Any],
     *,
@@ -322,8 +371,15 @@ def _build_output(
     failures: list[dict[str, Any]],
     total: int,
 ) -> dict[str, Any]:
-    """Monta o dict final conforme a politica de erro."""
+    """Monta o dict final conforme a politica de erro.
+
+    Sempre expoe uma amostra de falhas (ate ``_MAX_INLINE_FAILURES``) em
+    ``failure_samples`` — mesmo em ``continue`` — para que o usuario veja o
+    motivo sem precisar trocar de politica. Em ``collect`` a lista completa
+    continua em ``failures``.
+    """
     output_field = cfg["output_field"]
+    failure_samples = failures[:_MAX_INLINE_FAILURES]
     if cfg["on_item_error"] == "collect":
         payload: dict[str, Any] = {
             "successes": successes,
@@ -335,6 +391,7 @@ def _build_output(
             "items": successes,
             "total": total,
             "error_count": len(failures),
+            "failure_samples": failure_samples,
         }
 
     return {
@@ -342,6 +399,7 @@ def _build_output(
         "iterations": total,
         "successes": len(successes),
         "failures": len(failures),
+        "failure_samples": failure_samples,
         "output_field": output_field,
         output_field: payload,
     }

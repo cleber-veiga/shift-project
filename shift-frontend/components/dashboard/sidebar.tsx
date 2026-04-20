@@ -19,6 +19,7 @@ import {
   FolderKanban,
   Pencil,
   Plus,
+  Trash2,
   X,
 } from "lucide-react"
 import Link from "next/link"
@@ -55,6 +56,10 @@ export function Sidebar() {
     return formatDateInput(next)
   })
 
+  const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null)
+  const [isDeletingProject, setIsDeletingProject] = useState(false)
+  const [deleteProjectError, setDeleteProjectError] = useState("")
+
   const {
     selectedProject,
     selectedOrganization,
@@ -63,6 +68,7 @@ export function Sidebar() {
     setSelectedProjectId,
     createProjectAndSelect,
     updateProjectAndRefresh,
+    deleteProjectAndRefresh,
   } = useDashboard()
 
   const canManageWorkspace = hasWorkspacePermission(selectedWorkspace?.my_role, "MANAGER")
@@ -183,6 +189,20 @@ export function Sidebar() {
     setEditingProjectId(null)
     setCreateProjectError("")
     setCreateProjectOpen(false)
+  }
+
+  const handleDeleteProject = async () => {
+    if (!deletingProjectId || !selectedWorkspace?.id) return
+    setIsDeletingProject(true)
+    setDeleteProjectError("")
+    try {
+      await deleteProjectAndRefresh({ project_id: deletingProjectId, workspace_id: selectedWorkspace.id })
+      setDeletingProjectId(null)
+    } catch (err) {
+      setDeleteProjectError(err instanceof Error ? err.message : "Falha ao excluir projeto.")
+    } finally {
+      setIsDeletingProject(false)
+    }
   }
 
   const canCreateProject =
@@ -312,18 +332,34 @@ export function Sidebar() {
                     {selectedProject?.id === project.id ? <Check className="size-4 text-primary" /> : null}
                   </button>
                   {canManageWorkspace ? (
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        handleProjectEdit(project.id)
-                      }}
-                      className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-background hover:text-foreground"
-                      aria-label={`Editar projeto ${project.name}`}
-                      title="Editar projeto"
-                    >
-                      <Pencil className="size-3.5" />
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          handleProjectEdit(project.id)
+                        }}
+                        className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-background hover:text-foreground"
+                        aria-label={`Editar projeto ${project.name}`}
+                        title="Editar projeto"
+                      >
+                        <Pencil className="size-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setDeleteProjectError("")
+                          setDeletingProjectId(project.id)
+                          setProjectMenuOpen(false)
+                        }}
+                        className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition hover:bg-background hover:text-destructive"
+                        aria-label={`Excluir projeto ${project.name}`}
+                        title="Excluir projeto"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    </>
                   ) : null}
                 </div>
               ))}
@@ -590,6 +626,68 @@ export function Sidebar() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      ) : null}
+
+      {deletingProjectId ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-[2px]"
+          role="presentation"
+          onClick={() => { if (!isDeletingProject) setDeletingProjectId(null) }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Confirmar exclusão de projeto"
+            className="w-[min(420px,96vw)] rounded-2xl border border-border bg-card shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-border px-5 py-4">
+              <p className="text-base font-semibold text-foreground">Excluir projeto</p>
+              <button
+                type="button"
+                onClick={() => setDeletingProjectId(null)}
+                disabled={isDeletingProject}
+                className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-60"
+                aria-label="Fechar"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+            <div className="px-5 py-4 space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Tem certeza que deseja excluir o projeto{" "}
+                <span className="font-semibold text-foreground">
+                  {availableProjects.find((p) => p.id === deletingProjectId)?.name}
+                </span>
+                ? Todos os fluxos, conexões e dados associados serão permanentemente removidos.
+              </p>
+              {deleteProjectError ? (
+                <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-xs text-red-200">
+                  {deleteProjectError}
+                </div>
+              ) : null}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDeletingProjectId(null)}
+                  disabled={isDeletingProject}
+                  className="inline-flex h-8 items-center justify-center rounded-xl border border-border bg-card px-4 text-xs font-medium text-foreground transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeleteProject}
+                  disabled={isDeletingProject}
+                  className="inline-flex h-8 items-center justify-center gap-2 rounded-xl bg-destructive px-4 text-xs font-bold text-destructive-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isDeletingProject ? <MorphLoader className="size-3" /> : <Trash2 className="size-3" />}
+                  Excluir
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       ) : null}

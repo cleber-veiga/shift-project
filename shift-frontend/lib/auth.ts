@@ -788,6 +788,10 @@ export async function updateProject(
   })
 }
 
+export async function deleteProject(projectId: string): Promise<void> {
+  await authorizedRequest<void>(`/projects/${projectId}`, { method: "DELETE" })
+}
+
 // ─── Grupos Econômicos ────────────────────────────────────────────────────────
 
 export async function listOrganizationConglomerates(
@@ -1646,6 +1650,7 @@ export async function testWorkflowStream(
   callbacks: WorkflowTestCallbacks,
   signal?: AbortSignal,
   targetNodeId?: string,
+  inputData?: Record<string, unknown>,
 ): Promise<void> {
   const session = await getValidSession()
   if (!session) {
@@ -1657,14 +1662,23 @@ export async function testWorkflowStream(
   if (workspaceId) params.set("workspace_id", workspaceId)
   if (targetNodeId) params.set("target_node_id", targetNodeId)
   const qs = params.toString() ? `?${params.toString()}` : ""
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${session.accessToken}`,
+    Accept: "text/event-stream",
+  }
+  let body: string | undefined
+  if (inputData && Object.keys(inputData).length > 0) {
+    headers["Content-Type"] = "application/json"
+    body = JSON.stringify({ input_data: inputData })
+  }
+
   const response = await fetch(
     `${getApiBaseUrl()}/workflows/${workflowId}/test${qs}`,
     {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${session.accessToken}`,
-        Accept: "text/event-stream",
-      },
+      headers,
+      body,
       signal,
     },
   ).catch(() => null)
@@ -1972,4 +1986,98 @@ export async function getInvitationByToken(token: string): Promise<InvitationDet
 
 export async function acceptInvitation(token: string): Promise<AcceptInvitationResult> {
   return authorizedRequest<AcceptInvitationResult>(`/invitations/accept/${token}`, { method: "POST" })
+}
+
+// ─── Agent API Keys ───────────────────────────────────────────────────────────
+
+export type AgentApiKey = {
+  id: string
+  name: string
+  prefix: string
+  workspace_id: string
+  project_id: string | null
+  created_by: string
+  max_workspace_role: "VIEWER" | "CONSULTANT" | "MANAGER"
+  max_project_role: "CLIENT" | "EDITOR" | null
+  allowed_tools: string[]
+  require_human_approval: boolean
+  expires_at: string | null
+  revoked_at: string | null
+  last_used_at: string | null
+  usage_count: number
+  created_at: string
+}
+
+export type AgentApiKeyCreatePayload = {
+  workspace_id: string
+  project_id?: string | null
+  name: string
+  max_workspace_role: "VIEWER" | "CONSULTANT" | "MANAGER"
+  max_project_role?: "CLIENT" | "EDITOR" | null
+  allowed_tools: string[]
+  require_human_approval: boolean
+  expires_at?: string | null
+}
+
+export type AgentApiKeyCreated = {
+  api_key: string
+  warning: string
+  key: AgentApiKey
+}
+
+export async function listAgentApiKeys(
+  workspaceId: string,
+  opts?: { include_revoked?: boolean },
+): Promise<{ items: AgentApiKey[]; total: number }> {
+  const params = new URLSearchParams({ workspace_id: workspaceId })
+  if (opts?.include_revoked === false) params.set("include_revoked", "false")
+  return authorizedRequest<{ items: AgentApiKey[]; total: number }>(
+    `/agent-keys?${params.toString()}`,
+    { method: "GET" },
+  )
+}
+
+export async function createAgentApiKey(
+  payload: AgentApiKeyCreatePayload,
+): Promise<AgentApiKeyCreated> {
+  return authorizedRequest<AgentApiKeyCreated>(`/agent-keys`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function revokeAgentApiKey(keyId: string): Promise<AgentApiKey> {
+  return authorizedRequest<AgentApiKey>(`/agent-keys/${keyId}/revoke`, {
+    method: "POST",
+  })
+}
+
+export async function deleteAgentApiKey(keyId: string): Promise<void> {
+  return authorizedRequest<void>(`/agent-keys/${keyId}`, { method: "DELETE" })
+}
+
+// ─── DuckDB Preview ────────────────────────────────────────────────────────────
+
+export interface DuckDbPreviewResponse {
+  columns: string[]
+  rows: Array<Record<string, unknown>>
+  row_count: number
+  truncated: boolean
+}
+
+export async function fetchDuckdbPreview(
+  databasePath: string,
+  tableName: string,
+  datasetName?: string | null,
+  limit = 500,
+): Promise<DuckDbPreviewResponse> {
+  return authorizedRequest<DuckDbPreviewResponse>("/nodes/duckdb-preview", {
+    method: "POST",
+    body: JSON.stringify({
+      database_path: databasePath,
+      table_name: tableName,
+      dataset_name: datasetName ?? null,
+      limit,
+    }),
+  })
 }
