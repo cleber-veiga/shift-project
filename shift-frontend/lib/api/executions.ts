@@ -60,6 +60,7 @@ export interface ExecutionDetail {
   started_at: string | null
   completed_at: string | null
   nodes: NodeExecution[]
+  input_data?: { variable_values?: Record<string, unknown> } | null
 }
 
 export interface ListExecutionsParams {

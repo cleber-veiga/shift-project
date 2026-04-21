@@ -6,6 +6,9 @@ import { cn } from "@/lib/utils"
 import { useDashboard } from "@/lib/context/dashboard-context"
 import { useUpstreamFields } from "@/lib/workflow/upstream-fields-context"
 import { listWorkspaceConnections, type Connection } from "@/lib/auth"
+import { VariableRefInput } from "@/components/workflow/variable-ref-input"
+
+const CONN_TYPES = ["connection"] as const
 
 // ── DB labels (espelham o bulk-insert-config) ────────────────────────────────
 
@@ -82,9 +85,26 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
   const mode = ((data.mode as ScriptMode) ?? "query") as ScriptMode
   const outputField = (data.output_field as string) ?? "sql_result"
   const timeoutSeconds = (data.timeout_seconds as number) ?? 60
-  const parameters = parametersToRows(
-    data.parameters as Record<string, string> | undefined,
+  const [parameters, setParametersState] = useState<ParameterRow[]>(() =>
+    parametersToRows(data.parameters as Record<string, string> | undefined),
   )
+  // Ressincroniza quando o nó externo muda (ex.: import, undo) — compara o
+  // shape persistido ignorando linhas locais em edição com nome vazio.
+  useEffect(() => {
+    const externalRows = parametersToRows(
+      data.parameters as Record<string, string> | undefined,
+    )
+    const localPersisted = parameters.filter((p) => p.name.trim() !== "")
+    const same =
+      externalRows.length === localPersisted.length &&
+      externalRows.every(
+        (r, i) =>
+          r.name === localPersisted[i]?.name &&
+          r.value === localPersisted[i]?.value,
+      )
+    if (!same) setParametersState(externalRows)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.parameters])
   const outputSchema: OutputColumn[] = Array.isArray(data.output_schema)
     ? (data.output_schema as OutputColumn[])
     : []
@@ -113,6 +133,7 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
   }
 
   function setParameters(next: ParameterRow[]) {
+    setParametersState(next)
     update({ parameters: rowsToParameters(next) })
   }
 
@@ -161,10 +182,12 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
   return (
     <div className="space-y-4">
       {/* ── Conexão ── */}
-      <div className="space-y-1.5">
-        <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-          Conexão
-        </label>
+      <VariableRefInput
+        value={(data.connection_id as string) ?? ""}
+        onChange={(v) => update({ connection_id: v, connection_name: v.startsWith("{{") ? v : data.connection_name })}
+        acceptedTypes={CONN_TYPES}
+        label="Conexão"
+      >
         <div className="relative">
           <button
             type="button"
@@ -242,7 +265,7 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
             </div>
           )}
         </div>
-      </div>
+      </VariableRefInput>
 
       {/* ── Modo ── */}
       <div className="space-y-1.5">

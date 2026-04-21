@@ -3,6 +3,37 @@
  * Mirrors backend node types from app/schemas/workflow.py.
  */
 
+// ---------------------------------------------------------------------------
+// Workflow Variables (globais declaradas no definition["variables"])
+// ---------------------------------------------------------------------------
+
+export type WorkflowVariableType =
+  | "string"
+  | "integer"
+  | "number"
+  | "boolean"
+  | "object"
+  | "array"
+  | "connection"
+  | "file_upload"
+  | "secret"
+
+export interface WorkflowVariable {
+  name: string
+  type: WorkflowVariableType
+  required: boolean
+  default?: unknown
+  description?: string
+  connection_type?: "postgres" | "mysql" | "sqlserver" | "oracle" | "mongodb"
+  accepted_extensions?: string[]
+  ui_group?: string
+  ui_order: number
+}
+
+// ---------------------------------------------------------------------------
+// Node types
+// ---------------------------------------------------------------------------
+
 export type NodeCategory = "trigger" | "input" | "transform" | "output" | "decision" | "ai"
 
 export interface NodeDefinition {
@@ -234,6 +265,17 @@ export const NODE_REGISTRY: NodeDefinition[] = [
       max_iterations: 10000,
       output_field: "loop_result",
     },
+  },
+
+  // --- Control Flow ---
+  {
+    type: "sync",
+    label: "Aguardar Todos",
+    description: "Aguarda a conclusão de todos os ramos paralelos",
+    category: "transform",
+    icon: "GitMerge",
+    color: "violet",
+    defaultData: { type: "sync", output_field: "data" },
   },
 
   // --- Decision ---

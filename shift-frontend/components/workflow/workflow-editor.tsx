@@ -15,6 +15,7 @@ import {
   ReactFlowProvider,
   type ReactFlowInstance,
   BackgroundVariant,
+  SelectionMode,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
 
@@ -27,11 +28,16 @@ import { ExecutionPanel } from "@/components/workflow/execution-panel"
 import { ExecutionsTab } from "@/components/workflow/executions/executions-tab"
 import { IoSchemaEditor, isIoSchemaValid } from "@/components/workflow/io-schema-editor"
 import { PublishVersionModal } from "@/components/workflow/publish-version-modal"
+import { VariablesPanel } from "@/components/workflow/variables-panel"
+import { ExecuteWorkflowDialog } from "@/components/workflow/execute-workflow-dialog"
 import type { WorkflowIOSchema } from "@/lib/api/workflow-versions"
-import { getNodeDefinition, NODE_REGISTRY } from "@/lib/workflow/types"
+import { useWorkflowVariables } from "@/lib/workflow/use-workflow-variables"
+import { executeWorkflowWithVars } from "@/lib/api/workflow-variables"
+import { getNodeDefinition, NODE_REGISTRY, type WorkflowVariable } from "@/lib/workflow/types"
 import { NodeExecutionContext, type NodeExecState } from "@/lib/workflow/execution-context"
 import { NodeActionsContext } from "@/lib/workflow/node-actions-context"
-import { History, Loader2, Plus, Workflow as WorkflowIcon, X } from "lucide-react"
+import { WorkflowVariablesContext } from "@/lib/workflow/workflow-variables-context"
+import { Hand, History, Loader2, MousePointer2, Plus, Workflow as WorkflowIcon, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   getWorkflow,
@@ -116,6 +122,7 @@ function WorkflowEditorInner({
 
   const [showLibrary, setShowLibrary] = useState(false)
   const [selectedNode, setSelectedNode] = useState<Node | null>(null)
+  const [canvasMode, setCanvasMode] = useState<"pan" | "select">("pan")
 
   // Aba ativa: "editor" (canvas) ou "executions" (historico de runs).
   const [activeTab, setActiveTab] = useState<"editor" | "executions">("editor")
@@ -130,7 +137,23 @@ function WorkflowEditorInner({
   })
   const [showIoSchemaEditor, setShowIoSchemaEditor] = useState(false)
   const [showPublishModal, setShowPublishModal] = useState(false)
+  const [showVariablesPanel, setShowVariablesPanel] = useState(false)
+  const [executeDialogMode, setExecuteDialogMode] = useState<
+    | { kind: "execute" }
+    | { kind: "preview" }
+    | { kind: "test"; targetNodeId?: string }
+    | null
+  >(null)
   const [dirty, setDirty] = useState(false)
+
+  // ── Workflow variables ───────────────────────────────────────────────────
+  const {
+    variables,
+    setVariables,
+    isSaving: isVariablesSaving,
+    error: variablesError,
+    save: saveVariables,
+  } = useWorkflowVariables(workflowId)
 
   // ── Schedule state (cron agendado no Prefect) ───────────────────────────
   const [scheduleStatus, setScheduleStatus] = useState<WorkflowScheduleStatus | null>(null)
@@ -365,13 +388,14 @@ function WorkflowEditorInner({
       })),
       meta: workflowMeta,
       io_schema: ioSchema,
+      variables,
     }
   }
 
   // Mark dirty on relevant state changes
   useEffect(() => {
     setDirty(true)
-  }, [nodes, edges, workflowMeta, ioSchema, name, description])
+  }, [nodes, edges, workflowMeta, ioSchema, name, description, variables])
 
   // ── Export workflow as JSON file ─────────────────────────────────────────
   const handleExport = useCallback(() => {
@@ -395,7 +419,7 @@ function WorkflowEditorInner({
     setStatusMessage("Workflow exportado!")
     setTimeout(() => setStatusMessage(null), 2500)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, description, status, isTemplate, isPublished, nodes, edges, workflowMeta])
+  }, [name, description, status, isTemplate, isPublished, nodes, edges, workflowMeta, variables, ioSchema])
 
   // ── Import workflow from JSON file ──────────────────────────────────────
   const handleImport = useCallback(() => {
@@ -424,6 +448,9 @@ function WorkflowEditorInner({
             inputs: imported.inputs ?? [],
             outputs: imported.outputs ?? [],
           })
+        }
+        if (Array.isArray(def.variables)) {
+          setVariables(def.variables as WorkflowVariable[])
         }
         if (typeof data.name === "string" && data.name) setName(data.name)
         if (typeof data.description === "string") setDescription(data.description)
@@ -464,7 +491,7 @@ function WorkflowEditorInner({
       setIsSaving(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workflowId, name, description, nodes, edges, workflowMeta, refreshScheduleStatus])
+  }, [workflowId, name, description, nodes, edges, workflowMeta, variables, ioSchema, refreshScheduleStatus])
 
   // ── Settings changes (persist immediately) ───────────────────────────────
   const handleStatusChange = useCallback(async (newStatus: "draft" | "published") => {
@@ -500,7 +527,10 @@ function WorkflowEditorInner({
   }, [workflowId])
 
   // ── Execute (SSE streaming test) ─────────────────────────────────────────
-  const handleExecute = useCallback(async (targetNodeId?: string) => {
+  const handleExecute = useCallback(async (
+    targetNodeId?: string,
+    variableValues?: Record<string, unknown>,
+  ) => {
     if (workflowId === "new") return
 
     // Cancel any in-flight execution
@@ -540,10 +570,14 @@ function WorkflowEditorInner({
     // sobrescreve estes valores.
     const inputNode = nodes.find((n) => n.type === "workflow_input")
     const mockInputs = (inputNode?.data as Record<string, unknown> | undefined)?.mock_inputs
-    const inputData =
+    const baseInput =
       mockInputs && typeof mockInputs === "object" && !Array.isArray(mockInputs)
         ? (mockInputs as Record<string, unknown>)
         : undefined
+    const inputData =
+      variableValues && Object.keys(variableValues).length > 0
+        ? { ...(baseInput ?? {}), variable_values: variableValues }
+        : baseInput
 
     await testWorkflowStream(
       workflowId,
@@ -602,7 +636,24 @@ function WorkflowEditorInner({
       inputData,
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workflowId, name, description, nodes, edges, workflowMeta, workflowWorkspaceId, selectedWorkspace])
+  }, [workflowId, name, description, nodes, edges, workflowMeta, variables, ioSchema, workflowWorkspaceId, selectedWorkspace])
+
+  // ── Execute with variable values (regular POST, not SSE) ────────────────
+  const handleExecuteWithVars = useCallback(
+    async (variableValues: Record<string, unknown>) => {
+      if (workflowId === "new") return
+      // Save latest definition first
+      await updateWorkflow(workflowId, {
+        name,
+        description: description || null,
+        definition: buildDefinition(),
+      })
+      await executeWorkflowWithVars(workflowId, variableValues)
+      setActiveTab("executions")
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [workflowId, name, description, nodes, edges, workflowMeta, variables, ioSchema],
+  )
 
   const handleAbortExecution = useCallback(() => {
     abortControllerRef.current?.abort()
@@ -680,6 +731,7 @@ function WorkflowEditorInner({
   }
 
   return (
+    <WorkflowVariablesContext.Provider value={{ variables }}>
     <CustomNodesContext.Provider value={customNodes}>
     <NodeActionsContext.Provider value={nodeActionsValue}>
     <NodeExecutionContext.Provider value={nodeExecStates}>
@@ -696,10 +748,12 @@ function WorkflowEditorInner({
           onIsTemplateChange={handleIsTemplateChange}
           onIsPublishedChange={handleIsPublishedChange}
           onSave={handleSave}
-          onExecute={handleExecute}
+          onExecute={() => setExecuteDialogMode({ kind: "test" })}
           onExport={handleExport}
           onImport={handleImport}
           onOpenIoSchema={workflowId !== "new" ? () => setShowIoSchemaEditor(true) : undefined}
+          onOpenVariables={workflowId !== "new" ? () => setShowVariablesPanel(true) : undefined}
+          variableCount={variables.length}
           onOpenPublish={
             workflowId !== "new"
               ? () => {
@@ -769,6 +823,39 @@ function WorkflowEditorInner({
               <Plus className={`size-4 transition-transform duration-200 ${showLibrary ? "rotate-45" : ""}`} />
             </button>
 
+            {/* Canvas mode toggle — pan (hand) vs select (multi-selection) */}
+            <div className="absolute left-3 top-14 z-20 flex flex-col overflow-hidden rounded-md border border-border bg-card shadow-sm">
+              <button
+                type="button"
+                onClick={() => setCanvasMode("pan")}
+                aria-label="Modo arrastar: mover o canvas"
+                title="Modo arrastar — clique e arraste para mover o canvas"
+                aria-pressed={canvasMode === "pan"}
+                className={`flex size-9 items-center justify-center transition-colors ${
+                  canvasMode === "pan"
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
+              >
+                <Hand className="size-4" />
+              </button>
+              <div className="h-px bg-border" />
+              <button
+                type="button"
+                onClick={() => setCanvasMode("select")}
+                aria-label="Modo seleção: selecionar múltiplos nós"
+                title="Modo seleção — arraste para selecionar vários nós (use espaço+arrastar para mover o canvas)"
+                aria-pressed={canvasMode === "select"}
+                className={`flex size-9 items-center justify-center transition-colors ${
+                  canvasMode === "select"
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
+              >
+                <MousePointer2 className="size-4" />
+              </button>
+            </div>
+
             {/* Node library overlay — fixed so it floats above all overflow containers */}
             {showLibrary && (
               <div
@@ -795,7 +882,12 @@ function WorkflowEditorInner({
               edgeTypes={EDGE_TYPES}
               fitView
               deleteKeyCode={["Backspace", "Delete"]}
-              className="workflow-canvas"
+              panOnDrag={canvasMode === "pan" ? [0, 1, 2] : [1, 2]}
+              selectionOnDrag={canvasMode === "select"}
+              selectionMode={SelectionMode.Partial}
+              multiSelectionKeyCode={["Shift", "Meta", "Control"]}
+              panActivationKeyCode="Space"
+              className={`workflow-canvas workflow-canvas--${canvasMode}`}
               proOptions={{ hideAttribution: true }}
               defaultEdgeOptions={{
                 style: { strokeWidth: 2 },
@@ -831,7 +923,13 @@ function WorkflowEditorInner({
             ioSchema={ioSchema}
             onClose={() => setSelectedNode(null)}
             onUpdate={onUpdateNodeData}
-            onExecute={() => handleExecute(currentSelectedNode.id)}
+            onExecute={() => {
+              if (variables.length > 0) {
+                setExecuteDialogMode({ kind: "test", targetNodeId: currentSelectedNode.id })
+              } else {
+                void handleExecute(currentSelectedNode.id)
+              }
+            }}
             onWebhookTestEvent={(capture) => {
               // Expoe o payload recebido pelo "Listen for test event" no
               // painel OUTPUT do no selecionado.
@@ -894,6 +992,45 @@ function WorkflowEditorInner({
           </div>
         )}
 
+        {/* Variables panel */}
+        {showVariablesPanel && workflowId !== "new" && (
+          <VariablesPanel
+            workflowId={workflowId}
+            variables={variables}
+            isSaving={isVariablesSaving}
+            error={variablesError}
+            onClose={() => setShowVariablesPanel(false)}
+            onChange={setVariables}
+            onSave={saveVariables}
+            onPreview={() => setExecuteDialogMode({ kind: "preview" })}
+          />
+        )}
+
+        {/* Execute / preview dialog */}
+        {executeDialogMode !== null && workflowId !== "new" && (
+          <ExecuteWorkflowDialog
+            workflowId={workflowId}
+            previewOnly={executeDialogMode.kind === "preview"}
+            onClose={() => setExecuteDialogMode(null)}
+            onDirectExecute={() => {
+              const mode = executeDialogMode
+              setExecuteDialogMode(null)
+              if (mode?.kind === "test") {
+                void handleExecute(mode.targetNodeId)
+              } else {
+                void handleExecute()
+              }
+            }}
+            onExecuteWithVars={async (values) => {
+              if (executeDialogMode?.kind === "test") {
+                await handleExecute(executeDialogMode.targetNodeId, values)
+                return
+              }
+              await handleExecuteWithVars(values)
+            }}
+          />
+        )}
+
         {/* Publish version modal */}
         {showPublishModal && workflowId !== "new" && (
           <PublishVersionModal
@@ -922,6 +1059,7 @@ function WorkflowEditorInner({
     </NodeExecutionContext.Provider>
     </NodeActionsContext.Provider>
     </CustomNodesContext.Provider>
+    </WorkflowVariablesContext.Provider>
   )
 }
 

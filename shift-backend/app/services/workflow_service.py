@@ -3,6 +3,8 @@ Servico de workflows: dispatch local via asyncio e consulta de status.
 """
 
 import asyncio
+import copy
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
@@ -22,6 +24,159 @@ from app.services.workflow.nodes.exceptions import NodeProcessingError, NodeProc
 
 
 logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Helpers para resolucao de variaveis do workflow
+# ---------------------------------------------------------------------------
+
+_VARS_SUB_RE = re.compile(r"\{\{\s*vars\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+
+
+def _substitute_vars_in_definition(
+    definition: dict[str, Any],
+    resolved_vars: dict[str, Any],
+) -> dict[str, Any]:
+    """Substitui {{vars.X}} em toda a definicao antes de iniciar a execucao.
+
+    A substituicao integral garante que connection_id com template ja chega
+    como UUID string para resolve_for_workflow e _inject_connection_string.
+    Campos como url/query que usem {{vars.X}} tambem ficam resolvidos, mas
+    context['vars'] ainda e injetado para uso dinamico em processors.
+    """
+    if not resolved_vars:
+        return definition
+
+    def _walk(obj: Any) -> Any:
+        if isinstance(obj, str):
+            full = _VARS_SUB_RE.fullmatch(obj)
+            if full:
+                val = resolved_vars.get(full.group(1))
+                return val if val is not None else obj
+            return _VARS_SUB_RE.sub(
+                lambda m: str(resolved_vars[m.group(1)])
+                if m.group(1) in resolved_vars
+                else m.group(0),
+                obj,
+            )
+        if isinstance(obj, dict):
+            return {k: _walk(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_walk(item) for item in obj]
+        return obj
+
+    return _walk(copy.deepcopy(definition))
+
+
+def _coerce_variable_value(name: str, declared_type: str, value: Any) -> Any:
+    """Coerce e valida um valor fornecido contra o tipo declarado da variavel."""
+    if declared_type in ("string", "secret"):
+        return str(value)
+    if declared_type == "integer":
+        try:
+            return int(value)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Variavel '{name}' deve ser inteiro.") from exc
+    if declared_type == "number":
+        try:
+            return float(value)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Variavel '{name}' deve ser numero.") from exc
+    if declared_type == "boolean":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            if value.lower() in ("true", "1", "yes"):
+                return True
+            if value.lower() in ("false", "0", "no"):
+                return False
+        raise ValueError(f"Variavel '{name}' deve ser booleano (true/false).")
+    if declared_type == "connection":
+        try:
+            return str(UUID(str(value)))
+        except ValueError as exc:
+            raise ValueError(
+                f"Variavel '{name}' deve ser um UUID de conexao valido."
+            ) from exc
+    if declared_type == "file_upload":
+        return str(value)
+    # object, array, table_reference — aceita sem coercao
+    return value
+
+
+def _collect_referenced_var_names(definition: dict[str, Any] | None) -> set[str]:
+    """Nomes de variaveis usadas via {{vars.X}} nos nos ativos da definicao.
+
+    Nos com ``data.enabled == False`` sao ignorados (mesmo criterio do schema
+    endpoint) — variaveis usadas so em nos desativados nao bloqueiam execucao.
+    """
+    if not definition:
+        return set()
+    found: set[str] = set()
+
+    def _walk(obj: Any) -> None:
+        if isinstance(obj, str):
+            for m in _VARS_SUB_RE.finditer(obj):
+                found.add(m.group(1))
+        elif isinstance(obj, dict):
+            for v in obj.values():
+                _walk(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item)
+
+    for node in definition.get("nodes", []) or []:
+        if not isinstance(node, dict):
+            continue
+        data = node.get("data") or {}
+        if isinstance(data, dict) and data.get("enabled") is False:
+            continue
+        scrubbed = {k: v for k, v in data.items() if k != "pinnedOutput"} if isinstance(data, dict) else data
+        _walk(scrubbed)
+    return found
+
+
+async def _validate_and_resolve_variables(
+    var_decls: list[dict[str, Any]],
+    variable_values: dict[str, Any],
+    referenced_names: set[str] | None = None,
+) -> dict[str, Any]:
+    """Valida e resolve os valores das variaveis declaradas no workflow.
+
+    - Variaveis nao referenciadas por nos ativos sao puladas (mesmo criterio
+      do schema endpoint — evita exigir valor de declaracoes "orfas").
+    - required=True sem valor → ValueError com mensagem clara
+    - Aplica default quando o valor esta ausente e required=False
+    - Coerce o valor para o tipo declarado
+    Retorna dict {nome: valor_resolvido}.
+    """
+    from app.schemas.workflow import WorkflowParam
+
+    resolved: dict[str, Any] = {}
+    for raw_decl in var_decls:
+        try:
+            decl = WorkflowParam.model_validate(raw_decl)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "workflow.variable.malformed",
+                variable_name=raw_decl.get("name", "<sem-nome>"),
+                error=str(exc),
+            )
+            continue
+
+        if referenced_names is not None and decl.name not in referenced_names:
+            continue
+
+        value = variable_values.get(decl.name)
+        if value is None:
+            if decl.required:
+                raise ValueError(f"Variavel '{decl.name}' e obrigatoria.")
+            value = decl.default
+        else:
+            value = _coerce_variable_value(decl.name, decl.type, value)
+
+        resolved[decl.name] = value
+
+    return resolved
 
 
 class WorkflowExecutionService:
@@ -86,9 +241,29 @@ class WorkflowExecutionService:
                 f"Projeto associado ao workflow '{workflow_id}' nao encontrado."
             )
 
+        # --- Resolucao de variaveis do workflow ---
+        var_decls: list[dict[str, Any]] = workflow.definition.get("variables", [])
+        variable_values_raw: dict[str, Any] = {}
+        if isinstance(input_data, dict):
+            variable_values_raw = input_data.get("variable_values") or {}
+
+        referenced_names = _collect_referenced_var_names(workflow.definition)
+        resolved_vars = await _validate_and_resolve_variables(
+            var_decls=var_decls,
+            variable_values=variable_values_raw,
+            referenced_names=referenced_names,
+        )
+
+        # Substitui {{vars.X}} na definicao antes de resolver conexoes e de
+        # passar para o runner — garante que connection_id com template se
+        # torna UUID real para _inject_connection_string.
+        definition_for_exec = _substitute_vars_in_definition(
+            workflow.definition, resolved_vars
+        )
+
         resolved_connections = await connection_service.resolve_for_workflow(
             db,
-            workflow.definition,
+            definition_for_exec,
             project_id=workflow.project_id,
             workspace_id=workspace_id,
         )
@@ -97,11 +272,20 @@ class WorkflowExecutionService:
             "production" if workflow.status == "published" else "test"
         )
 
+        # Mascara segredos antes de persistir em input_data (secrets nao ficam em claro no DB)
+        secret_names = {
+            d.get("name") for d in var_decls if isinstance(d, dict) and d.get("type") == "secret"
+        }
+        masked_vars: dict[str, Any] = {
+            k: "***" if k in secret_names else v for k, v in resolved_vars.items()
+        }
+
         execution = WorkflowExecution(
             workflow_id=workflow.id,
             status="RUNNING",
             triggered_by=triggered_by,
             started_at=datetime.now(timezone.utc),
+            input_data={"variable_values": masked_vars} if masked_vars else None,
         )
         db.add(execution)
         await db.flush()
@@ -109,17 +293,17 @@ class WorkflowExecutionService:
         # Captura dados antes de liberar a sessao — a execucao roda em background
         # (ou inline) e abre sua propria sessao para persistir o resultado.
         execution_id = execution.id
-        definition = workflow.definition
         exec_status = execution.status
         await db.commit()
 
         run_coro = self._run_and_persist(
             execution_id=execution_id,
             workflow_id=workflow.id,
-            workflow_definition=definition,
+            workflow_definition=definition_for_exec,
             triggered_by=triggered_by,
             input_data=input_data or {},
             resolved_connections=resolved_connections,
+            variable_values=resolved_vars,
             event_sink=event_sink,
             mode=effective_mode,
             target_node_id=target_node_id,
@@ -191,6 +375,7 @@ class WorkflowExecutionService:
         triggered_by: str,
         input_data: dict[str, Any],
         resolved_connections: dict[str, str] | None,
+        variable_values: dict[str, Any] | None = None,
         event_sink: EventSink | None = None,
         mode: str = "production",
         target_node_id: str | None = None,
@@ -214,6 +399,7 @@ class WorkflowExecutionService:
                     input_data=input_data,
                     execution_id=str(execution_id),
                     resolved_connections=resolved_connections,
+                    variable_values=variable_values,
                     event_sink=event_sink,
                     mode=mode,
                     target_node_id=target_node_id,

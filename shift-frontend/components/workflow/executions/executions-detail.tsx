@@ -278,6 +278,29 @@ export function ExecutionsDetail({
         </div>
       )}
 
+      {detail.input_data?.variable_values &&
+        Object.keys(detail.input_data.variable_values).length > 0 && (
+          <div className="mx-3 mt-3 rounded border border-violet-500/20 bg-violet-500/5 p-3">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-violet-600 dark:text-violet-400">
+              Variáveis usadas
+            </p>
+            <dl className="space-y-1">
+              {Object.entries(detail.input_data.variable_values).map(([k, v]) => (
+                <div key={k} className="flex items-baseline gap-2 text-[11px]">
+                  <dt className="shrink-0 font-mono text-muted-foreground">{`{{vars.${k}}}`}</dt>
+                  <dd className="truncate font-mono text-foreground">
+                    {v === "***" ? (
+                      <span className="text-muted-foreground">••••••</span>
+                    ) : (
+                      String(v)
+                    )}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        )}
+
       <div className="min-h-0 flex-1 overflow-auto p-3">
         {sortedNodes.length === 0 ? (
           <div className="text-center text-xs text-muted-foreground">

@@ -3,11 +3,38 @@ Schemas Pydantic para workflows do React Flow.
 Usa discriminated unions para validar configuracoes por tipo de no.
 """
 
+import re
 from datetime import datetime
 from typing import Annotated, Any, Literal, Union
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+
+# ---------------------------------------------------------------------------
+# Tipo de referencia que aceita UUID real OU template {{vars.NOME}}
+# ---------------------------------------------------------------------------
+
+_VARS_TEMPLATE_RE = re.compile(r"^\{\{\s*vars\.[A-Za-z_][A-Za-z0-9_]*\s*\}\}$")
+
+
+def _coerce_connection_ref(v: Any) -> Any:
+    """Normaliza connection_id: converte string UUID -> UUID; valida templates."""
+    if isinstance(v, UUID):
+        return v
+    if isinstance(v, str):
+        try:
+            return UUID(v)
+        except ValueError:
+            if _VARS_TEMPLATE_RE.match(v):
+                return v
+            raise ValueError(
+                f"connection_id deve ser um UUID valido ou '{{{{vars.NOME}}}}', recebido: '{v}'"
+            )
+    raise ValueError(f"connection_id: tipo invalido {type(v).__name__!r}")
+
+
+ConnectionRef = Annotated[Union[UUID, str], BeforeValidator(_coerce_connection_ref)]
+"""UUID de conector ou template {{vars.NOME}} resolvido em tempo de execucao."""
 
 
 # --- Operacoes de Transformacao Legadas ---
@@ -161,7 +188,7 @@ class ExtractNodeConfig(_RetryableNodeConfig):
     """Configuracao do no legado de extracao SQL."""
 
     type: Literal["extractNode"]
-    connection_id: UUID = Field(..., description="ID do conector cadastrado na plataforma")
+    connection_id: ConnectionRef = Field(..., description="ID do conector cadastrado na plataforma")
     query: str | None = None
     table_name: str | None = None
     chunk_size: int = 1000
@@ -173,7 +200,7 @@ class SqlDatabaseNodeConfig(_RetryableNodeConfig):
     """Configuracao explicita para extracao SQL com streaming."""
 
     type: Literal["sql_database"]
-    connection_id: UUID = Field(..., description="ID do conector cadastrado na plataforma")
+    connection_id: ConnectionRef = Field(..., description="ID do conector cadastrado na plataforma")
     query: str | None = None
     table_name: str | None = None
     chunk_size: int = 1000
@@ -206,7 +233,7 @@ class LoadNodeConfig(_RetryableNodeConfig):
     """Configuracao do no de carga de dados."""
 
     type: Literal["loadNode"]
-    connection_id: UUID = Field(..., description="ID do conector de destino")
+    connection_id: ConnectionRef = Field(..., description="ID do conector de destino")
     target_table: str
     write_disposition: Literal["append", "replace", "merge"] = "append"
 
@@ -307,7 +334,7 @@ class PollingTriggerNodeConfig(BaseModel):
     """Configuracao do no de polling."""
 
     type: Literal["polling"]
-    connection_id: UUID = Field(..., description="ID do conector a ser monitorado")
+    connection_id: ConnectionRef = Field(..., description="ID do conector a ser monitorado")
     query: str
 
 
@@ -511,7 +538,7 @@ class SqlScriptNodeConfig(_RetryableNodeConfig):
     """Configuracao do no de execucao de SQL arbitrario."""
 
     type: Literal["sql_script"]
-    connection_id: UUID = Field(..., description="ID do conector SQL alvo")
+    connection_id: ConnectionRef = Field(..., description="ID do conector SQL alvo")
     script: str = Field(..., min_length=1)
     parameters: dict[str, str] = Field(default_factory=dict)
     mode: Literal["query", "execute", "execute_many"] = "query"
@@ -524,7 +551,7 @@ class CompositeInsertNodeConfig(_RetryableNodeConfig):
     """Configuracao do no de insercao composta (multi-tabela, transacional)."""
 
     type: Literal["composite_insert"]
-    connection_id: UUID = Field(..., description="ID do conector SQL de destino")
+    connection_id: ConnectionRef = Field(..., description="ID do conector SQL de destino")
     definition_id: UUID | None = Field(
         default=None,
         description="Referencia a CustomNodeDefinition de origem (auditoria)",
@@ -546,6 +573,29 @@ class CompositeInsertNodeConfig(_RetryableNodeConfig):
     output_field: str = "composite_result"
 
 
+class TruncateTableNodeConfig(_RetryableNodeConfig):
+    """Configuracao do no de truncate/delete em tabela de destino SQL."""
+
+    type: Literal["truncate_table"]
+    connection_id: ConnectionRef = Field(..., description="ID do conector SQL alvo")
+    target_table: str = Field(..., min_length=1)
+    mode: Literal["truncate", "delete"] = "truncate"
+    where_clause: str | None = None
+    output_field: str = "data"
+
+
+class BulkInsertNodeConfig(_RetryableNodeConfig):
+    """Configuracao do no de bulk insert com mapeamento de colunas."""
+
+    type: Literal["bulk_insert"]
+    connection_id: ConnectionRef = Field(..., description="ID do conector SQL de destino")
+    target_table: str = Field(..., min_length=1)
+    column_mapping: list[dict[str, str]] = Field(default_factory=list)
+    unique_columns: list[str] = Field(default_factory=list)
+    batch_size: int = Field(default=1000, ge=1)
+    output_field: str = "load_result"
+
+
 class DeadLetterNodeConfig(_RetryableNodeConfig):
     """Configuracao do no terminal que persiste payloads em dead-letter."""
 
@@ -564,19 +614,49 @@ class DeadLetterNodeConfig(_RetryableNodeConfig):
 
 _WORKFLOW_PARAM_TYPES = (
     "string", "integer", "number", "boolean", "object", "array", "table_reference",
+    "connection", "file_upload", "secret",
 )
 
 
 class WorkflowParam(BaseModel):
-    """Declaracao de um parametro no io_schema de um workflow."""
+    """Declaracao de um parametro no io_schema ou nas variaveis globais de um workflow."""
 
     name: str = Field(..., min_length=1, max_length=100, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     type: Literal[
         "string", "integer", "number", "boolean", "object", "array", "table_reference",
+        "connection", "file_upload", "secret",
     ]
     required: bool = True
     default: Any | None = None
     description: str | None = Field(default=None, max_length=500)
+    # Campos exclusivos de variaveis globais (ignorados em io_schema de sub-workflows)
+    connection_type: Literal["postgres", "mysql", "sqlserver", "oracle", "mongodb"] | None = None
+    accepted_extensions: list[str] | None = None
+    ui_group: str | None = None
+    ui_order: int = 0
+
+    @model_validator(mode="after")
+    def _validate_type_specific_fields(self) -> "WorkflowParam":
+        if self.type != "connection" and self.connection_type is not None:
+            raise ValueError("connection_type so e permitido quando type='connection'.")
+        if self.type != "file_upload" and self.accepted_extensions is not None:
+            raise ValueError("accepted_extensions so e permitido quando type='file_upload'.")
+        return self
+
+
+class WorkflowVariablesSchema(BaseModel):
+    """Lista de variaveis globais declaradas pelo criador do workflow."""
+
+    variables: list[WorkflowParam] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_unique_names(self) -> "WorkflowVariablesSchema":
+        seen: set[str] = set()
+        for p in self.variables:
+            if p.name in seen:
+                raise ValueError(f"variavel '{p.name}' duplicada nas variaveis do workflow.")
+            seen.add(p.name)
+        return self
 
 
 class WorkflowIOSchema(BaseModel):
@@ -694,6 +774,9 @@ NodeConfig = Annotated[
         ApiInputNodeConfig,
         InlineDataNodeConfig,
         SqlScriptNodeConfig,
+        CompositeInsertNodeConfig,
+        TruncateTableNodeConfig,
+        BulkInsertNodeConfig,
         DeadLetterNodeConfig,
         WorkflowInputNodeConfig,
         WorkflowOutputNodeConfig,
@@ -730,6 +813,34 @@ class WorkflowPayload(BaseModel):
 
     nodes: list[WorkflowNode]
     edges: list[WorkflowEdge]
+
+
+# --- Payload de Execucao ---
+
+class ExecuteWorkflowRequest(BaseModel):
+    """Payload para submeter um workflow para execucao via POST /execute."""
+
+    variable_values: dict[str, Any] = Field(default_factory=dict)
+
+
+# --- Schema de Variaveis (endpoint /variables/schema) ---
+
+class ConnectionOptionResponse(BaseModel):
+    """Conector disponivel como opcao para uma variavel do tipo 'connection'."""
+
+    id: UUID
+    name: str
+    type: str
+
+
+class VariablesSchemaResponse(BaseModel):
+    """Declaracoes de variaveis + opcoes de conexao por variavel do tipo 'connection'."""
+
+    variables: list[WorkflowParam]
+    connection_options: dict[str, list[ConnectionOptionResponse]] = Field(
+        default_factory=dict,
+        description="Chaves = nomes de variaveis com type='connection'; valores = lista de conectores compativeis.",
+    )
 
 
 # --- Respostas de Execucao ---
@@ -783,6 +894,7 @@ class ExecutionDetailResponse(BaseModel):
     execution_id: UUID
     status: str
     triggered_by: str = "manual"
+    input_data: dict[str, Any] | None = None
     result: dict[str, Any] | None = None
     error_message: str | None = None
     started_at: datetime | None = None
@@ -827,6 +939,15 @@ class WorkflowCreate(BaseModel):
     is_template: bool = False
     definition: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _validate_definition_variables(self) -> "WorkflowCreate":
+        if "variables" in self.definition:
+            try:
+                WorkflowVariablesSchema(variables=self.definition["variables"])
+            except Exception as exc:
+                raise ValueError(f"definition.variables invalido: {exc}") from exc
+        return self
+
 
 class WorkflowUpdate(BaseModel):
     """Payload para atualizacao parcial de um workflow."""
@@ -840,6 +961,15 @@ class WorkflowUpdate(BaseModel):
         default=None,
         description="Status do workflow: 'draft' ou 'published'.",
     )
+
+    @model_validator(mode="after")
+    def _validate_definition_variables(self) -> "WorkflowUpdate":
+        if self.definition and "variables" in self.definition:
+            try:
+                WorkflowVariablesSchema(variables=self.definition["variables"])
+            except Exception as exc:
+                raise ValueError(f"definition.variables invalido: {exc}") from exc
+        return self
 
 
 class WorkflowResponse(BaseModel):
@@ -895,12 +1025,28 @@ class CallableWorkflowSummary(BaseModel):
 
 
 class WorkflowCloneRequest(BaseModel):
-    """Payload para clonar um template em um projeto destino."""
+    """Payload para clonar um template em um projeto destino.
+
+    Quando o template usa variáveis de conexão (``type="connection"``), o
+    consultor preenche os valores concretos no momento da execução via o
+    formulário gerado automaticamente.  Nesse caso ``connection_mapping``
+    pode ser omitido.
+
+    .. deprecated::
+        ``connection_mapping`` é o mecanismo legado de remapeamento de
+        ``connection_id`` fixos.  Prefira declarar variáveis de conexão no
+        template (``type="connection"``) e deixar ``connection_mapping``
+        vazio.  Manter suporte para retrocompatibilidade com templates
+        antigos que ainda contêm UUIDs literais nos nós.
+    """
 
     target_project_id: UUID
     connection_mapping: dict[str, UUID] = Field(
         default_factory=dict,
-        description="Mapeamento de connection_id originais para novos: {'uuid_velho': 'uuid_novo'}",
+        description=(
+            "[DEPRECATED] Mapeamento de connection_id fixos: {'uuid_velho': 'uuid_novo'}. "
+            "Prefira variáveis de conexão (type='connection') declaradas no template."
+        ),
     )
 
 

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,7 @@ from sqlalchemy import func as sa_func, select as sa_select
 
 from app.models.workflow import WorkflowExecution, WorkflowNodeExecution
 from app.schemas.workflow import (
+    ExecuteWorkflowRequest,
     ExecutionDetailResponse,
     ExecutionListResponse,
     ExecutionResponse,
@@ -37,23 +38,30 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
 )
 async def execute_workflow(
     workflow_id: UUID,
-    request: Request,
+    payload: ExecuteWorkflowRequest = Body(default_factory=ExecuteWorkflowRequest),
     db: AsyncSession = Depends(get_db),
     _=Depends(require_permission("workspace", "CONSULTANT")),
 ) -> ExecutionResponse:
-    """Submete um workflow para execucao assincrona em background."""
+    """Submete um workflow para execucao assincrona em background.
+
+    O corpo e opcional; quando omitido o workflow roda sem variaveis externas.
+    ``variable_values`` mapeia nome da variavel ao valor fornecido pelo
+    chamador — obrigatorias sem valor retornam HTTP 400.
+    """
     try:
-        input_data = await _extract_request_payload(request)
         return await workflow_service.execute_workflow(
             db=db,
             workflow_id=workflow_id,
-            input_data=input_data,
+            input_data={"variable_values": payload.variable_values},
         )
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(exc),
-        ) from exc
+        detail = str(exc)
+        http_status = (
+            status.HTTP_400_BAD_REQUEST
+            if "obrigatoria" in detail or "deve ser" in detail
+            else status.HTTP_404_NOT_FOUND
+        )
+        raise HTTPException(status_code=http_status, detail=detail) from exc
 
 
 @router.post(
@@ -199,6 +207,7 @@ async def get_execution_details(
         execution_id=execution.id,
         status=execution.status,
         triggered_by=execution.triggered_by,
+        input_data=execution.input_data,
         result=execution.result,
         error_message=execution.error_message,
         started_at=execution.started_at,
@@ -352,17 +361,3 @@ async def delete_execution(
     await db.delete(execution)
     await db.commit()
 
-
-async def _extract_request_payload(request: Request) -> dict[str, Any]:
-    if not request.headers.get("content-type", "").startswith("application/json"):
-        return {}
-
-    try:
-        payload = await request.json()
-    except Exception:
-        return {}
-
-    if isinstance(payload, dict):
-        return payload
-
-    return {"payload": payload}

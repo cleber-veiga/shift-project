@@ -1554,6 +1554,21 @@ export async function listWorkspaceTemplates(
   )
 }
 
+export type CloneWorkflowPayload = {
+  target_project_id: string
+  connection_mapping?: Record<string, string>
+}
+
+export async function cloneWorkflowTemplate(
+  templateId: string,
+  payload: CloneWorkflowPayload
+): Promise<Workflow> {
+  return authorizedRequest<Workflow>(`/workflows/${templateId}/clone`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
 export async function getWorkflow(workflowId: string): Promise<Workflow> {
   return authorizedRequest<Workflow>(`/workflows/${workflowId}`, {
     method: "GET",

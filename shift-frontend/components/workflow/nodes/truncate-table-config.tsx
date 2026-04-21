@@ -10,6 +10,9 @@ import {
   type Connection,
   type SchemaTable,
 } from "@/lib/auth"
+import { VariableRefInput } from "@/components/workflow/variable-ref-input"
+
+const CONN_TYPES = ["connection"] as const
 
 // ── DB labels (reused pattern) ───────────────────────────────────────────────
 
@@ -113,10 +116,12 @@ export function TruncateTableConfig({ data, onUpdate }: TruncateTableConfigProps
     <div className="space-y-4">
 
       {/* ── Connection selector ── */}
-      <div className="space-y-1.5">
-        <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-          Conexão
-        </label>
+      <VariableRefInput
+        value={(data.connection_id as string) ?? ""}
+        onChange={(v) => onUpdate({ ...data, connection_id: v, connection_name: v.startsWith("{{") ? v : data.connection_name })}
+        acceptedTypes={CONN_TYPES}
+        label="Conexão"
+      >
         <div className="relative">
           <button
             type="button"
@@ -177,7 +182,7 @@ export function TruncateTableConfig({ data, onUpdate }: TruncateTableConfigProps
             </div>
           )}
         </div>
-      </div>
+      </VariableRefInput>
 
       {/* ── Table selector ── */}
       {selectedConnectionId && (
@@ -221,21 +226,24 @@ export function TruncateTableConfig({ data, onUpdate }: TruncateTableConfigProps
                     />
                   </div>
                 </div>
-                {filteredTables.map((t) => (
+                {filteredTables.map((t) => {
+                  const qualifiedName = t.schema ? `${t.schema}.${t.name}` : t.name
+                  return (
                   <button
-                    key={t.name}
+                    key={qualifiedName}
                     type="button"
-                    onClick={() => selectTable(t.schema ? `${t.schema}.${t.name}` : t.name)}
+                    onClick={() => selectTable(qualifiedName)}
                     className={cn(
                       "flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-muted",
-                      selectedTable === t.name && "bg-accent",
+                      selectedTable === qualifiedName && "bg-accent",
                     )}
                   >
                     <Database className="size-3 text-muted-foreground" />
                     <span>{t.schema ? `${t.schema}.${t.name}` : t.name}</span>
                     <span className="ml-auto text-[10px] text-muted-foreground">{t.columns.length} cols</span>
                   </button>
-                ))}
+                  )
+                })}
                 {!tablesLoading && filteredTables.length === 0 && (
                   <p className="px-3 py-2 text-[10px] text-muted-foreground">Nenhuma tabela encontrada.</p>
                 )}

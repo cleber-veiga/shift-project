@@ -171,3 +171,4 @@ from app.services.workflow.nodes.sub_workflow import (  # noqa: E402, F401
     WorkflowOutputProcessor,
 )
 from app.services.workflow.nodes.loop import LoopProcessor  # noqa: E402, F401
+from app.services.workflow.nodes.sync_node import SyncNodeProcessor  # noqa: E402, F401

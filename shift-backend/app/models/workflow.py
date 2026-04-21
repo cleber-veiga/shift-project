@@ -152,6 +152,7 @@ class WorkflowExecution(Base):
         index=True,
         comment="Origem do disparo: manual (UI via /test), api (POST /execute), cron, webhook",
     )
+    input_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(

@@ -157,8 +157,14 @@ class WorkflowCrudService:
     ) -> Workflow:
         """Clona um template para um projeto destino.
 
-        Percorre o JSON de 'definition' e substitui connection_ids conforme
-        o mapeamento fornecido em clone_request.connection_mapping.
+        ``definition["variables"]`` é copiado integralmente — as declarações
+        de variáveis fazem parte da definição do workflow e não precisam de
+        tratamento especial.  Os valores concretos são sempre fornecidos pelo
+        consultor no momento da execução via ``variable_values``.
+
+        ``connection_mapping`` (legado) é aplicado apenas em ``connection_id``
+        cujo valor é um UUID literal.  Referências a variáveis no formato
+        ``{{vars.X}}`` são preservadas sem modificação.
         """
         template = await self.get(db, template_id)
         if template is None:
@@ -203,8 +209,12 @@ def _deep_replace_connections(
 ) -> Any:
     """Substitui recursivamente valores de connection_id em um JSON arbitrario.
 
-    Percorre dicts e listas. Quando encontra a chave 'connection_id' com um
-    valor presente no mapeamento, substitui pelo UUID novo (como string).
+    Percorre dicts e listas.  Quando encontra a chave ``connection_id`` com
+    um valor presente no mapeamento, substitui pelo UUID novo (como string).
+
+    Valores no formato ``{{vars.X}}`` nunca estão presentes no mapping e
+    portanto são sempre preservados sem modificação — a substituição ocorre
+    apenas quando ``str(v) in str_mapping`` é verdadeiro.
     """
     if not mapping:
         return obj

@@ -27,6 +27,10 @@ import {
 } from "@/components/workflow/retry-policy-editor"
 import type { WebhookCapture } from "@/lib/api/webhooks"
 import type { WorkflowIOSchema } from "@/lib/api/workflow-versions"
+import { VariableRefInput } from "@/components/workflow/variable-ref-input"
+
+const CONN_TYPES = ["connection"] as const
+const FILE_URL_TYPES = ["string", "file_upload"] as const
 
 interface NodeConfigPanelProps {
   node: Node
@@ -272,13 +276,18 @@ function renderNodeSpecificFields({
       return (
         <div className="space-y-4">
 
-          <ConfigField label="Connection ID">
+          <VariableRefInput
+            value={(data.connection_id as string) ?? ""}
+            onChange={(v) => update("connection_id", v)}
+            acceptedTypes={CONN_TYPES}
+            label="Connection ID"
+          >
             <TextInput
               value={(data.connection_id as string) ?? ""}
               onChange={(v) => update("connection_id", v)}
               placeholder="UUID da conexão"
             />
-          </ConfigField>
+          </VariableRefInput>
           <ConfigField label="Query">
             <TextArea
               value={(data.query as string) ?? ""}
@@ -301,13 +310,18 @@ function renderNodeSpecificFields({
       return (
         <div className="space-y-4">
 
-          <ConfigField label="URL / Caminho">
+          <VariableRefInput
+            value={(data.url as string) ?? ""}
+            onChange={(v) => update("url", v)}
+            acceptedTypes={FILE_URL_TYPES}
+            label="URL / Caminho"
+          >
             <TextInput
               value={(data.url as string) ?? ""}
               onChange={(v) => update("url", v)}
               placeholder="https://... ou /path/to/file.csv"
             />
-          </ConfigField>
+          </VariableRefInput>
           <ConfigField label="Delimitador">
             <TextInput
               value={(data.delimiter as string) ?? ","}
@@ -332,13 +346,18 @@ function renderNodeSpecificFields({
       return (
         <div className="space-y-4">
 
-          <ConfigField label="URL / Caminho">
+          <VariableRefInput
+            value={(data.url as string) ?? ""}
+            onChange={(v) => update("url", v)}
+            acceptedTypes={FILE_URL_TYPES}
+            label="URL / Caminho"
+          >
             <TextInput
               value={(data.url as string) ?? ""}
               onChange={(v) => update("url", v)}
               placeholder="https://... ou /path/to/file.xlsx"
             />
-          </ConfigField>
+          </VariableRefInput>
           <ConfigField label="Nome da Aba">
             <TextInput
               value={(data.sheet_name as string) ?? ""}
@@ -594,6 +613,25 @@ function renderNodeSpecificFields({
           data={data}
           onUpdate={(newData) => onUpdate(node.id, newData)}
         />
+      )
+
+    case "sync":
+      return (
+        <div className="space-y-4">
+          <div className="rounded-lg border border-dashed border-violet-500/30 bg-violet-500/5 p-3">
+            <p className="text-xs font-medium text-violet-600 dark:text-violet-400">Sincronização de Ramos</p>
+            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+              Este nó aguarda a conclusão de <strong>todos os ramos paralelos</strong> antes de prosseguir. Conecte as saídas dos nós paralelos aqui para sincronizá-los em um único ponto.
+            </p>
+          </div>
+          <ConfigField label="Campo de saída">
+            <TextInput
+              value={(data.output_field as string) ?? "data"}
+              onChange={(v) => update("output_field", v)}
+              placeholder="data"
+            />
+          </ConfigField>
+        </div>
       )
 
     case "loop":

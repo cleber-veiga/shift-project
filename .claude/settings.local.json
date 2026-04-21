@@ -271,7 +271,25 @@
       "Bash(pnpm tsc *)",
       "Bash(python -c \"from app.services.workflow.nodes import sub_workflow; print\\('OK'\\)\")",
       "Bash(python -c \"from app.services.workflow.nodes import sql_script; print\\('OK'\\)\")",
-      "Bash(python -c \"from app.api.v1.workflows import router; from app.services.workflow_test_service import workflow_test_service; print\\('OK'\\)\")"
+      "Bash(python -c \"from app.api.v1.workflows import router; from app.services.workflow_test_service import workflow_test_service; print\\('OK'\\)\")",
+      "Bash(xargs -I {} ls -lh {})",
+      "Bash(git -C D:/Labs/shift-project log --oneline -20)",
+      "Bash(git -C D:/Labs/shift-project log --oneline --all -30)",
+      "Bash(git -C D:/Labs/shift-project log --all --oneline --graph -15)",
+      "Bash(python -m pytest tests/test_workflow_variables.py -v)",
+      "Bash(python -m pytest tests/test_workflow_executions_api.py -v --no-header -q)",
+      "Bash(python -m pytest tests/ -k variables --no-header -q)",
+      "Bash(python -m pytest tests/test_workflow_variable_resolution.py -v)",
+      "Bash(python -m pytest tests/ -k \"variables or variable_resolution\" -q --no-header)",
+      "Bash(python -m pytest tests/test_workflow_execute_variables.py -v)",
+      "Read(//mnt/**)",
+      "Read(//d//**)",
+      "Bash(python -m pytest tests/ -k \"variables or variable_resolution or execute_variables\" -q)",
+      "Bash(find \"D:\\\\Labs\\\\shift-project\\\\shift-frontend\\\\lib\" -type f \\\\\\( -name \"*.ts\" -o -name \"*.tsx\" \\\\\\) -exec grep -l \"clone\\\\|template\" {} \\\\;)",
+      "Bash(grep -n \"input_data\\\\|variable_values\\\\|secret\\\\|\\\\\\\\*\\\\\\\\*\\\\\\\\*\" shift-frontend/components/workflow/executions/executions-detail.tsx shift-frontend/lib/api/executions.ts)",
+      "Bash(python -m pytest shift-backend/tests/ -k variable -x -q)",
+      "Bash(tasklist //FI \"PID eq 4856\")",
+      "Bash(taskkill //F //PID 4856)"
     ]
   }
 }

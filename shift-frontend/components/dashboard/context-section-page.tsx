@@ -1,6 +1,6 @@
 "use client"
 
-import { Grid2X2, List, Loader2, Plus, Search, Workflow, FolderOpen, Play, Trash2 } from "lucide-react"
+import { Grid2X2, List, Loader2, Plus, Search, Workflow, FolderOpen, Play, Trash2, Copy, LayoutTemplate } from "lucide-react"
 import Link from "next/link"
 import { useRouter, usePathname } from "next/navigation"
 import { useCallback, useEffect, useMemo, useState } from "react"
@@ -25,12 +25,100 @@ import { EconomicGroupSection } from "@/components/dashboard/economic-group-sect
 import { InputModelsSection } from "@/components/dashboard/input-models-section"
 import { MembersSection } from "@/components/dashboard/members-section"
 import { NewWorkflowModal } from "@/components/workflow/new-workflow-modal"
-import { listWorkspaceWorkflows, deleteWorkflow, listWorkspacePlayers, type Workflow as WorkflowType, type WorkspacePlayer } from "@/lib/auth"
+import { CloneTemplateModal } from "@/components/workflow/clone-template-modal"
+import { listWorkspaceWorkflows, listWorkspaceTemplates, deleteWorkflow, listWorkspacePlayers, type Workflow as WorkflowType, type WorkspacePlayer } from "@/lib/auth"
 import { ConfirmDialog } from "@/components/ui/confirm-dialog"
 
 interface ContextSectionPageProps {
   scope: DashboardScope
   section: DashboardSection
+}
+
+function TemplatesSection({ workspaceId }: { workspaceId: string }) {
+  const [templates, setTemplates] = useState<WorkflowType[]>([])
+  const [loading, setLoading] = useState(true)
+  const [cloneTarget, setCloneTarget] = useState<WorkflowType | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    listWorkspaceTemplates(workspaceId)
+      .then((data) => { if (!cancelled) setTemplates(data) })
+      .catch(() => { if (!cancelled) setTemplates([]) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [workspaceId])
+
+  if (loading) {
+    return (
+      <div className="flex h-20 items-center justify-center gap-2 text-xs text-muted-foreground">
+        <Loader2 className="size-3.5 animate-spin" /> Carregando templates…
+      </div>
+    )
+  }
+
+  if (templates.length === 0) return null
+
+  return (
+    <>
+      {cloneTarget && (
+        <CloneTemplateModal
+          template={cloneTarget}
+          workspaceId={workspaceId}
+          onClose={() => setCloneTarget(null)}
+          onCloned={() => setCloneTarget(null)}
+        />
+      )}
+      <section className="space-y-2 pt-2">
+        <div className="flex items-center gap-2">
+          <LayoutTemplate className="size-3.5 text-muted-foreground" />
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Templates disponíveis
+          </h2>
+        </div>
+        <div className="overflow-auto rounded-xl border border-border bg-card shadow-sm">
+          <div className="grid min-w-[600px] grid-cols-[1fr_160px_120px] items-center border-b border-border px-4 py-2.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+            <span>Template</span>
+            <span>Status</span>
+            <span className="text-right">Ações</span>
+          </div>
+          <div className="divide-y divide-border">
+            {templates.map((t) => (
+              <div
+                key={t.id}
+                className="grid min-w-[600px] grid-cols-[1fr_160px_120px] items-center px-4 py-3 transition-colors hover:bg-muted/10"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="flex size-7 items-center justify-center rounded-md bg-violet-500/10 text-violet-600">
+                    <LayoutTemplate className="size-3.5" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="truncate text-[13px] font-semibold text-foreground">{t.name}</p>
+                    {t.description && (
+                      <p className="truncate text-[11px] text-muted-foreground">{t.description}</p>
+                    )}
+                  </div>
+                </div>
+                <span className="inline-flex w-fit rounded bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase text-emerald-600">
+                  Publicado
+                </span>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setCloneTarget(t)}
+                    className="flex items-center gap-1 rounded border border-border bg-card px-2.5 py-1 text-[11px] font-medium text-foreground transition hover:bg-muted"
+                  >
+                    <Copy className="size-3" />
+                    Clonar
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+    </>
+  )
 }
 
 function FlowsSection({
@@ -371,6 +459,9 @@ function FlowsSection({
         </div>
       )}
     </section>
+    {scope === "project" && selectedWorkspace?.id && (
+      <TemplatesSection workspaceId={selectedWorkspace.id} />
+    )}
     </>
   )
 }

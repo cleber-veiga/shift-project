@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     # Em producao, apontar para o dominio publico (atras do proxy/tunel).
     EXTERNAL_BASE_URL: str | None = None
 
+    # --- Upload de arquivos para variaveis de workflow ---
+    # Diretorio local onde os arquivos uploadados sao armazenados.
+    # Em producao substitua por um bucket S3/MinIO.
+    WORKFLOW_UPLOAD_DIR: str = "workflow_uploads"
+
     # --- AI / LLM (SQL Assistant) ---
     # Identificador LiteLLM do modelo. Prefixo define o provider:
     #   anthropic/claude-sonnet-4-20250514, gpt-4o, gemini/gemini-2.0-flash, ollama/llama3.2

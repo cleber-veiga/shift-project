@@ -21,6 +21,13 @@ import { getNodeIcon } from "@/lib/workflow/node-icons"
 import { useNodeExecution } from "@/lib/workflow/execution-context"
 import { useNodeActions } from "@/lib/workflow/node-actions-context"
 
+const VAR_REF_RE = /\{\{\s*vars\.[A-Za-z_][A-Za-z0-9_]*\s*\}\}/g
+
+function countVarRefs(data: Record<string, unknown>): number {
+  const text = JSON.stringify(data)
+  return (text.match(VAR_REF_RE) ?? []).length
+}
+
 // ─── Color themes ──────────────────────────────────────────────────────────────
 
 const themes: Record<
@@ -253,6 +260,7 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
     retryPolicy.max_attempts > 1
   const execState   = useNodeExecution(id)
   const summaryRows = getNodeSummaryRows(type ?? "", nodeData)
+  const varRefCount = countVarRefs(nodeData)
 
   // Code/SQL block (shown below summary)
   const codeContent = (() => {
@@ -402,6 +410,15 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
               >
                 <RefreshCw className="size-2.5" />
                 {retryPolicy?.max_attempts}x
+              </span>
+            )}
+            {varRefCount > 0 && (
+              <span
+                className="flex shrink-0 items-center gap-0.5 rounded bg-violet-500/10 px-1 py-0.5 text-[9px] font-medium text-violet-600 dark:text-violet-400"
+                title={`${varRefCount} referência${varRefCount > 1 ? "s" : ""} a variável`}
+              >
+                {"{}"}
+                {varRefCount}
               </span>
             )}
           </div>

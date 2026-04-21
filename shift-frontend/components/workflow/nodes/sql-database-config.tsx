@@ -10,6 +10,9 @@ import {
   type Connection,
   type SavedQuery,
 } from "@/lib/auth"
+import { VariableRefInput } from "@/components/workflow/variable-ref-input"
+
+const CONN_TYPES = ["connection"] as const
 
 // ── Database type labels ─────────────────────────────────────────────────────
 
@@ -131,11 +134,12 @@ export function SqlDatabaseConfig({ data, onUpdate }: SqlDatabaseConfigProps) {
   return (
     <div className="space-y-4">
       {/* ── Connection selector ── */}
-      <div className="space-y-1.5">
-        <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-          Conexão
-        </label>
-
+      <VariableRefInput
+        value={(data.connection_id as string) ?? ""}
+        onChange={(v) => onUpdate({ ...data, connection_id: v, connection_name: v.startsWith("{{") ? v : data.connection_name })}
+        acceptedTypes={CONN_TYPES}
+        label="Conexão"
+      >
         <div className="relative">
           <button
             type="button"
@@ -212,7 +216,7 @@ export function SqlDatabaseConfig({ data, onUpdate }: SqlDatabaseConfigProps) {
             </div>
           )}
         </div>
-      </div>
+      </VariableRefInput>
 
       {/* ── SQL section (only when connection is selected) ── */}
       {selectedConnectionId && (
