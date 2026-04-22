@@ -124,9 +124,9 @@ class SqlScriptProcessor(BaseNodeProcessor):
                 f"No sql_script '{node_id}': output_schema deve ser uma lista."
             )
 
-        parameters: dict[str, str] = {
-            str(k): str(v) for k, v in parameters_raw.items()
-        }
+        # execute_many uses column name strings; query/execute use ParameterValue.
+        # The raw dict is passed unchanged; each mode interprets values appropriately.
+        parameters: dict[str, Any] = {str(k): v for k, v in parameters_raw.items()}
 
         try:
             engine = sa.create_engine(str(connection_string))
@@ -280,7 +280,7 @@ class SqlScriptProcessor(BaseNodeProcessor):
         node_id: str,
         engine: Engine,
         script: str,
-        parameters: dict[str, str],
+        parameters: dict[str, Any],
         output_field: str,
         timeout_seconds: int,
         context: dict[str, Any],
@@ -291,8 +291,17 @@ class SqlScriptProcessor(BaseNodeProcessor):
                 f"parameters referenciando colunas upstream."
             )
 
+        # execute_many values are column names (strings).
+        # If stored as ParameterValue (migration path), extract the fixed value.
+        def _col(v: Any) -> str:
+            if isinstance(v, dict) and v.get("mode") == "fixed":
+                return str(v.get("value", ""))
+            return str(v) if v is not None else ""
+
+        col_map: dict[str, str] = {name: _col(v) for name, v in parameters.items()}
+
         upstream_ref = get_primary_input_reference(context, node_id)
-        upstream_columns = sorted({v for v in parameters.values() if v.strip()})
+        upstream_columns = sorted({v for v in col_map.values() if v.strip()})
         if not upstream_columns:
             raise NodeProcessingError(
                 f"No sql_script '{node_id}': modo 'execute_many' requer "
@@ -311,7 +320,7 @@ class SqlScriptProcessor(BaseNodeProcessor):
             with engine.begin() as conn:
                 for row in rows:
                     bindings: dict[str, Any] = {
-                        name: row.get(col) for name, col in parameters.items()
+                        name: row.get(col) for name, col in col_map.items()
                     }
                     for stmt in statements:
                         result = conn.execute(sa.text(stmt), bindings)
@@ -341,32 +350,47 @@ class SqlScriptProcessor(BaseNodeProcessor):
     def _resolve_context_parameters(
         self,
         node_id: str,
-        parameters: dict[str, str],
+        parameters: dict[str, Any],
         context: dict[str, Any],
     ) -> dict[str, Any]:
-        """Resolve valores como dotted paths no contexto.
+        """Resolve parâmetros SQL usando ParameterValue unificado.
 
-        Convencao: ``upstream.X.Y`` e alias para ``upstream_results.X.Y``.
-        Valores que nao referenciam o contexto (ex: ``None``) caem para
-        literal apenas quando a string inteira nao pode ser interpretada
-        como path — senao levanta NodeProcessingError.
+        Aceita tanto o formato legado (string dotted-path como
+        ``upstream_results.node_X.data.CAMPO``) quanto o novo formato
+        ParameterValue (dict com ``mode``).  O adapter
+        ``migrate_legacy_sql_parameter`` normaliza ambos antes da resolução.
         """
+        from app.services.workflow.parameter_value import (
+            ResolutionContext,
+            migrate_legacy_sql_parameter,
+            resolve_parameter,
+        )
+
+        ctx = ResolutionContext(
+            input_data=context.get("input_data") or {},
+            upstream_results=context.get("upstream_results") or {},
+            vars=context.get("vars") or {},
+        )
+
         resolved: dict[str, Any] = {}
-        for name, raw_path in parameters.items():
-            path = raw_path.strip()
-            if not path:
+        for name, raw_value in parameters.items():
+            if not raw_value and raw_value != 0:
                 raise NodeProcessingError(
                     f"No sql_script '{node_id}': parametro '{name}' "
                     f"tem valor vazio."
                 )
-            lookup_path = path
-            if lookup_path.startswith("upstream."):
-                lookup_path = "upstream_results." + lookup_path[len("upstream."):]
-            value = self._resolve_path(lookup_path, context)
+            pv = migrate_legacy_sql_parameter(raw_value)
+            try:
+                value = resolve_parameter(pv, ctx)
+            except (KeyError, ValueError) as exc:
+                raise NodeProcessingError(
+                    f"No sql_script '{node_id}': parametro '{name}' "
+                    f"nao pode ser resolvido — {exc}"
+                ) from exc
             if value is None:
                 raise NodeProcessingError(
                     f"No sql_script '{node_id}': parametro '{name}' "
-                    f"nao pode ser resolvido a partir de '{path}'."
+                    f"resolveu para None."
                 )
             resolved[name] = value
         return resolved

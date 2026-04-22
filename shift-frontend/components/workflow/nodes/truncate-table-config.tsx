@@ -10,9 +10,7 @@ import {
   type Connection,
   type SchemaTable,
 } from "@/lib/auth"
-import { VariableRefInput } from "@/components/workflow/variable-ref-input"
-
-const CONN_TYPES = ["connection"] as const
+import { ConnectionField } from "@/components/workflow/connection-field"
 
 // ── DB labels (reused pattern) ───────────────────────────────────────────────
 
@@ -116,10 +114,9 @@ export function TruncateTableConfig({ data, onUpdate }: TruncateTableConfigProps
     <div className="space-y-4">
 
       {/* ── Connection selector ── */}
-      <VariableRefInput
+      <ConnectionField
         value={(data.connection_id as string) ?? ""}
         onChange={(v) => onUpdate({ ...data, connection_id: v, connection_name: v.startsWith("{{") ? v : data.connection_name })}
-        acceptedTypes={CONN_TYPES}
         label="Conexão"
       >
         <div className="relative">
@@ -182,7 +179,7 @@ export function TruncateTableConfig({ data, onUpdate }: TruncateTableConfigProps
             </div>
           )}
         </div>
-      </VariableRefInput>
+      </ConnectionField>
 
       {/* ── Table selector ── */}
       {selectedConnectionId && (

@@ -1,16 +1,22 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { ChevronDown, Loader2, Plus, Search, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useDashboard } from "@/lib/context/dashboard-context"
-import { useUpstreamFields } from "@/lib/workflow/upstream-fields-context"
+import { useUpstreamFields, useUpstreamOutputs } from "@/lib/workflow/upstream-fields-context"
 import { listWorkspaceConnections, type Connection } from "@/lib/auth"
-import { VariableRefInput } from "@/components/workflow/variable-ref-input"
+import { ConnectionField } from "@/components/workflow/connection-field"
+import { ValueInput } from "@/components/workflow/value-input"
+import {
+  type ParameterValue,
+  type UpstreamField,
+  createFixed,
+  migrateLegacySqlParameter,
+  isParameterValue,
+} from "@/lib/workflow/parameter-value"
 
-const CONN_TYPES = ["connection"] as const
-
-// ── DB labels (espelham o bulk-insert-config) ────────────────────────────────
+// ── DB labels ────────────────────────────────────────────────────────────────
 
 const DB_LABELS: Record<string, string> = {
   oracle: "Oracle",
@@ -28,7 +34,7 @@ const DB_COLORS: Record<string, string> = {
   mysql: "text-cyan-500 bg-cyan-500/10",
 }
 
-// ── Tipos (espelham SqlScriptNodeConfig no backend) ──────────────────────────
+// ── Types ────────────────────────────────────────────────────────────────────
 
 type ScriptMode = "query" | "execute" | "execute_many"
 
@@ -39,7 +45,8 @@ interface OutputColumn {
 
 interface ParameterRow {
   name: string
-  value: string
+  // For query/execute: a ParameterValue. For execute_many: mode="fixed", value=column name.
+  value: ParameterValue
 }
 
 interface SqlScriptConfigProps {
@@ -47,30 +54,47 @@ interface SqlScriptConfigProps {
   onUpdate: (data: Record<string, unknown>) => void
 }
 
-// ── Utilidades ───────────────────────────────────────────────────────────────
+// ── Utilities ─────────────────────────────────────────────────────────────────
 
 function parametersToRows(
-  parameters: Record<string, string> | undefined,
+  parameters: Record<string, unknown> | undefined,
 ): ParameterRow[] {
   if (!parameters) return []
-  return Object.entries(parameters).map(([name, value]) => ({ name, value }))
+  return Object.entries(parameters).map(([name, raw]) => ({
+    name,
+    value: migrateLegacySqlParameter(raw),
+  }))
 }
 
-function rowsToParameters(rows: ParameterRow[]): Record<string, string> {
-  const out: Record<string, string> = {}
+/**
+ * Serialise rows back to the parameters dict.
+ * - execute_many: write plain string (column name) for backend compatibility
+ * - query/execute: write ParameterValue object (new format)
+ */
+function rowsToParameters(
+  rows: ParameterRow[],
+  mode: ScriptMode,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
   for (const row of rows) {
     const key = row.name.trim()
     if (!key) continue
-    out[key] = row.value
+    if (mode === "execute_many") {
+      // execute_many values are column name strings
+      out[key] = row.value.mode === "fixed" ? row.value.value : ""
+    } else {
+      out[key] = row.value
+    }
   }
   return out
 }
 
-// ── Component ────────────────────────────────────────────────────────────────
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
   const { selectedWorkspace } = useDashboard()
-  const upstreamFields = useUpstreamFields()
+  const upstreamColumnNames = useUpstreamFields()
+  const upstreamOutputs = useUpstreamOutputs()
 
   const [connections, setConnections] = useState<Connection[]>([])
   const [connectionsLoading, setConnectionsLoading] = useState(false)
@@ -85,26 +109,24 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
   const mode = ((data.mode as ScriptMode) ?? "query") as ScriptMode
   const outputField = (data.output_field as string) ?? "sql_result"
   const timeoutSeconds = (data.timeout_seconds as number) ?? 60
+
   const [parameters, setParametersState] = useState<ParameterRow[]>(() =>
-    parametersToRows(data.parameters as Record<string, string> | undefined),
+    parametersToRows(data.parameters as Record<string, unknown> | undefined),
   )
-  // Ressincroniza quando o nó externo muda (ex.: import, undo) — compara o
-  // shape persistido ignorando linhas locais em edição com nome vazio.
+
+  // Resync when the node data changes externally (import, undo, etc.)
   useEffect(() => {
     const externalRows = parametersToRows(
-      data.parameters as Record<string, string> | undefined,
+      data.parameters as Record<string, unknown> | undefined,
     )
     const localPersisted = parameters.filter((p) => p.name.trim() !== "")
     const same =
       externalRows.length === localPersisted.length &&
-      externalRows.every(
-        (r, i) =>
-          r.name === localPersisted[i]?.name &&
-          r.value === localPersisted[i]?.value,
-      )
+      externalRows.every((r, i) => r.name === localPersisted[i]?.name)
     if (!same) setParametersState(externalRows)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data.parameters])
+
   const outputSchema: OutputColumn[] = Array.isArray(data.output_schema)
     ? (data.output_schema as OutputColumn[])
     : []
@@ -117,6 +139,22 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
       .catch(() => setConnections([]))
       .finally(() => setConnectionsLoading(false))
   }, [selectedWorkspace?.id])
+
+  // Build upstreamFields with nodeId prefix for SQL Script parameters.
+  // These create {{nodeId.field}} tokens that resolve via upstream_results.
+  const upstreamFields = useMemo<UpstreamField[]>(() => {
+    const fields: UpstreamField[] = []
+    const SKIP = new Set(["node_id", "status", "output_field", "rows_affected", "row_count", "rows_processed"])
+    for (const up of upstreamOutputs) {
+      if (!up.output) continue
+      for (const [key, val] of Object.entries(up.output)) {
+        if (SKIP.has(key)) continue
+        if (val === null || val === undefined || typeof val === "object") continue
+        fields.push({ name: `${up.nodeId}.${key}`, type: typeof val })
+      }
+    }
+    return fields
+  }, [upstreamOutputs])
 
   function update(patch: Record<string, unknown>) {
     onUpdate({ ...data, ...patch })
@@ -134,15 +172,20 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
 
   function setParameters(next: ParameterRow[]) {
     setParametersState(next)
-    update({ parameters: rowsToParameters(next) })
+    update({ parameters: rowsToParameters(next, mode) })
   }
 
   function addParameter() {
-    setParameters([...parameters, { name: "", value: "" }])
+    setParameters([...parameters, { name: "", value: createFixed("") }])
   }
 
-  function updateParameter(index: number, patch: Partial<ParameterRow>) {
-    const next = parameters.map((p, i) => (i === index ? { ...p, ...patch } : p))
+  function updateParameterName(index: number, name: string) {
+    const next = parameters.map((p, i) => (i === index ? { ...p, name } : p))
+    setParameters(next)
+  }
+
+  function updateParameterValue(index: number, value: ParameterValue) {
+    const next = parameters.map((p, i) => (i === index ? { ...p, value } : p))
     setParameters(next)
   }
 
@@ -174,18 +217,12 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
       )
     : connections
 
-  const paramHint =
-    mode === "execute_many"
-      ? "Nome da coluna upstream a bindar nesta linha."
-      : "Caminho no contexto (ex.: upstream.no_anterior.campo)."
-
   return (
     <div className="space-y-4">
       {/* ── Conexão ── */}
-      <VariableRefInput
+      <ConnectionField
         value={(data.connection_id as string) ?? ""}
         onChange={(v) => update({ connection_id: v, connection_name: v.startsWith("{{") ? v : data.connection_name })}
-        acceptedTypes={CONN_TYPES}
         label="Conexão"
       >
         <div className="relative">
@@ -265,7 +302,7 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
             </div>
           )}
         </div>
-      </VariableRefInput>
+      </ConnectionField>
 
       {/* ── Modo ── */}
       <div className="space-y-1.5">
@@ -325,69 +362,69 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
             Nenhum parâmetro configurado.
           </p>
         ) : (
-          <div className="space-y-1.5">
+          <div className="space-y-3">
             <div className="flex items-center gap-2 px-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/60">
-              <span className="flex-1">Nome (:bind)</span>
+              <span className="w-24 shrink-0">Nome (:bind)</span>
               <span className="flex-1">
-                {mode === "execute_many" ? "Coluna upstream" : "Origem"}
+                {mode === "execute_many" ? "Coluna upstream" : "Valor"}
               </span>
-              <span className="w-7" />
+              <span className="w-7 shrink-0" />
             </div>
+
             {parameters.map((p, i) => (
-              <div key={i} className="flex items-center gap-2">
+              <div key={i} className="flex items-start gap-2">
+                {/* Bind name */}
                 <input
                   type="text"
                   value={p.name}
-                  onChange={(e) => updateParameter(i, { name: e.target.value })}
+                  onChange={(e) => updateParameterName(i, e.target.value)}
                   placeholder="cnpj"
-                  className="h-7 flex-1 rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
+                  className="h-7 w-24 shrink-0 rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
                 />
-                {mode === "execute_many" && upstreamFields.length > 0 ? (
-                  <select
-                    value={p.value}
-                    onChange={(e) =>
-                      updateParameter(i, { value: e.target.value })
-                    }
-                    className="h-7 flex-1 rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-primary"
-                  >
-                    <option value="">Selecionar coluna...</option>
-                    {upstreamFields.map((f) => (
-                      <option key={f} value={f}>
-                        {f}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    value={p.value}
-                    onChange={(e) =>
-                      updateParameter(i, { value: e.target.value })
-                    }
-                    placeholder={
-                      mode === "execute_many"
-                        ? "NOME_COLUNA"
-                        : "upstream.no.campo"
-                    }
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => {
-                      e.preventDefault()
-                      const refRaw = e.dataTransfer.getData("application/x-shift-field-ref")
-                      if (refRaw) {
-                        try {
-                          const ref = JSON.parse(refRaw) as { nodeId?: string; field?: string }
-                          if (ref.nodeId && ref.field) {
-                            updateParameter(i, { value: `upstream_results.${ref.nodeId}.${ref.field}` })
-                            return
-                          }
-                        } catch { /* fallthrough */ }
+
+                {/* Value */}
+                {mode === "execute_many" ? (
+                  // execute_many: bind column name from upstream DuckDB table
+                  upstreamColumnNames.length > 0 ? (
+                    <select
+                      value={p.value.mode === "fixed" ? p.value.value : ""}
+                      onChange={(e) =>
+                        updateParameterValue(i, createFixed(e.target.value))
                       }
-                      const col = e.dataTransfer.getData("application/x-shift-field")
-                      if (col) updateParameter(i, { value: col })
-                    }}
-                    className="h-7 flex-1 rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
+                      className="h-7 flex-1 rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-primary"
+                    >
+                      <option value="">Selecionar coluna...</option>
+                      {upstreamColumnNames.map((f) => (
+                        <option key={f} value={f}>
+                          {f}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={p.value.mode === "fixed" ? p.value.value : ""}
+                      onChange={(e) =>
+                        updateParameterValue(i, createFixed(e.target.value))
+                      }
+                      placeholder="NOME_COLUNA"
+                      className="h-7 flex-1 rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
+                    />
+                  )
+                ) : (
+                  // query / execute: full ValueInput with chip support
+                  <ValueInput
+                    value={p.value}
+                    onChange={(pv) => updateParameterValue(i, pv)}
+                    upstreamFields={upstreamFields}
+                    allowTransforms={false}
+                    allowVariables={true}
+                    useFieldRef={true}
+                    size="sm"
+                    placeholder="valor ou arraste campo..."
                   />
                 )}
+
                 <button
                   type="button"
                   onClick={() => removeParameter(i)}
@@ -397,7 +434,12 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
                 </button>
               </div>
             ))}
-            <p className="text-[10px] text-muted-foreground">{paramHint}</p>
+
+            {mode !== "execute_many" && (
+              <p className="text-[10px] text-muted-foreground">
+                Arraste um campo do painel esquerdo ou digite um valor fixo.
+              </p>
+            )}
           </div>
         )}
       </div>

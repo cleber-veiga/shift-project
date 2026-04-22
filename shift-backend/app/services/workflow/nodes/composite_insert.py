@@ -27,6 +27,7 @@ NOTAITEM) fica para Phase 2 (requer modelo de unnest ou agrupamento).
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import duckdb
@@ -39,6 +40,13 @@ from app.data_pipelines.duckdb_storage import (
 from app.services.load_service import RejectedRow, load_service
 from app.services.workflow.nodes import BaseNodeProcessor, register_processor
 from app.services.workflow.nodes.exceptions import NodeProcessingError
+from app.services.workflow.parameter_value import (
+    ResolutionContext,
+    compile_parameter,
+    execute_compiled,
+    parse_parameter_value,
+    resolve_parameter,
+)
 
 
 @register_processor("composite_insert")
@@ -55,7 +63,8 @@ class CompositeInsertProcessor(BaseNodeProcessor):
 
         connection_string = resolved_config.get("connection_string")
         blueprint = resolved_config.get("blueprint")
-        field_mapping = resolved_config.get("field_mapping") or {}
+        # Lê field_mapping do config bruto para preservar templates de ParameterValue
+        field_mapping = config.get("field_mapping") or {}
         output_field = str(resolved_config.get("output_field", "composite_result"))
 
         if not connection_string:
@@ -84,8 +93,15 @@ class CompositeInsertProcessor(BaseNodeProcessor):
                 "nao ha colunas upstream para ler."
             )
 
+        ctx = ResolutionContext(
+            input_data=context.get("input_data") or {},
+            upstream_results=context.get("upstream_results") or {},
+            vars=context.get("vars") or {},
+        )
+
         input_reference = get_primary_input_reference(context, node_id)
-        rows = _read_rows_from_duckdb(input_reference, upstream_columns)
+        raw_rows = _read_rows_from_duckdb(input_reference, upstream_columns)
+        rows, string_mapping = _resolve_composite_rows(raw_rows, field_mapping, ctx)
 
         if not rows:
             skipped_payload = {
@@ -107,7 +123,7 @@ class CompositeInsertProcessor(BaseNodeProcessor):
                 str(connection_string),
                 conn_type,
                 blueprint,
-                field_mapping,
+                string_mapping,
                 rows,
             )
         except ValueError as exc:
@@ -138,15 +154,76 @@ class CompositeInsertProcessor(BaseNodeProcessor):
         }
 
 
-def _collect_upstream_columns(field_mapping: dict[str, str]) -> list[str]:
-    """Extrai colunas distintas do upstream referenciadas pelo mapping."""
+def _collect_upstream_columns(field_mapping: dict[str, Any]) -> list[str]:
+    """Extrai colunas distintas do upstream referenciadas pelo mapping.
+
+    Aceita tanto strings (legado) quanto ParameterValue dicts (novo formato).
+    """
     cols: set[str] = set()
     for key, upstream in field_mapping.items():
         if not isinstance(key, str) or "." not in key:
             continue
         if isinstance(upstream, str) and upstream.strip():
             cols.add(upstream)
+        elif isinstance(upstream, dict) and upstream.get("mode") == "dynamic":
+            tokens = re.findall(r"\{\{([^}]+)\}\}", str(upstream.get("template", "")))
+            for t in tokens:
+                t = t.strip()
+                if not t.startswith(("vars.", "$")):
+                    cols.add(t)
     return sorted(cols)
+
+
+def _resolve_composite_rows(
+    raw_rows: list[dict[str, Any]],
+    field_mapping: dict[str, Any],
+    ctx: ResolutionContext,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Resolve ParameterValue values em field_mapping por linha.
+
+    Para entries PV, injeta colunas sinteticas ``__pv_N`` nas linhas e
+    retorna um string_mapping equivalente para ``insert_composite``.
+    """
+    pv_entries: list[tuple[str, Any]] = []
+    string_entries: dict[str, str] = {}
+
+    for key, val in field_mapping.items():
+        if isinstance(val, dict) and "mode" in val:
+            pv_entries.append((key, val))
+        elif isinstance(val, str) and val.strip():
+            string_entries[key] = val
+
+    if not pv_entries:
+        return raw_rows, string_entries
+
+    # Mapeia alias.col → nome de coluna sintetica
+    pv_col: dict[str, str] = {
+        key: f"__pv_{i}" for i, (key, _) in enumerate(pv_entries)
+    }
+
+    # Pre-compila cada PV uma vez fora do loop — elimina Pydantic + regex por linha.
+    compiled_pv: list[tuple[str, Any]] = [
+        (key, compile_parameter(parse_parameter_value(pv_raw)))
+        for key, pv_raw in pv_entries
+    ]
+
+    augmented: list[dict[str, Any]] = []
+    for row in raw_rows:
+        row_ctx = ResolutionContext(
+            input_data={**ctx.input_data, **row},
+            upstream_results=ctx.upstream_results,
+            vars=ctx.vars,
+        )
+        aug = dict(row)
+        for key, compiled in compiled_pv:
+            aug[pv_col[key]] = execute_compiled(compiled, row_ctx)
+        augmented.append(aug)
+
+    merged_mapping = {
+        **string_entries,
+        **{key: pv_col[key] for key, _ in pv_entries},
+    }
+    return augmented, merged_mapping
 
 
 def _read_rows_from_duckdb(

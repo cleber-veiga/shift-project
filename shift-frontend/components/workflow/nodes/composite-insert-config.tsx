@@ -16,13 +16,32 @@ import type {
   CustomNodeFormField,
   CustomNodeFormSchema,
 } from "@/lib/auth"
+import {
+  type ParameterValue,
+  type UpstreamField,
+  createFixed,
+  createDynamic,
+} from "@/lib/workflow/parameter-value"
+import { ValueInput } from "@/components/workflow/value-input/ValueInput"
 
 interface CompositeInsertConfigProps {
   data: Record<string, unknown>
   onUpdate: (data: Record<string, unknown>) => void
 }
 
-type FieldMapping = Record<string, string>
+type FieldMapping = Record<string, ParameterValue>
+
+function normalizeFieldValue(raw: unknown): ParameterValue {
+  if (raw && typeof raw === "object" && "mode" in (raw as object)) {
+    return raw as ParameterValue
+  }
+  const str = typeof raw === "string" ? raw.trim() : ""
+  return str ? createDynamic(`{{${str}}}`, []) : createFixed("")
+}
+
+function isPVNonEmpty(pv: ParameterValue): boolean {
+  return pv.mode === "fixed" ? pv.value.trim() !== "" : pv.template.trim() !== ""
+}
 
 function blueprintFromData(data: Record<string, unknown>): CompositeBlueprint | null {
   const bp = data.blueprint as CompositeBlueprint | null | undefined
@@ -45,7 +64,11 @@ const CONFLICT_MODE_LABELS: Record<CompositeConflictMode, string> = {
 }
 
 export function CompositeInsertConfig({ data, onUpdate }: CompositeInsertConfigProps) {
-  const upstreamFields = useUpstreamFields()
+  const rawUpstreamFields = useUpstreamFields()
+  const upstreamFieldPVs: UpstreamField[] = useMemo(
+    () => rawUpstreamFields.map((f) => ({ name: f })),
+    [rawUpstreamFields],
+  )
   const customNodes = useCustomNodes()
   const [previewDialect, setPreviewDialect] = useState<"postgres" | "sqlite" | "oracle">("postgres")
   const [previewByAlias, setPreviewByAlias] = useState<Record<string, CompositePreviewStatement>>({})
@@ -56,7 +79,12 @@ export function CompositeInsertConfig({ data, onUpdate }: CompositeInsertConfigP
   const storedVersion = (data.definition_version as number | undefined) ?? null
   const storedBlueprint = blueprintFromData(data)
   const storedFormSchema = formSchemaFromData(data)
-  const mapping: FieldMapping = (data.field_mapping as FieldMapping | undefined) ?? {}
+  const rawMapping = (data.field_mapping as Record<string, unknown> | undefined) ?? {}
+  const mapping: FieldMapping = useMemo(
+    () => Object.fromEntries(Object.entries(rawMapping).map(([k, v]) => [k, normalizeFieldValue(v)])),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [data.field_mapping],
+  )
 
   // Snapshot-at-drop: execution uses node.data.blueprint, not the live definition.
   // Show a drift banner when the stored snapshot is stale so the user can re-sync.
@@ -200,9 +228,9 @@ export function CompositeInsertConfig({ data, onUpdate }: CompositeInsertConfigP
     }
   }
 
-  function updateMappingEntry(key: string, upstream: string) {
+  function updateMappingEntry(key: string, pv: ParameterValue) {
     const next: FieldMapping = { ...mapping }
-    if (upstream) next[key] = upstream
+    if (isPVNonEmpty(pv)) next[key] = pv
     else delete next[key]
     setMapping(next)
   }
@@ -210,23 +238,23 @@ export function CompositeInsertConfig({ data, onUpdate }: CompositeInsertConfigP
   function autoMap() {
     if (!blueprint) return
     const next: FieldMapping = { ...mapping }
-    const upstreamLower = new Map(upstreamFields.map((f) => [f.toLowerCase(), f]))
+    const upstreamLower = new Map(rawUpstreamFields.map((f) => [f.toLowerCase(), f]))
     for (const key of visibleKeys) {
-      if (next[key]) continue
+      if (next[key] && isPVNonEmpty(next[key])) continue
       // 1) Prefer form_schema.default_upstream when set
       const field = formFieldsByKey.get(key)
       const hint = field?.default_upstream?.trim()
       if (hint) {
         const fromHint = upstreamLower.get(hint.toLowerCase())
         if (fromHint) {
-          next[key] = fromHint
+          next[key] = createDynamic(`{{${fromHint}}}`, [])
           continue
         }
       }
       // 2) Fallback: match by column name (case-insensitive)
       const col = key.split(".").slice(1).join(".")
       const match = upstreamLower.get(col.toLowerCase())
-      if (match) next[key] = match
+      if (match) next[key] = createDynamic(`{{${match}}}`, [])
     }
     setMapping(next)
   }
@@ -246,10 +274,10 @@ export function CompositeInsertConfig({ data, onUpdate }: CompositeInsertConfigP
   }
 
   const mappedVisibleCount = visibleKeys.filter(
-    (k) => (mapping[k] ?? "").trim() !== ""
+    (k) => mapping[k] && isPVNonEmpty(mapping[k])
   ).length
   const missingRequired = [...requiredKeys].filter(
-    (k) => !(mapping[k] ?? "").trim()
+    (k) => !mapping[k] || !isPVNonEmpty(mapping[k])
   )
 
   return (
@@ -312,7 +340,7 @@ export function CompositeInsertConfig({ data, onUpdate }: CompositeInsertConfigP
         <button
           type="button"
           onClick={autoMap}
-          disabled={upstreamFields.length === 0}
+          disabled={rawUpstreamFields.length === 0}
           className="flex items-center gap-1 text-[10px] font-medium text-primary transition-colors hover:text-primary/80 disabled:opacity-40"
         >
           <Sparkles className="size-3" />
@@ -355,10 +383,10 @@ export function CompositeInsertConfig({ data, onUpdate }: CompositeInsertConfigP
                 {tableVisibleCols.map((col) => {
                   const key = `${table.alias}.${col}`
                   const field = formFieldsByKey.get(key)
-                  const current = mapping[key] ?? ""
+                  const currentPV: ParameterValue = mapping[key] ?? createFixed("")
                   const label = field?.label?.trim() || col
                   const isRequired = field?.required === true
-                  const isEmpty = !current
+                  const isEmpty = !isPVNonEmpty(currentPV)
                   return (
                     <div key={key} className="space-y-0.5">
                       <div className="flex items-center gap-2">
@@ -376,24 +404,17 @@ export function CompositeInsertConfig({ data, onUpdate }: CompositeInsertConfigP
                           )}
                         </div>
                         <ArrowRight className="size-3 shrink-0 text-muted-foreground/40" />
-                        <select
-                          value={current}
-                          onChange={(e) => updateMappingEntry(key, e.target.value)}
-                          className={cn(
-                            "h-7 flex-1 rounded-md border bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-primary",
-                            isRequired && isEmpty
-                              ? "border-red-500/50"
-                              : "border-input",
-                            current ? "text-foreground" : "text-muted-foreground",
-                          )}
-                        >
-                          <option value="">Selecionar upstream...</option>
-                          {upstreamFields.map((f) => (
-                            <option key={f} value={f}>
-                              {f}
-                            </option>
-                          ))}
-                        </select>
+                        <div className={cn("flex-1 min-w-0", isRequired && isEmpty && "ring-1 ring-red-500/50 rounded-md")}>
+                          <ValueInput
+                            value={currentPV}
+                            onChange={(pv) => updateMappingEntry(key, pv)}
+                            upstreamFields={upstreamFieldPVs}
+                            allowTransforms={true}
+                            allowVariables={true}
+                            placeholder="campo ou valor..."
+                            size="sm"
+                          />
+                        </div>
                       </div>
                       {field?.help && (
                         <p className="pl-[100px] text-[10px] leading-tight text-muted-foreground">
@@ -580,7 +601,7 @@ export function CompositeInsertConfig({ data, onUpdate }: CompositeInsertConfigP
         })}
       </div>
 
-      {upstreamFields.length === 0 && (
+      {rawUpstreamFields.length === 0 && (
         <p className="text-[10px] text-muted-foreground">
           Conecte um nó de origem (ex.: SQL, CSV) para listar campos upstream disponíveis.
         </p>

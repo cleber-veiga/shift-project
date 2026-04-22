@@ -30,6 +30,11 @@ def has_processor(node_type: str) -> bool:
     return node_type in _PROCESSOR_REGISTRY
 
 
+def list_node_types() -> list[str]:
+    """Retorna lista ordenada de tipos de no registrados."""
+    return sorted(_PROCESSOR_REGISTRY.keys())
+
+
 def get_processor(node_type: str) -> "BaseNodeProcessor":
     """Retorna uma instancia do processador para o tipo de no informado."""
     cls = _PROCESSOR_REGISTRY.get(node_type)

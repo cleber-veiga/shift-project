@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +43,15 @@ from app.services.agent.tools.workflow_tools import (
     get_workflow,
     list_recent_executions,
     list_workflows,
+)
+from app.services.agent.tools.workflow_write_tools import (
+    add_edge,
+    add_node,
+    create_workflow,
+    remove_edge,
+    remove_node,
+    set_workflow_variables,
+    update_node_config,
 )
 
 ToolFunc = Callable[..., Awaitable[Any]]
@@ -402,6 +412,246 @@ _TRIGGER_WEBHOOK_MANUALLY_SCHEMA: dict[str, Any] = {
 }
 
 # ---------------------------------------------------------------------------
+# Schemas — tools de escrita de workflow
+# ---------------------------------------------------------------------------
+
+_CREATE_WORKFLOW_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "create_workflow",
+        "description": (
+            "Cria um workflow vazio (status draft) em um projeto. "
+            "Operacao destrutiva — exige aprovacao humana antes de criar. "
+            "Requer role CONSULTANT no workspace e EDITOR no projeto. "
+            "Retorna o workflow_id do workflow criado."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "UUID do projeto onde o workflow sera criado",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Nome do workflow (1 a 255 caracteres)",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Descricao opcional do workflow",
+                },
+            },
+            "required": ["project_id", "name"],
+        },
+    },
+}
+
+_ADD_NODE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "add_node",
+        "description": (
+            "Adiciona um novo no ao workflow. "
+            "Operacao destrutiva — exige aprovacao humana. "
+            "O node_type deve ser um tipo registrado no engine (ex: sql_script, "
+            "mapper_node, filter_node, bulk_insert, loop, if_node). "
+            "Retorna o node_id gerado."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {
+                    "type": "string",
+                    "description": "UUID do workflow",
+                },
+                "node_type": {
+                    "type": "string",
+                    "description": "Tipo do no (ex: sql_script, mapper_node, filter_node)",
+                },
+                "position": {
+                    "type": "object",
+                    "description": "Posicao visual do no no canvas: {x: number, y: number}",
+                    "properties": {
+                        "x": {"type": "number"},
+                        "y": {"type": "number"},
+                    },
+                    "required": ["x", "y"],
+                },
+                "config": {
+                    "type": "object",
+                    "description": "Configuracao inicial do no (campo data). Opcional.",
+                },
+            },
+            "required": ["workflow_id", "node_type", "position"],
+        },
+    },
+}
+
+_UPDATE_NODE_CONFIG_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "update_node_config",
+        "description": (
+            "Atualiza parcialmente a configuracao (campo data) de um no existente. "
+            "Operacao destrutiva — exige aprovacao humana. "
+            "O config_patch e mesclado (shallow merge) com a config existente. "
+            "Use get_workflow para inspecionar a config atual antes de alterar."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {
+                    "type": "string",
+                    "description": "UUID do workflow",
+                },
+                "node_id": {
+                    "type": "string",
+                    "description": "ID do no a atualizar (ex: node_abc123)",
+                },
+                "config_patch": {
+                    "type": "object",
+                    "description": "Campos a mesclar na config do no",
+                },
+            },
+            "required": ["workflow_id", "node_id", "config_patch"],
+        },
+    },
+}
+
+_REMOVE_NODE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "remove_node",
+        "description": (
+            "Remove um no e TODAS as arestas conectadas a ele do workflow. "
+            "Operacao destrutiva e irreversivel — exige aprovacao humana. "
+            "Retorna a lista de edge_ids removidos em cascata."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {
+                    "type": "string",
+                    "description": "UUID do workflow",
+                },
+                "node_id": {
+                    "type": "string",
+                    "description": "ID do no a remover",
+                },
+            },
+            "required": ["workflow_id", "node_id"],
+        },
+    },
+}
+
+_ADD_EDGE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "add_edge",
+        "description": (
+            "Conecta dois nos existentes com uma aresta direcional. "
+            "Operacao destrutiva — exige aprovacao humana. "
+            "source_id e target_id devem ser node_ids validos no workflow. "
+            "Retorna o edge_id gerado."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {
+                    "type": "string",
+                    "description": "UUID do workflow",
+                },
+                "source_id": {
+                    "type": "string",
+                    "description": "ID do no de origem",
+                },
+                "target_id": {
+                    "type": "string",
+                    "description": "ID do no de destino",
+                },
+                "source_handle": {
+                    "type": "string",
+                    "description": "Handle de saida do no fonte (opcional, ex: 'true', 'false')",
+                },
+                "target_handle": {
+                    "type": "string",
+                    "description": "Handle de entrada do no destino (opcional)",
+                },
+            },
+            "required": ["workflow_id", "source_id", "target_id"],
+        },
+    },
+}
+
+_REMOVE_EDGE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "remove_edge",
+        "description": (
+            "Remove uma aresta especifica do workflow pelo seu edge_id. "
+            "Operacao destrutiva — exige aprovacao humana. "
+            "Use get_workflow para descobrir os edge_ids existentes."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {
+                    "type": "string",
+                    "description": "UUID do workflow",
+                },
+                "edge_id": {
+                    "type": "string",
+                    "description": "ID da aresta a remover (ex: edge_abc123)",
+                },
+            },
+            "required": ["workflow_id", "edge_id"],
+        },
+    },
+}
+
+_SET_WORKFLOW_VARIABLES_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "set_workflow_variables",
+        "description": (
+            "Substitui integralmente a lista de variaveis do workflow. "
+            "Operacao destrutiva — exige aprovacao humana. "
+            "Tipos validos: string, number, integer, boolean, object, array. "
+            "Retorna o numero de variaveis configuradas."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {
+                    "type": "string",
+                    "description": "UUID do workflow",
+                },
+                "variables": {
+                    "type": "array",
+                    "description": "Lista completa de variaveis do workflow",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Nome da variavel"},
+                            "type": {
+                                "type": "string",
+                                "enum": ["string", "number", "integer", "boolean", "object", "array"],
+                                "description": "Tipo da variavel",
+                            },
+                            "required": {"type": "boolean", "description": "Se e obrigatoria"},
+                            "default": {"description": "Valor padrao (opcional)"},
+                            "description": {"type": "string", "description": "Descricao opcional"},
+                        },
+                        "required": ["name", "type"],
+                    },
+                },
+            },
+            "required": ["workflow_id", "variables"],
+        },
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -496,6 +746,56 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
         "requires_approval": True,
         "returns": "text",
     },
+    # --- write tools ---
+    "create_workflow": {
+        "func": create_workflow,
+        "schema": _CREATE_WORKFLOW_SCHEMA,
+        "requires_approval": True,
+        "is_write": True,
+        "returns": "json",
+    },
+    "add_node": {
+        "func": add_node,
+        "schema": _ADD_NODE_SCHEMA,
+        "requires_approval": True,
+        "is_write": True,
+        "returns": "json",
+    },
+    "update_node_config": {
+        "func": update_node_config,
+        "schema": _UPDATE_NODE_CONFIG_SCHEMA,
+        "requires_approval": True,
+        "is_write": True,
+        "returns": "json",
+    },
+    "remove_node": {
+        "func": remove_node,
+        "schema": _REMOVE_NODE_SCHEMA,
+        "requires_approval": True,
+        "is_write": True,
+        "returns": "json",
+    },
+    "add_edge": {
+        "func": add_edge,
+        "schema": _ADD_EDGE_SCHEMA,
+        "requires_approval": True,
+        "is_write": True,
+        "returns": "json",
+    },
+    "remove_edge": {
+        "func": remove_edge,
+        "schema": _REMOVE_EDGE_SCHEMA,
+        "requires_approval": True,
+        "is_write": True,
+        "returns": "json",
+    },
+    "set_workflow_variables": {
+        "func": set_workflow_variables,
+        "schema": _SET_WORKFLOW_VARIABLES_SCHEMA,
+        "requires_approval": True,
+        "is_write": True,
+        "returns": "json",
+    },
 }
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
@@ -515,13 +815,21 @@ async def execute_tool(
     *,
     db: AsyncSession,
     user_context: UserContext,
+    thread_id: UUID | None = None,
 ) -> str:
-    """Dispatcher central. Converte AgentToolError em string formatada para o LLM."""
+    """Dispatcher central. Converte AgentToolError em string formatada para o LLM.
+
+    thread_id e repassado apenas para write tools (is_write=True) para que
+    gravem before/after em agent_audit_log.
+    """
     entry = TOOL_REGISTRY.get(name)
     if entry is None:
         return f"Tool desconhecida: '{name}'. Tools disponiveis: {', '.join(TOOL_REGISTRY)}"
+    extra: dict[str, Any] = {}
+    if entry.get("is_write") and thread_id is not None:
+        extra["thread_id"] = thread_id
     try:
-        return await entry["func"](db=db, ctx=user_context, **arguments)
+        return await entry["func"](db=db, ctx=user_context, **arguments, **extra)
     except AgentPermissionError as exc:
         return f"Permissao negada: {exc}"
     except AgentValidationError as exc:

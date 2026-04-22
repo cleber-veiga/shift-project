@@ -1,16 +1,23 @@
 "use client"
 
-import { useCallback, useState } from "react"
-import { GripVertical, Plus, Trash2, XCircle } from "lucide-react"
+import { useCallback } from "react"
+import { GripVertical, Plus, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useUpstreamFields } from "@/lib/workflow/upstream-fields-context"
+import {
+  type ParameterValue,
+  type UpstreamField,
+  createFixed,
+  createDynamic,
+} from "@/lib/workflow/parameter-value"
+import { ValueInput } from "@/components/workflow/value-input/ValueInput"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface Condition {
-  field: string
+  left: ParameterValue
   operator: string
-  value: string
+  right: ParameterValue
 }
 
 interface FilterConfigProps {
@@ -21,32 +28,53 @@ interface FilterConfigProps {
 // ─── Operators ───────────────────────────────────────────────────────────────
 
 const OPERATORS = [
-  { value: "eq",           label: "é igual a",        needsValue: true },
-  { value: "neq",          label: "é diferente de",   needsValue: true },
-  { value: "contains",     label: "contém",           needsValue: true },
-  { value: "startswith",   label: "começa com",       needsValue: true },
-  { value: "endswith",     label: "termina com",      needsValue: true },
-  { value: "gt",           label: "maior que",        needsValue: true },
-  { value: "gte",          label: "maior ou igual a", needsValue: true },
-  { value: "lt",           label: "menor que",        needsValue: true },
-  { value: "lte",          label: "menor ou igual a", needsValue: true },
-  { value: "is_null",      label: "é nulo",           needsValue: false },
-  { value: "is_not_null",  label: "não é nulo",       needsValue: false },
+  { value: "eq",          label: "é igual a",        needsValue: true },
+  { value: "neq",         label: "é diferente de",   needsValue: true },
+  { value: "contains",    label: "contém",            needsValue: true },
+  { value: "startswith",  label: "começa com",        needsValue: true },
+  { value: "endswith",    label: "termina com",       needsValue: true },
+  { value: "gt",          label: "maior que",         needsValue: true },
+  { value: "gte",         label: "maior ou igual a",  needsValue: true },
+  { value: "lt",          label: "menor que",         needsValue: true },
+  { value: "lte",         label: "menor ou igual a",  needsValue: true },
+  { value: "is_null",     label: "é nulo",            needsValue: false },
+  { value: "is_not_null", label: "não é nulo",        needsValue: false },
 ] as const
 
 function operatorNeedsValue(op: string): boolean {
   return OPERATORS.find((o) => o.value === op)?.needsValue !== false
 }
 
+// ─── Legacy adapter ───────────────────────────────────────────────────────────
+
+function normalizeCondition(raw: unknown): Condition {
+  const c = (raw ?? {}) as Record<string, unknown>
+  if ("left" in c || "right" in c) {
+    return {
+      left: (c.left as ParameterValue) ?? createFixed(""),
+      operator: (c.operator as string) ?? "eq",
+      right: (c.right as ParameterValue) ?? createFixed(""),
+    }
+  }
+  // Legacy: { field, operator, value }
+  const field = (c.field as string) ?? ""
+  return {
+    left: field ? createDynamic(`{{${field}}}`, []) : createFixed(""),
+    operator: (c.operator as string) ?? "eq",
+    right: createFixed(c.value != null ? String(c.value) : ""),
+  }
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function FilterConfig({ data, onUpdate }: FilterConfigProps) {
-  const upstreamFields = useUpstreamFields()
-  const [isDragOver, setIsDragOver] = useState(false)
-  const [dragOverRowIdx, setDragOverRowIdx] = useState<number | null>(null)
+  const rawUpstreamFields = useUpstreamFields()
+  const upstreamFieldPVs: UpstreamField[] = rawUpstreamFields.map((f) => ({
+    name: f,
+  }))
 
   const conditions: Condition[] = Array.isArray(data.conditions)
-    ? (data.conditions as Condition[])
+    ? (data.conditions as unknown[]).map(normalizeCondition)
     : []
   const logic = (data.logic as string) ?? "and"
 
@@ -56,51 +84,35 @@ export function FilterConfig({ data, onUpdate }: FilterConfigProps) {
   )
 
   function addCondition(field?: string) {
-    setConditions([...conditions, { field: field ?? "", operator: "eq", value: "" }])
+    const left = field ? createDynamic(`{{${field}}}`, []) : createFixed("")
+    setConditions([
+      ...conditions,
+      { left, operator: "eq", right: createFixed("") },
+    ])
   }
 
   function removeCondition(index: number) {
     setConditions(conditions.filter((_, i) => i !== index))
   }
 
-  function updateCondition(index: number, key: keyof Condition, value: string) {
-    setConditions(
-      conditions.map((c, i) => (i === index ? { ...c, [key]: value } : c)),
-    )
+  function updateLeft(index: number, pv: ParameterValue) {
+    setConditions(conditions.map((c, i) => (i === index ? { ...c, left: pv } : c)))
   }
 
-  // ─── Drag & Drop ──────────────────────────────────────────────────────────
+  function updateRight(index: number, pv: ParameterValue) {
+    setConditions(conditions.map((c, i) => (i === index ? { ...c, right: pv } : c)))
+  }
 
+  function updateOperator(index: number, op: string) {
+    setConditions(conditions.map((c, i) => (i === index ? { ...c, operator: op } : c)))
+  }
+
+  // Drop zone creates a new condition with the field as left chip
   function handleDropOnZone(e: React.DragEvent) {
     e.preventDefault()
-    setIsDragOver(false)
     const field = e.dataTransfer.getData("application/x-shift-field")
     if (field) addCondition(field)
   }
-
-  function handleDropOnRow(e: React.DragEvent, index: number) {
-    e.preventDefault()
-    e.stopPropagation()
-    setDragOverRowIdx(null)
-    const field = e.dataTransfer.getData("application/x-shift-field")
-    if (field) updateCondition(index, "field", field)
-  }
-
-  function handleDragOverZone(e: React.DragEvent) {
-    e.preventDefault()
-    e.dataTransfer.dropEffect = "copy"
-    setIsDragOver(true)
-  }
-
-  function handleDragOverRow(e: React.DragEvent, index: number) {
-    e.preventDefault()
-    e.stopPropagation()
-    e.dataTransfer.dropEffect = "copy"
-    setDragOverRowIdx(index)
-  }
-
-  // Fields already used
-  const usedFields = new Set(conditions.map((c) => c.field))
 
   return (
     <div className="space-y-4">
@@ -150,50 +162,26 @@ export function FilterConfig({ data, onUpdate }: FilterConfigProps) {
             return (
               <div
                 key={i}
-                className={cn(
-                  "rounded-lg border border-border bg-background p-2.5 transition-colors",
-                  dragOverRowIdx === i && "border-primary bg-primary/5",
-                )}
-                onDragOver={(e) => handleDragOverRow(e, i)}
-                onDragLeave={() => setDragOverRowIdx(null)}
-                onDrop={(e) => handleDropOnRow(e, i)}
+                className="rounded-lg border border-border bg-background p-2.5"
               >
-                {/* Row 1: Field + Operator */}
-                <div className="flex items-center gap-2">
-                  {/* Field */}
-                  <div className="flex-1">
-                    {upstreamFields.length > 0 ? (
-                      <select
-                        value={cond.field}
-                        onChange={(e) => updateCondition(i, "field", e.target.value)}
-                        className={cn(
-                          "h-8 w-full rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-primary",
-                          cond.field ? "text-foreground" : "text-muted-foreground",
-                        )}
-                      >
-                        <option value="">Selecionar campo...</option>
-                        {upstreamFields.map((f) => (
-                          <option key={f} value={f}>
-                            {f}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        type="text"
-                        value={cond.field}
-                        onChange={(e) => updateCondition(i, "field", e.target.value)}
-                        placeholder="nome_do_campo"
-                        className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
-                      />
-                    )}
+                {/* Row 1: Left + Operator + Delete */}
+                <div className="flex items-start gap-2">
+                  <div className="flex-1 min-w-0">
+                    <ValueInput
+                      value={cond.left}
+                      onChange={(pv) => updateLeft(i, pv)}
+                      upstreamFields={upstreamFieldPVs}
+                      allowTransforms={true}
+                      allowVariables={false}
+                      placeholder="campo..."
+                      size="sm"
+                    />
                   </div>
 
-                  {/* Operator */}
                   <select
                     value={cond.operator}
-                    onChange={(e) => updateCondition(i, "operator", e.target.value)}
-                    className="h-8 shrink-0 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-primary"
+                    onChange={(e) => updateOperator(i, e.target.value)}
+                    className="h-7 shrink-0 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-primary"
                   >
                     {OPERATORS.map((op) => (
                       <option key={op.value} value={op.value}>
@@ -202,7 +190,6 @@ export function FilterConfig({ data, onUpdate }: FilterConfigProps) {
                     ))}
                   </select>
 
-                  {/* Delete */}
                   <button
                     type="button"
                     onClick={() => removeCondition(i)}
@@ -213,15 +200,17 @@ export function FilterConfig({ data, onUpdate }: FilterConfigProps) {
                   </button>
                 </div>
 
-                {/* Row 2: Value (if operator needs it) */}
+                {/* Row 2: Right value (if operator needs it) */}
                 {needsValue && (
                   <div className="mt-2">
-                    <input
-                      type="text"
-                      value={cond.value}
-                      onChange={(e) => updateCondition(i, "value", e.target.value)}
-                      placeholder="Valor para comparar..."
-                      className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
+                    <ValueInput
+                      value={cond.right}
+                      onChange={(pv) => updateRight(i, pv)}
+                      upstreamFields={upstreamFieldPVs}
+                      allowTransforms={true}
+                      allowVariables={true}
+                      placeholder="valor para comparar..."
+                      size="sm"
                     />
                   </div>
                 )}
@@ -241,38 +230,32 @@ export function FilterConfig({ data, onUpdate }: FilterConfigProps) {
 
         {/* Drop zone + Add button */}
         <div
-          onDragOver={handleDragOverZone}
-          onDragLeave={() => setIsDragOver(false)}
+          onDragOver={(e) => {
+            if (e.dataTransfer.types.includes("application/x-shift-field")) {
+              e.preventDefault()
+              e.dataTransfer.dropEffect = "copy"
+            }
+          }}
           onDrop={handleDropOnZone}
           onClick={() => addCondition()}
           className={cn(
             "mt-2 flex w-full cursor-pointer items-center justify-center gap-2 rounded-lg border-2 border-dashed py-3 text-[11px] font-medium transition-all",
-            isDragOver
-              ? "border-primary bg-primary/5 text-primary"
-              : "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+            "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground",
           )}
         >
-          {isDragOver ? (
-            <>
-              <GripVertical className="size-3.5" />
-              Soltar campo aqui
-            </>
-          ) : (
-            <>
-              <span className="text-muted-foreground/50">
-                Arraste campos da entrada aqui
-              </span>
-              <span className="text-muted-foreground/30">ou</span>
-              <span className="flex items-center gap-1">
-                <Plus className="size-3" />
-                Adicionar condição
-              </span>
-            </>
-          )}
+          <>
+            <span className="text-muted-foreground/50">
+              Arraste campos da entrada aqui
+            </span>
+            <span className="text-muted-foreground/30">ou</span>
+            <span className="flex items-center gap-1">
+              <Plus className="size-3" />
+              Adicionar condição
+            </span>
+          </>
         </div>
 
-        {/* Hint */}
-        {upstreamFields.length === 0 && conditions.length === 0 && (
+        {rawUpstreamFields.length === 0 && conditions.length === 0 && (
           <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground/70">
             Execute o nó anterior para ver os campos disponíveis,
             ou adicione condições manualmente.

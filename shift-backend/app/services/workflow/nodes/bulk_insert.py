@@ -36,9 +36,84 @@ from app.data_pipelines.duckdb_storage import (
 from app.services.load_service import RejectedRow, load_service
 from app.services.workflow.nodes import BaseNodeProcessor, register_processor
 from app.services.workflow.nodes.exceptions import NodeProcessingError
+from app.services.workflow.parameter_value import (
+    ResolutionContext,
+    compile_parameter,
+    execute_compiled,
+    parse_parameter_value,
+    resolve_parameter,
+)
 
 
 _TABLE_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
+
+
+# ─── ParameterValue helpers ───────────────────────────────────────────────────
+
+def _extract_pv_column_refs(pv: Any) -> list[str]:
+    """Extrai colunas DuckDB referenciadas num ParameterValue dynamic."""
+    if not (isinstance(pv, dict) and pv.get("mode") == "dynamic"):
+        return []
+    tokens = re.findall(r"\{\{([^}]+)\}\}", str(pv.get("template", "")))
+    return [t.strip() for t in tokens if not t.strip().startswith(("vars.", "$"))]
+
+
+def _normalize_bulk_map(m: Any) -> dict[str, Any] | None:
+    """Normaliza uma entrada de column_mapping para formato interno.
+
+    Retorna ``{'pv': PV_ou_None, 'source': str_ou_None, 'target': str}``.
+    """
+    if not isinstance(m, dict):
+        return None
+    target = str(m.get("target") or "").strip()
+    if not target:
+        return None
+    # Novo formato: { value: ParameterValue, target }
+    if "value" in m and isinstance(m.get("value"), dict) and "mode" in m["value"]:
+        return {"pv": m["value"], "source": None, "target": target}
+    # Legado: { source, target }
+    source = str(m.get("source") or "").strip()
+    if not source:
+        return None
+    return {"pv": None, "source": source, "target": target}
+
+
+def _resolve_rows_pv(
+    raw_rows: list[dict[str, Any]],
+    valid_maps: list[dict[str, Any]],
+    ctx: ResolutionContext,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Resolve ParameterValue mappings por linha.
+
+    Retorna (rows_com_colunas_destino, identity_column_mapping).
+    """
+    # Pre-compila cada PV uma vez fora do loop — elimina Pydantic + regex por linha.
+    compiled_maps: list[tuple[str, Any, str | None]] = []
+    for m in valid_maps:
+        if m["pv"] is not None:
+            compiled_maps.append((m["target"], compile_parameter(parse_parameter_value(m["pv"])), None))
+        else:
+            compiled_maps.append((m["target"], None, m["source"]))
+
+    resolved_rows: list[dict[str, Any]] = []
+    for row in raw_rows:
+        row_ctx = ResolutionContext(
+            input_data={**ctx.input_data, **row},
+            upstream_results=ctx.upstream_results,
+            vars=ctx.vars,
+        )
+        resolved_row: dict[str, Any] = {}
+        for target, compiled, source in compiled_maps:
+            if compiled is not None:
+                resolved_row[target] = execute_compiled(compiled, row_ctx)
+            else:
+                resolved_row[target] = row.get(source)  # type: ignore[arg-type]
+        resolved_rows.append(resolved_row)
+
+    identity_mapping = [
+        {"source": m["target"], "target": m["target"]} for m in valid_maps
+    ]
+    return resolved_rows, identity_mapping
 
 
 @register_processor("bulk_insert")
@@ -55,7 +130,8 @@ class BulkInsertProcessor(BaseNodeProcessor):
 
         connection_string = resolved_config.get("connection_string")
         target_table = str(resolved_config.get("target_table") or "").strip()
-        raw_mapping = resolved_config.get("column_mapping") or []
+        # Lê column_mapping do config bruto para preservar templates de ParameterValue
+        raw_mapping = config.get("column_mapping") or []
         unique_columns_raw = resolved_config.get("unique_columns") or []
         batch_size = int(resolved_config.get("batch_size") or 1000)
         output_field = str(resolved_config.get("output_field", "load_result"))
@@ -86,9 +162,7 @@ class BulkInsertProcessor(BaseNodeProcessor):
             )
 
         valid_maps = [
-            {"source": str(m["source"]), "target": str(m["target"])}
-            for m in raw_mapping
-            if isinstance(m, dict) and m.get("source") and m.get("target")
+            n for m in raw_mapping if (n := _normalize_bulk_map(m)) is not None
         ]
         if not valid_maps:
             raise NodeProcessingError(
@@ -99,8 +173,42 @@ class BulkInsertProcessor(BaseNodeProcessor):
             str(c) for c in unique_columns_raw if isinstance(c, str) and c.strip()
         ]
 
+        has_pv = any(m["pv"] is not None for m in valid_maps)
+        ctx = ResolutionContext(
+            input_data=context.get("input_data") or {},
+            upstream_results=context.get("upstream_results") or {},
+            vars=context.get("vars") or {},
+        )
+
         input_reference = get_primary_input_reference(context, node_id)
-        rows = _read_rows_from_duckdb(input_reference, valid_maps)
+
+        if has_pv:
+            # Coleta todas as colunas DuckDB necessarias (refs de PV + sources legados)
+            seen: set[str] = set()
+            needed_cols: list[str] = []
+            for m in valid_maps:
+                refs = _extract_pv_column_refs(m["pv"]) if m["pv"] else (
+                    [m["source"]] if m["source"] else []
+                )
+                for col in refs:
+                    if col not in seen:
+                        seen.add(col)
+                        needed_cols.append(col)
+            raw_rows = _read_cols_from_duckdb(input_reference, needed_cols)
+        else:
+            # Caminho legado: lê apenas as colunas source
+            legacy_cols = list({m["source"] for m in valid_maps if m["source"]})
+            raw_rows = _read_cols_from_duckdb(input_reference, legacy_cols)
+
+        rows: list[dict[str, Any]]
+        load_column_mapping: list[dict[str, str]]
+        if has_pv:
+            rows, load_column_mapping = _resolve_rows_pv(raw_rows, valid_maps, ctx)
+        else:
+            rows = raw_rows
+            load_column_mapping = [
+                {"source": m["source"], "target": m["target"]} for m in valid_maps
+            ]
 
         if not rows:
             skipped_payload = {
@@ -124,7 +232,7 @@ class BulkInsertProcessor(BaseNodeProcessor):
             conn_type,
             target_table,
             rows,
-            column_mapping=valid_maps,
+            column_mapping=load_column_mapping,
             batch_size=batch_size,
             unique_columns=unique_columns if unique_columns else None,
         )
@@ -153,29 +261,22 @@ class BulkInsertProcessor(BaseNodeProcessor):
         }
 
 
-def _read_rows_from_duckdb(
+def _read_cols_from_duckdb(
     reference: dict[str, Any],
-    column_mapping: list[dict[str, str]],
+    columns: list[str],
 ) -> list[dict[str, Any]]:
-    """
-    Le apenas as colunas necessarias (source) da tabela DuckDB upstream.
-
-    Retorna ``list[dict]`` com os nomes de colunas do SOURCE — o
-    ``load_service.insert`` aplica o mapping source->target internamente.
-    """
-    source_cols = list({m["source"] for m in column_mapping})
-    if not source_cols:
+    """Projeta apenas as colunas necessarias da tabela DuckDB upstream."""
+    if not columns:
         return []
 
     table_ref = build_table_ref(reference)
-    # Projeta apenas as colunas de origem para reduzir memoria
-    projection = ", ".join(_quote_identifier(c) for c in source_cols)
+    projection = ", ".join(_quote_identifier(c) for c in columns)
 
     conn = duckdb.connect(str(reference["database_path"]), read_only=True)
     try:
         cursor = conn.execute(f"SELECT {projection} FROM {table_ref}")
-        columns = [desc[0] for desc in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        col_names = [desc[0] for desc in cursor.description]
+        return [dict(zip(col_names, row)) for row in cursor.fetchall()]
     finally:
         conn.close()
 

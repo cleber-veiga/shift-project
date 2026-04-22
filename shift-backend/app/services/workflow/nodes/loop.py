@@ -87,11 +87,10 @@ class LoopProcessor(BaseNodeProcessor):
             )
 
         cfg = self._validate_config(node_id, config)
-        source_value = self._resolve_path(cfg["source_field"], context)
+        source_value = self._resolve_source(node_id, cfg["source_field"], context)
         if source_value is None:
             raise NodeProcessingError(
-                f"No loop '{node_id}': source_field '{cfg['source_field']}' "
-                "nao pode ser resolvido no contexto."
+                f"No loop '{node_id}': source_field nao pode ser resolvido no contexto."
             )
 
         items = self._materialize_items(node_id, source_value, cfg["max_iterations"])
@@ -189,7 +188,7 @@ class LoopProcessor(BaseNodeProcessor):
             )
 
         return {
-            "source_field": str(config["source_field"]),
+            "source_field": config["source_field"],
             "workflow_id": workflow_id,
             "workflow_version": config.get("workflow_version", "latest"),
             "item_param_name": (
@@ -207,6 +206,28 @@ class LoopProcessor(BaseNodeProcessor):
             "output_field": str(config.get("output_field") or "loop_result"),
             "timeout_seconds": int(config.get("timeout_seconds") or 300),
         }
+
+    def _resolve_source(
+        self, node_id: str, source_field: Any, context: dict[str, Any]
+    ) -> Any:
+        from app.services.workflow.parameter_value import (
+            ResolutionContext,
+            migrate_legacy_loop_source,
+            resolve_parameter,
+        )
+
+        ctx = ResolutionContext(
+            input_data=context.get("input_data") or {},
+            upstream_results=context.get("upstream_results") or {},
+            vars=context.get("vars") or {},
+        )
+        pv = migrate_legacy_loop_source(source_field)
+        try:
+            return resolve_parameter(pv, ctx)
+        except (KeyError, ValueError) as exc:
+            raise NodeProcessingError(
+                f"No loop '{node_id}': nao foi possivel resolver source_field — {exc}"
+            ) from exc
 
     def _materialize_items(
         self,

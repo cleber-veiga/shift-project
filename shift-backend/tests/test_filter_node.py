@@ -442,3 +442,157 @@ class TestFilterNodeValidation:
                 },
                 context=context,
             )
+
+
+# ---------------------------------------------------------------------------
+# Testes de ParameterValue — formatos left/right e vars
+# ---------------------------------------------------------------------------
+
+class TestFilterParameterValueConditions:
+    """Garante que o novo formato {left, operator, right} e o legado coexistem."""
+
+    def test_new_format_left_chip_right_fixed(
+        self, duckdb_with_sample: tuple[Path, dict]
+    ) -> None:
+        """left=chip {{PRODUTO}}, right=fixed 'CADEIRA' → 1 linha."""
+        db_path, reference = duckdb_with_sample
+        context = make_context(db_path, reference["table_name"])
+
+        result = FilterNodeProcessor().process(
+            "f-pv-1",
+            {
+                "conditions": [
+                    {
+                        "left": {"mode": "dynamic", "template": "{{PRODUTO}}"},
+                        "operator": "eq",
+                        "right": {"mode": "fixed", "value": "CADEIRA"},
+                    }
+                ]
+            },
+            context,
+        )
+
+        rows = read_duckdb_table(
+            result["data"]["database_path"], result["data"]["table_name"]
+        )
+        assert len(rows) == 1
+        assert rows[0]["PRODUTO"] == "CADEIRA"
+
+    def test_new_format_right_resolved_from_vars(
+        self, duckdb_with_sample: tuple[Path, dict]
+    ) -> None:
+        """right={{vars.alvo}} é resolvido antes de gerar o SQL."""
+        db_path, reference = duckdb_with_sample
+        context = make_context(db_path, reference["table_name"])
+        context["vars"] = {"alvo": "MESA"}
+
+        result = FilterNodeProcessor().process(
+            "f-pv-vars",
+            {
+                "conditions": [
+                    {
+                        "left": {"mode": "dynamic", "template": "{{PRODUTO}}"},
+                        "operator": "eq",
+                        "right": {"mode": "dynamic", "template": "{{vars.alvo}}"},
+                    }
+                ]
+            },
+            context,
+        )
+
+        rows = read_duckdb_table(
+            result["data"]["database_path"], result["data"]["table_name"]
+        )
+        assert len(rows) == 1
+        assert rows[0]["PRODUTO"] == "MESA"
+
+    def test_new_format_numeric_comparison(
+        self, duckdb_with_sample: tuple[Path, dict]
+    ) -> None:
+        """left=chip {{QUANTIDADE}}, right=fixed '3', operador gte → >= 3."""
+        db_path, reference = duckdb_with_sample
+        context = make_context(db_path, reference["table_name"])
+
+        result = FilterNodeProcessor().process(
+            "f-pv-num",
+            {
+                "conditions": [
+                    {
+                        "left": {"mode": "dynamic", "template": "{{QUANTIDADE}}"},
+                        "operator": "gte",
+                        "right": {"mode": "fixed", "value": "3"},
+                    }
+                ]
+            },
+            context,
+        )
+
+        rows = read_duckdb_table(
+            result["data"]["database_path"], result["data"]["table_name"]
+        )
+        # MESA (3) e LAMPADA (5) têm QUANTIDADE >= 3
+        assert len(rows) == 2
+        assert all(r["QUANTIDADE"] >= 3 for r in rows)
+
+    def test_legacy_and_new_conditions_mixed(
+        self, duckdb_with_sample: tuple[Path, dict]
+    ) -> None:
+        """Mistura de formato legado e novo na mesma lista (logic OR)."""
+        db_path, reference = duckdb_with_sample
+        context = make_context(db_path, reference["table_name"])
+
+        result = FilterNodeProcessor().process(
+            "f-mixed",
+            {
+                "logic": "or",
+                "conditions": [
+                    # legado
+                    {"field": "PRODUTO", "operator": "eq", "value": "SOFA"},
+                    # novo
+                    {
+                        "left": {"mode": "dynamic", "template": "{{PRODUTO}}"},
+                        "operator": "eq",
+                        "right": {"mode": "fixed", "value": "LAMPADA"},
+                    },
+                ],
+            },
+            context,
+        )
+
+        rows = read_duckdb_table(
+            result["data"]["database_path"], result["data"]["table_name"]
+        )
+        assert len(rows) == 2
+        assert {r["PRODUTO"] for r in rows} == {"SOFA", "LAMPADA"}
+
+    def test_new_format_is_null_ignores_right(
+        self, tmp_path: Path
+    ) -> None:
+        """is_null com formato novo não usa right — campo DESCONTO nulo."""
+        rows = [
+            {"ID": 1, "DESCONTO": None},
+            {"ID": 2, "DESCONTO": 5.0},
+        ]
+        db_path = tmp_path / "null_pv.duckdb"
+        reference = create_duckdb_with_rows(db_path, "src", rows)
+        context = make_context(db_path, "src")
+
+        result = FilterNodeProcessor().process(
+            "f-null-pv",
+            {
+                "conditions": [
+                    {
+                        "left": {"mode": "dynamic", "template": "{{DESCONTO}}"},
+                        "operator": "is_null",
+                        "right": {"mode": "fixed", "value": ""},
+                    }
+                ]
+            },
+            context,
+        )
+
+        result_rows = read_duckdb_table(
+            result["data"]["database_path"], result["data"]["table_name"]
+        )
+        assert len(result_rows) == 1
+        assert result_rows[0]["ID"] == 1

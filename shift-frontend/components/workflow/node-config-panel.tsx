@@ -27,10 +27,8 @@ import {
 } from "@/components/workflow/retry-policy-editor"
 import type { WebhookCapture } from "@/lib/api/webhooks"
 import type { WorkflowIOSchema } from "@/lib/api/workflow-versions"
-import { VariableRefInput } from "@/components/workflow/variable-ref-input"
-
-const CONN_TYPES = ["connection"] as const
-const FILE_URL_TYPES = ["string", "file_upload"] as const
+import { migrateLegacySqlParameter } from "@/lib/workflow/parameter-value"
+import { ValueInput } from "@/components/workflow/value-input/ValueInput"
 
 interface NodeConfigPanelProps {
   node: Node
@@ -276,18 +274,17 @@ function renderNodeSpecificFields({
       return (
         <div className="space-y-4">
 
-          <VariableRefInput
-            value={(data.connection_id as string) ?? ""}
-            onChange={(v) => update("connection_id", v)}
-            acceptedTypes={CONN_TYPES}
-            label="Connection ID"
-          >
-            <TextInput
-              value={(data.connection_id as string) ?? ""}
-              onChange={(v) => update("connection_id", v)}
+          <ConfigField label="Connection ID">
+            <ValueInput
+              value={migrateLegacySqlParameter((data.connection_id as string) ?? "")}
+              onChange={(pv) => update("connection_id", pv.mode === "fixed" ? pv.value : pv.template)}
+              upstreamFields={[]}
+              allowTransforms={false}
+              allowVariables={true}
               placeholder="UUID da conexão"
+              size="sm"
             />
-          </VariableRefInput>
+          </ConfigField>
           <ConfigField label="Query">
             <TextArea
               value={(data.query as string) ?? ""}
@@ -310,18 +307,17 @@ function renderNodeSpecificFields({
       return (
         <div className="space-y-4">
 
-          <VariableRefInput
-            value={(data.url as string) ?? ""}
-            onChange={(v) => update("url", v)}
-            acceptedTypes={FILE_URL_TYPES}
-            label="URL / Caminho"
-          >
-            <TextInput
-              value={(data.url as string) ?? ""}
-              onChange={(v) => update("url", v)}
+          <ConfigField label="URL / Caminho">
+            <ValueInput
+              value={migrateLegacySqlParameter((data.url as string) ?? "")}
+              onChange={(pv) => update("url", pv.mode === "fixed" ? pv.value : pv.template)}
+              upstreamFields={[]}
+              allowTransforms={false}
+              allowVariables={true}
               placeholder="https://... ou /path/to/file.csv"
+              size="sm"
             />
-          </VariableRefInput>
+          </ConfigField>
           <ConfigField label="Delimitador">
             <TextInput
               value={(data.delimiter as string) ?? ","}
@@ -346,18 +342,17 @@ function renderNodeSpecificFields({
       return (
         <div className="space-y-4">
 
-          <VariableRefInput
-            value={(data.url as string) ?? ""}
-            onChange={(v) => update("url", v)}
-            acceptedTypes={FILE_URL_TYPES}
-            label="URL / Caminho"
-          >
-            <TextInput
-              value={(data.url as string) ?? ""}
-              onChange={(v) => update("url", v)}
+          <ConfigField label="URL / Caminho">
+            <ValueInput
+              value={migrateLegacySqlParameter((data.url as string) ?? "")}
+              onChange={(pv) => update("url", pv.mode === "fixed" ? pv.value : pv.template)}
+              upstreamFields={[]}
+              allowTransforms={false}
+              allowVariables={true}
               placeholder="https://... ou /path/to/file.xlsx"
+              size="sm"
             />
-          </VariableRefInput>
+          </ConfigField>
           <ConfigField label="Nome da Aba">
             <TextInput
               value={(data.sheet_name as string) ?? ""}

@@ -11,9 +11,14 @@ import {
   type Connection,
   type SchemaTable,
 } from "@/lib/auth"
-import { VariableRefInput } from "@/components/workflow/variable-ref-input"
-
-const CONN_TYPES = ["connection"] as const
+import { ConnectionField } from "@/components/workflow/connection-field"
+import {
+  type ParameterValue,
+  type UpstreamField,
+  createFixed,
+  createDynamic,
+} from "@/lib/workflow/parameter-value"
+import { ValueInput } from "@/components/workflow/value-input/ValueInput"
 
 // ── DB labels ────────────────────────────────────────────────────────────────
 
@@ -36,8 +41,23 @@ const DB_COLORS: Record<string, string> = {
 // ── Types ────────────────────────────────────────────────────────────────────
 
 interface ColumnMap {
-  source: string   // upstream column name
-  target: string   // destination table column name
+  value: ParameterValue  // source expression (upstream column or expression)
+  target: string         // destination table column name
+}
+
+function normalizeColumnMap(raw: unknown): ColumnMap {
+  const m = (raw ?? {}) as Record<string, unknown>
+  const target = typeof m.target === "string" ? m.target : ""
+  // New format: { value: ParameterValue, target }
+  if (m.value && typeof m.value === "object" && "mode" in (m.value as object)) {
+    return { value: m.value as ParameterValue, target }
+  }
+  // Legacy: { source: string, target }
+  const src = typeof m.source === "string" ? m.source.trim() : ""
+  return {
+    value: src ? createDynamic(`{{${src}}}`, []) : createFixed(""),
+    target,
+  }
 }
 
 interface BulkInsertConfigProps {
@@ -68,8 +88,13 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
   const selectedTableName = (data.target_table as string) ?? ""
   const batchSize = (data.batch_size as number) ?? 1000
   const columnMapping: ColumnMap[] = Array.isArray(data.column_mapping)
-    ? (data.column_mapping as ColumnMap[])
+    ? (data.column_mapping as unknown[]).map(normalizeColumnMap)
     : []
+
+  const upstreamFieldPVs: UpstreamField[] = useMemo(
+    () => upstreamFields.map((f) => ({ name: f })),
+    [upstreamFields],
+  )
   const uniqueColumns: string[] = Array.isArray(data.unique_columns)
     ? (data.unique_columns as string[])
     : []
@@ -136,30 +161,39 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
   }
 
   function addMapping() {
-    setMapping([...columnMapping, { source: "", target: "" }])
+    setMapping([...columnMapping, { value: createFixed(""), target: "" }])
+  }
+
+  function updateMappingValue(index: number, pv: ParameterValue) {
+    const next = columnMapping.map((m, i) => (i === index ? { ...m, value: pv } : m))
+    setMapping(next)
   }
 
   function autoMap() {
-    // Match upstream fields to target columns by exact name (case-insensitive)
-    const targetSet = new Set(targetColumns.map((c) => c.toLowerCase()))
-    const mapped = new Set(columnMapping.map((m) => m.source.toLowerCase()))
+    const mapped = new Set(
+      columnMapping.map((m) => {
+        if (m.value.mode === "dynamic") {
+          const match = m.value.template.match(/^\{\{([^}]+)\}\}$/)
+          return match ? match[1].toLowerCase() : ""
+        }
+        return m.value.value.toLowerCase()
+      }),
+    )
     const newMaps: ColumnMap[] = [...columnMapping]
 
     for (const src of upstreamFields) {
       if (mapped.has(src.toLowerCase())) continue
       const match = targetColumns.find((t) => t.toLowerCase() === src.toLowerCase())
       if (match) {
-        newMaps.push({ source: src, target: match })
+        newMaps.push({ value: createDynamic(`{{${src}}}`, []), target: match })
         mapped.add(src.toLowerCase())
       }
     }
 
-    // Also add unmapped upstream fields that have target columns with similar names
     if (newMaps.length === columnMapping.length) {
-      // No exact matches found — add all upstream as blank-target for manual mapping
       for (const src of upstreamFields) {
         if (!mapped.has(src.toLowerCase())) {
-          newMaps.push({ source: src, target: "" })
+          newMaps.push({ value: createDynamic(`{{${src}}}`, []), target: "" })
         }
       }
     }
@@ -180,16 +214,14 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
     : tables
 
   const usedTargets = new Set(columnMapping.map((m) => m.target))
-  const usedSources = new Set(columnMapping.map((m) => m.source))
 
   return (
     <div className="space-y-4">
 
       {/* ── Connection selector ── */}
-      <VariableRefInput
+      <ConnectionField
         value={(data.connection_id as string) ?? ""}
         onChange={(v) => onUpdate({ ...data, connection_id: v, connection_name: v.startsWith("{{") ? v : data.connection_name })}
-        acceptedTypes={CONN_TYPES}
         label="Conexão"
       >
         <div className="relative">
@@ -252,7 +284,7 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
             </div>
           )}
         </div>
-      </VariableRefInput>
+      </ConnectionField>
 
       {/* ── Table selector ── */}
       {selectedConnectionId && (
@@ -339,7 +371,7 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
 
           {/* Header */}
           <div className="flex items-center gap-2 px-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/60">
-            <span className="flex-1">Origem (upstream)</span>
+            <span className="flex-1">Valor (origem)</span>
             <span className="w-5" />
             <span className="flex-1">Destino (tabela)</span>
             <span className="w-7" />
@@ -349,31 +381,18 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
           <div className="space-y-1.5">
             {columnMapping.map((m, i) => (
               <div key={i} className="flex items-center gap-2">
-                {/* Source select */}
-                <select
-                  value={m.source}
-                  onChange={(e) => {
-                    const next = columnMapping.map((mm, ii) =>
-                      ii === i ? { ...mm, source: e.target.value } : mm,
-                    )
-                    setMapping(next)
-                  }}
-                  className={cn(
-                    "h-7 flex-1 rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-primary",
-                    m.source ? "text-foreground" : "text-muted-foreground",
-                  )}
-                >
-                  <option value="">Selecionar...</option>
-                  {upstreamFields.map((f, fi) => (
-                    <option
-                      key={`${f}-${fi}`}
-                      value={f}
-                      disabled={usedSources.has(f) && f !== m.source}
-                    >
-                      {f}
-                    </option>
-                  ))}
-                </select>
+                {/* Value (source expression) */}
+                <div className="flex-1 min-w-0">
+                  <ValueInput
+                    value={m.value}
+                    onChange={(pv) => updateMappingValue(i, pv)}
+                    upstreamFields={upstreamFieldPVs}
+                    allowTransforms={true}
+                    allowVariables={true}
+                    placeholder="campo ou expressão..."
+                    size="sm"
+                  />
+                </div>
 
                 <ArrowRight className="size-3.5 shrink-0 text-muted-foreground/40" />
 

@@ -319,3 +319,193 @@ class TestValidation:
                 },
                 {"upstream_results": {}},
             )
+
+
+# ---------------------------------------------------------------------------
+# Resolução de parâmetros — formato ParameterValue
+# ---------------------------------------------------------------------------
+
+
+class TestParameterValueResolution:
+    """Garante que os modos de parâmetro legado e novo funcionam juntos."""
+
+    def _context(self) -> dict:
+        return {
+            "execution_id": "exec-pv",
+            "workflow_id": "wf-pv",
+            "input_data": {"campo_input": "VALOR_INPUT"},
+            "vars": {"ESTAB": "0001"},
+            "upstream_results": {
+                "node_prev": {
+                    "node_id": "node_prev",
+                    "status": "completed",
+                    "IDITEM": "ABC123",
+                    "ESTAB": "0002",
+                    "data": {"campo_aninhado": "ANINHADO"},
+                }
+            },
+        }
+
+    def test_legacy_string_upstream_results(self, dest_sqlite: str) -> None:
+        """Formato legado 'upstream_results.node_X.CAMPO' continua funcionando."""
+        processor = SqlScriptProcessor()
+        output = processor.process(
+            "sqlscript-legacy",
+            {
+                "connection_string": dest_sqlite,
+                "script": "SELECT id FROM CLIENTE WHERE id = :id",
+                "parameters": {
+                    # Legacy dotted path
+                    "id": "upstream_results.node_prev.IDITEM",
+                },
+                "mode": "execute",
+            },
+            {
+                **self._context(),
+                "upstream_results": {
+                    "node_prev": {
+                        "node_id": "node_prev",
+                        "status": "completed",
+                        "IDITEM": 1,
+                    }
+                },
+            },
+        )
+        assert output["status"] == "completed"
+
+    def test_legacy_string_upstream_alias(self, dest_sqlite: str) -> None:
+        """Alias 'upstream.node_X.CAMPO' também é aceito."""
+        processor = SqlScriptProcessor()
+        output = processor.process(
+            "sqlscript-alias",
+            {
+                "connection_string": dest_sqlite,
+                "script": "SELECT COUNT(*) FROM CLIENTE WHERE cnpj = :cnpj",
+                "parameters": {"cnpj": "upstream.node_prev.IDITEM"},
+                "mode": "execute",
+            },
+            {
+                **self._context(),
+                "upstream_results": {
+                    "node_prev": {
+                        "node_id": "node_prev",
+                        "status": "completed",
+                        "IDITEM": "00000000000100",
+                    }
+                },
+            },
+        )
+        assert output["status"] == "completed"
+
+    def test_new_fixed_parameter(self, dest_sqlite: str) -> None:
+        """Novo formato ParameterValue fixo — value literal."""
+        processor = SqlScriptProcessor()
+        output = processor.process(
+            "sqlscript-fixed",
+            {
+                "connection_string": dest_sqlite,
+                "script": "SELECT COUNT(*) FROM CLIENTE WHERE cnpj = :cnpj",
+                "parameters": {
+                    "cnpj": {"mode": "fixed", "value": "00000000000100"},
+                },
+                "mode": "execute",
+            },
+            self._context(),
+        )
+        assert output["status"] == "completed"
+
+    def test_new_dynamic_single_token(self, dest_sqlite: str) -> None:
+        """Novo formato ParameterValue dynamic — token único {{node.campo}}."""
+        processor = SqlScriptProcessor()
+        output = processor.process(
+            "sqlscript-dyn-single",
+            {
+                "connection_string": dest_sqlite,
+                "script": "SELECT COUNT(*) FROM CLIENTE WHERE cnpj = :cnpj",
+                "parameters": {
+                    "cnpj": {
+                        "mode": "dynamic",
+                        "template": "{{node_prev.IDITEM}}",
+                    },
+                },
+                "mode": "execute",
+            },
+            {
+                **self._context(),
+                "upstream_results": {
+                    "node_prev": {
+                        "node_id": "node_prev",
+                        "status": "completed",
+                        "IDITEM": "00000000000100",
+                    }
+                },
+            },
+        )
+        assert output["status"] == "completed"
+
+    def test_new_dynamic_nested_path(self, dest_sqlite: str) -> None:
+        """Token multi-segmento {{node.data.campo}} percorre aninhamento."""
+        processor = SqlScriptProcessor()
+        context = self._context()
+        output = processor.process(
+            "sqlscript-nested",
+            {
+                "connection_string": dest_sqlite,
+                "script": "SELECT COUNT(*) FROM CLIENTE WHERE cnpj = :cnpj",
+                "parameters": {
+                    "cnpj": {
+                        "mode": "dynamic",
+                        "template": "{{node_prev.data.campo_aninhado}}",
+                    },
+                },
+                "mode": "execute",
+            },
+            context,
+        )
+        assert output["status"] == "completed"
+
+    def test_new_dynamic_vars(self, dest_sqlite: str) -> None:
+        """Token {{vars.X}} resolve via ctx.vars."""
+        processor = SqlScriptProcessor()
+        output = processor.process(
+            "sqlscript-vars",
+            {
+                "connection_string": dest_sqlite,
+                "script": "SELECT COUNT(*) FROM CLIENTE WHERE cnpj = :cnpj",
+                "parameters": {
+                    "cnpj": {
+                        "mode": "dynamic",
+                        "template": "{{vars.ESTAB}}",
+                    },
+                },
+                "mode": "execute",
+            },
+            self._context(),
+        )
+        assert output["status"] == "completed"
+
+    def test_execute_many_accepts_fixed_pv(
+        self, tmp_path: Path, dest_sqlite: str
+    ) -> None:
+        """execute_many aceita ParameterValue fixed (novo formato) como nome de coluna."""
+        source_rows = [{"CNPJ_COL": "000099", "NOME_COL": "DELTA"}]
+        db_path = tmp_path / "src2.duckdb"
+        create_duckdb_with_rows(db_path, "src", source_rows)
+        context = make_context(db_path, "src")
+
+        processor = SqlScriptProcessor()
+        output = processor.process(
+            "sqlscript-em-pv",
+            {
+                "connection_string": dest_sqlite,
+                "script": "INSERT INTO CLIENTE (cnpj, nome) VALUES (:cnpj, :nome)",
+                "parameters": {
+                    "cnpj": {"mode": "fixed", "value": "CNPJ_COL"},
+                    "nome": {"mode": "fixed", "value": "NOME_COL"},
+                },
+                "mode": "execute_many",
+            },
+            context,
+        )
+        assert output["status"] == "completed"
+        assert output["rows_affected"] == 1

@@ -37,6 +37,12 @@ from typing import Any
 
 import duckdb
 
+from app.services.workflow.parameter_value import (
+    ResolutionContext,
+    extract_field_reference,
+    parse_parameter_value,
+    resolve_parameter,
+)
 from app.data_pipelines.duckdb_storage import (
     build_output_reference,
     build_table_ref,
@@ -47,6 +53,29 @@ from app.data_pipelines.duckdb_storage import (
 )
 from app.services.workflow.nodes import BaseNodeProcessor, register_processor
 from app.services.workflow.nodes.exceptions import NodeProcessingError
+
+
+# ─── Adaptadores de formato (left/right ParameterValue → field/value) ─────────
+
+def _resolve_right_value(right: Any, ctx: ResolutionContext) -> Any:
+    """Resolve lado direito via ParameterValue quando aplicável."""
+    if isinstance(right, dict) and "mode" in right:
+        pv = parse_parameter_value(right)
+        return resolve_parameter(pv, ctx)
+    return right
+
+
+def _normalize_condition(
+    cond: dict[str, Any], ctx: ResolutionContext
+) -> dict[str, Any]:
+    """Normaliza condição {left, operator, right} → {field, operator, value}."""
+    if "left" in cond or "right" in cond:
+        return {
+            "field": extract_field_reference(cond.get("left")),
+            "operator": cond.get("operator", "eq"),
+            "value": _resolve_right_value(cond.get("right"), ctx),
+        }
+    return cond
 
 
 @register_processor("if_node")
@@ -60,14 +89,20 @@ class IfNodeProcessor(BaseNodeProcessor):
         config: dict[str, Any],
         context: dict[str, Any],
     ) -> dict[str, Any]:
-        resolved_config = self.resolve_data(config, context)
-        logic = str(resolved_config.get("logic", "and")).upper()
-        conditions = resolved_config.get("conditions") or []
+        logic = str(self.resolve_data(config.get("logic", "and"), context)).upper()
+        raw_conditions = config.get("conditions") or []
 
         if logic not in {"AND", "OR"}:
             raise NodeProcessingError(
                 f"No if_node '{node_id}': logic deve ser 'and' ou 'or'."
             )
+
+        ctx = ResolutionContext(
+            input_data=context.get("input_data") or {},
+            upstream_results=context.get("upstream_results") or {},
+            vars=context.get("vars") or {},
+        )
+        conditions = [_normalize_condition(c, ctx) for c in raw_conditions]
 
         # Detecta gate mode: upstream sem ref DuckDB (so metadata/dict).
         upstream_results = context.get("upstream_results", {}) or {}

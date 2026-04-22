@@ -216,6 +216,124 @@ class TestIfNodeRowPartitionStillWorks:
 
 
 # ---------------------------------------------------------------------------
+# IfNodeProcessor — ParameterValue format (gate mode)
+# ---------------------------------------------------------------------------
+
+class TestIfNodeGateModeParameterValue:
+    """Garante que o novo formato {left, operator, right} funciona em gate mode."""
+
+    def _upstream(self) -> dict:
+        return {"status": "success", "rows_affected": 42, "NOME": "Alice"}
+
+    def _ctx(self, upstream: dict | None = None) -> dict:
+        up = upstream or self._upstream()
+        return {"upstream_results": {"node-1": up}}
+
+    def test_new_format_left_chip_right_fixed_passes(self) -> None:
+        """left={{status}}, right=fixed 'success' → true."""
+        processor = IfNodeProcessor()
+        result = processor.process(
+            "if-pv-1",
+            {
+                "conditions": [
+                    {
+                        "left": {"mode": "dynamic", "template": "{{status}}"},
+                        "operator": "eq",
+                        "right": {"mode": "fixed", "value": "success"},
+                    }
+                ]
+            },
+            self._ctx(),
+        )
+        assert result["gate_mode"] is True
+        assert result["active_handles"] == ["true"]
+
+    def test_new_format_right_from_vars_passes(self) -> None:
+        """right={{vars.esperado}} resolvido contra context.vars → true."""
+        processor = IfNodeProcessor()
+        ctx = self._ctx()
+        ctx["vars"] = {"esperado": "Alice"}
+        result = processor.process(
+            "if-pv-vars",
+            {
+                "conditions": [
+                    {
+                        "left": {"mode": "dynamic", "template": "{{NOME}}"},
+                        "operator": "eq",
+                        "right": {"mode": "dynamic", "template": "{{vars.esperado}}"},
+                    }
+                ]
+            },
+            ctx,
+        )
+        assert result["gate_mode"] is True
+        assert result["active_handles"] == ["true"]
+
+    def test_new_format_right_from_vars_fails(self) -> None:
+        """right={{vars.esperado}} com valor diferente → false."""
+        processor = IfNodeProcessor()
+        ctx = self._ctx()
+        ctx["vars"] = {"esperado": "Bob"}
+        result = processor.process(
+            "if-pv-vars-fail",
+            {
+                "conditions": [
+                    {
+                        "left": {"mode": "dynamic", "template": "{{NOME}}"},
+                        "operator": "eq",
+                        "right": {"mode": "dynamic", "template": "{{vars.esperado}}"},
+                    }
+                ]
+            },
+            ctx,
+        )
+        assert result["gate_mode"] is True
+        assert result["active_handles"] == ["false"]
+
+    def test_new_format_numeric_gt(self) -> None:
+        """rows_affected=42 gt fixed '10' → true."""
+        processor = IfNodeProcessor()
+        result = processor.process(
+            "if-pv-gt",
+            {
+                "conditions": [
+                    {
+                        "left": {"mode": "dynamic", "template": "{{rows_affected}}"},
+                        "operator": "gt",
+                        "right": {"mode": "fixed", "value": "10"},
+                    }
+                ]
+            },
+            self._ctx(),
+        )
+        assert result["gate_mode"] is True
+        assert result["active_handles"] == ["true"]
+
+    def test_legacy_and_new_mixed(self) -> None:
+        """Mistura legado e novo com logic OR."""
+        processor = IfNodeProcessor()
+        result = processor.process(
+            "if-mixed",
+            {
+                "logic": "or",
+                "conditions": [
+                    # legacy — falha
+                    {"field": "status", "operator": "eq", "value": "error"},
+                    # novo — passa
+                    {
+                        "left": {"mode": "dynamic", "template": "{{rows_affected}}"},
+                        "operator": "gt",
+                        "right": {"mode": "fixed", "value": "0"},
+                    },
+                ],
+            },
+            self._ctx(),
+        )
+        assert result["gate_mode"] is True
+        assert result["active_handles"] == ["true"]
+
+
+# ---------------------------------------------------------------------------
 # SwitchNodeProcessor — gate mode
 # ---------------------------------------------------------------------------
 

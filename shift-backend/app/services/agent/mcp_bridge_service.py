@@ -189,7 +189,7 @@ class MCPBridgeService:
         started = time.perf_counter()
         try:
             result = await execute_tool(
-                tool_name, arguments, db=db, user_context=ctx
+                tool_name, arguments, db=db, user_context=ctx, thread_id=thread_id
             )
             duration_ms = int((time.perf_counter() - started) * 1000)
             status = "success"

@@ -475,12 +475,12 @@ function UpstreamAccordion({ upstream }: { upstream: UpstreamOutput }) {
         <span className="flex-1 truncate text-[12px] font-medium text-foreground">
           {upstream.label}
         </span>
-        {hasData && upstream.output?.rows && Array.isArray(upstream.output.rows) && (
+        {hasData && upstream.output?.rows && Array.isArray(upstream.output.rows) ? (
           <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
             {(upstream.output.rows as unknown[]).length}{" "}
             {(upstream.output.rows as unknown[]).length === 1 ? "item" : "itens"}
           </span>
-        )}
+        ) : null}
         {!hasData && (
           <span className="shrink-0 text-[10px] italic text-muted-foreground/50">sem dados</span>
         )}

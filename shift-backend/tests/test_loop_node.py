@@ -288,6 +288,74 @@ class TestEmptySourceReturnsEmpty:
 # 9. Dataset "grande" materializado em chunks (streaming via DuckDB)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 10. Resolução de source_field — formato legado e novo ParameterValue
+# ---------------------------------------------------------------------------
+
+
+class TestParameterValueResolution:
+    """Garante compatibilidade entre o formato legado (string) e o novo (dict ParameterValue)."""
+
+    def test_legacy_upstream_results_string(self, monkeypatch) -> None:
+        """Formato legado 'upstream_results.src.data' continua funcionando."""
+        seen: list[Any] = []
+
+        async def fake_invoke(**kwargs):
+            seen.append(kwargs["mapped_inputs"]["item"])
+            return {"version": 1, "workflow_output": {}}
+
+        _install_invoke_mock(monkeypatch, fake_invoke)
+
+        ctx = _ctx_with_list([{"val": 1}, {"val": 2}])
+        cfg = _base_config(source_field="upstream_results.src.data")
+        result = LoopProcessor().process("loop-legacy", cfg, ctx)
+        assert result["iterations"] == 2
+
+    def test_legacy_upstream_alias(self, monkeypatch) -> None:
+        """Alias 'upstream.src.data' também é aceito."""
+        async def fake_invoke(**kwargs):
+            return {"version": 1, "workflow_output": {}}
+
+        _install_invoke_mock(monkeypatch, fake_invoke)
+
+        ctx = _ctx_with_list([{"x": 99}])
+        cfg = _base_config(source_field="upstream.src.data")
+        result = LoopProcessor().process("loop-alias", cfg, ctx)
+        assert result["iterations"] == 1
+
+    def test_new_dynamic_pv_dict(self, monkeypatch) -> None:
+        """Novo formato {'mode': 'dynamic', 'template': '{{src.data}}'} funciona."""
+        async def fake_invoke(**kwargs):
+            return {"version": 1, "workflow_output": {}}
+
+        _install_invoke_mock(monkeypatch, fake_invoke)
+
+        ctx = _ctx_with_list([{"a": 1}, {"a": 2}, {"a": 3}])
+        cfg = _base_config(source_field={"mode": "dynamic", "template": "{{src.data}}"})
+        result = LoopProcessor().process("loop-pv-new", cfg, ctx)
+        assert result["iterations"] == 3
+
+    def test_legacy_nested_path(self, monkeypatch, tmp_path: Path) -> None:
+        """'upstream_results.src.data' resolve referência DuckDB aninhada."""
+        db_path = tmp_path / "nested.duckdb"
+        create_duckdb_with_rows(db_path, "rows", [{"n": i} for i in range(5)])
+        ctx = _ctx_with_duckdb(db_path, "rows")
+
+        count = 0
+
+        async def fake_invoke(**kwargs):
+            nonlocal count
+            count += 1
+            return {"version": 1, "workflow_output": {}}
+
+        _install_invoke_mock(monkeypatch, fake_invoke)
+
+        cfg = _base_config(source_field="upstream_results.src.data")
+        result = LoopProcessor().process("loop-nested", cfg, ctx)
+        assert result["iterations"] == 5
+        assert count == 5
+
+
 class TestLargeDatasetStreams:
     def test_chunks_through_1500_rows(self, tmp_path: Path, monkeypatch) -> None:
         """Com _CHUNK_SIZE=1000, 1500 linhas exigem mais de 1 chunk."""

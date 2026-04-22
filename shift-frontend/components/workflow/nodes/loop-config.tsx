@@ -23,6 +23,13 @@ import {
 } from "@/lib/workflow/upstream-fields-context"
 import { getNodeDefinition } from "@/lib/workflow/types"
 import { getNodeIcon } from "@/lib/workflow/node-icons"
+import {
+  type ParameterValue,
+  type UpstreamField,
+  createDynamic,
+  migrateLegacySqlParameter,
+} from "@/lib/workflow/parameter-value"
+import { ValueInput } from "@/components/workflow/value-input/ValueInput"
 
 type LoopMode = "sequential" | "parallel"
 type OnItemError = "fail_fast" | "continue" | "collect"
@@ -111,7 +118,19 @@ export function LoopConfig({ data, onUpdate }: LoopConfigProps) {
   const [dragOverField, setDragOverField] = useState<string | null>(null)
   const [showSourcePicker, setShowSourcePicker] = useState(false)
 
-  const sourceField = (data.source_field as string) ?? ""
+  const upstreamFields = useMemo<UpstreamField[]>(
+    () =>
+      upstreamOutputs.flatMap((up) =>
+        detectIterableOptions(up).map((opt) => ({
+          name: opt.path.replace(/^upstream_results\./, ""),
+        })),
+      ),
+    [upstreamOutputs],
+  )
+
+  const sourceFieldPV: ParameterValue = migrateLegacySqlParameter(data.source_field ?? "")
+  const sourceDisplayStr =
+    sourceFieldPV.mode === "fixed" ? sourceFieldPV.value : sourceFieldPV.template
   const workflowId = (data.workflow_id as string) ?? ""
   const workflowVersion = (data.workflow_version as VersionSpec) ?? "latest"
   const inputMapping =
@@ -192,10 +211,12 @@ export function LoopConfig({ data, onUpdate }: LoopConfigProps) {
    * contrario, emitimos referencia constante ``{{upstream_results…}}``.
    */
   const { sourceNodeId, sourcePathPrefix } = useMemo(() => {
-    const m = sourceField.match(/^upstream_results\.([^.]+)\.(.+)$/)
+    if (sourceFieldPV.mode !== "dynamic")
+      return { sourceNodeId: null as string | null, sourcePathPrefix: "" }
+    const m = sourceFieldPV.template.match(/^\{\{([^.]+)\.(.+)\}\}$/)
     if (!m) return { sourceNodeId: null as string | null, sourcePathPrefix: "" }
     return { sourceNodeId: m[1], sourcePathPrefix: m[2] }
-  }, [sourceField])
+  }, [sourceFieldPV])
 
   function update(patch: Record<string, unknown>) {
     onUpdate({ ...data, ...patch })
@@ -275,22 +296,6 @@ export function LoopConfig({ data, onUpdate }: LoopConfigProps) {
     }
   }
 
-  function handleSourceDrop(e: React.DragEvent) {
-    e.preventDefault()
-    const refRaw = e.dataTransfer.getData("application/x-shift-field-ref")
-    if (refRaw) {
-      try {
-        const ref = JSON.parse(refRaw) as { nodeId?: string; field?: string }
-        if (ref.nodeId && ref.field) {
-          update({ source_field: `upstream_results.${ref.nodeId}.${ref.field}` })
-          return
-        }
-      } catch { /* fallthrough */ }
-    }
-    const col = e.dataTransfer.getData("application/x-shift-field")
-    if (col) update({ source_field: col })
-  }
-
   const filteredWorkflows = workflowSearch
     ? workflows.filter(
         (w) =>
@@ -312,7 +317,7 @@ export function LoopConfig({ data, onUpdate }: LoopConfigProps) {
         workflowVersion === "latest"
           ? selectedWorkflow.latest_version
           : workflowVersion
-      }) para cada item de \`${sourceField || "…"}\`.`,
+      }) para cada item de \`${sourceDisplayStr || "…"}\`.`,
     )
     previewLines.push(
       mode === "parallel"
@@ -345,12 +350,12 @@ export function LoopConfig({ data, onUpdate }: LoopConfigProps) {
             onClick={() => setShowSourcePicker((v) => !v)}
             className={cn(
               "flex h-9 w-full items-center justify-between rounded-md border bg-background px-3 text-xs transition-colors hover:bg-muted/50",
-              sourceField ? "border-input" : "border-destructive/60",
+              sourceDisplayStr ? "border-input" : "border-destructive/60",
             )}
           >
-            {sourceField ? (
+            {sourceDisplayStr ? (
               <span className="truncate font-mono text-foreground">
-                {sourceField}
+                {sourceDisplayStr}
               </span>
             ) : (
               <span className="text-muted-foreground">
@@ -389,12 +394,16 @@ export function LoopConfig({ data, onUpdate }: LoopConfigProps) {
                           key={opt.path}
                           type="button"
                           onClick={() => {
-                            update({ source_field: opt.path })
+                            const token = opt.path.replace(/^upstream_results\./, "")
+                            update({ source_field: createDynamic(`{{${token}}}`, []) })
                             setShowSourcePicker(false)
                           }}
                           className={cn(
                             "flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-muted",
-                            sourceField === opt.path && "bg-accent",
+                            sourceFieldPV.mode === "dynamic" &&
+                              sourceFieldPV.template ===
+                                `{{${opt.path.replace(/^upstream_results\./, "")}}}` &&
+                              "bg-accent",
                           )}
                         >
                           <span className="flex flex-col">
@@ -416,15 +425,16 @@ export function LoopConfig({ data, onUpdate }: LoopConfigProps) {
           )}
         </div>
 
-        {/* Caixa manual — drag/drop + edição livre para casos avançados */}
-        <input
-          type="text"
-          value={sourceField}
-          onChange={(e) => update({ source_field: e.target.value })}
-          placeholder="upstream_results.no.data (avançado)"
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={handleSourceDrop}
-          className="h-7 w-full rounded-md border border-input bg-background/60 px-2 font-mono text-[11px] outline-none focus:ring-1 focus:ring-primary"
+        {/* Editor de valor — arraste campos ou edite manualmente */}
+        <ValueInput
+          value={sourceFieldPV}
+          onChange={(pv) => update({ source_field: pv })}
+          upstreamFields={upstreamFields}
+          allowTransforms={false}
+          allowVariables={false}
+          useFieldRef={true}
+          placeholder="{{no.data}} (avançado)"
+          size="sm"
         />
         <p className="text-[10px] text-muted-foreground">
           Escolha no dropdown acima, arraste um campo do INPUT ou edite o

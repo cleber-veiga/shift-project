@@ -96,9 +96,9 @@ class TestBulkInsertStatusFlatten:
         }
         context: dict[str, Any] = {"upstream_results": {}}
 
-        # Sem upstream, _read_rows_from_duckdb recebe reference falsa — mockamos.
+        # Sem upstream, _read_cols_from_duckdb recebe reference falsa — mockamos.
         with patch(
-            "app.services.workflow.nodes.bulk_insert._read_rows_from_duckdb",
+            "app.services.workflow.nodes.bulk_insert._read_cols_from_duckdb",
             return_value=[],
         ), patch(
             "app.services.workflow.nodes.bulk_insert.get_primary_input_reference",
@@ -125,7 +125,7 @@ class TestBulkInsertStatusFlatten:
         context: dict[str, Any] = {"upstream_results": {}}
 
         with patch(
-            "app.services.workflow.nodes.bulk_insert._read_rows_from_duckdb",
+            "app.services.workflow.nodes.bulk_insert._read_cols_from_duckdb",
             return_value=[{"A": 1}, {"A": 2}],
         ), patch(
             "app.services.workflow.nodes.bulk_insert.get_primary_input_reference",
