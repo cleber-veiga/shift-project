@@ -44,6 +44,14 @@ from app.services.agent.tools.workflow_tools import (
     list_recent_executions,
     list_workflows,
 )
+from app.services.agent.tools.workflow_pending_tools import (
+    pending_add_edge,
+    pending_add_node,
+    pending_remove_node,
+    pending_set_io_schema,
+    pending_set_variables,
+    pending_update_node,
+)
 from app.services.agent.tools.workflow_write_tools import (
     add_edge,
     add_node,
@@ -652,6 +660,265 @@ _SET_WORKFLOW_VARIABLES_SCHEMA: dict[str, Any] = {
 }
 
 # ---------------------------------------------------------------------------
+# Schemas — pending build tools (FASE 5)
+# ---------------------------------------------------------------------------
+
+_PENDING_ADD_NODE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "pending_add_node",
+        "description": (
+            "Adiciona um no pendente a sessao de build ativa. "
+            "Nao exige aprovacao humana — o usuario aprova tudo de uma vez no confirm. "
+            "temp_id deve ser unico por sessao e referenciado em pending_add_edge."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "UUID da build session"},
+                "temp_id": {
+                    "type": "string",
+                    "description": "Identificador temporario unico (ex: 'n_filter1'). Usado para referenciar o no em pending_add_edge.",
+                },
+                "node_type": {
+                    "type": "string",
+                    "description": "Tipo do no (ex: sql_script, filter, mapper, bulk_insert, if_node, loop)",
+                },
+                "label": {"type": "string", "description": "Rotulo do no"},
+                "config": {
+                    "type": "object",
+                    "description": "Configuracao inicial do no (opcional)",
+                },
+                "position": {
+                    "type": "object",
+                    "description": "Posicao visual {x, y} — omitir para auto-layout",
+                    "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+                },
+            },
+            "required": ["session_id", "temp_id", "node_type", "label"],
+        },
+    },
+}
+
+_PENDING_ADD_EDGE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "pending_add_edge",
+        "description": (
+            "Conecta dois nos pendentes pelo temp_id de cada um. "
+            "source_temp_id e target_temp_id devem ter sido criados por pending_add_node na mesma sessao."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "UUID da build session"},
+                "source_temp_id": {"type": "string", "description": "temp_id do no de origem"},
+                "target_temp_id": {"type": "string", "description": "temp_id do no de destino"},
+                "source_handle": {
+                    "type": "string",
+                    "description": "Handle de saida (ex: 'success', 'failure', 'true', 'false'). Opcional.",
+                },
+                "target_handle": {
+                    "type": "string",
+                    "description": "Handle de entrada do destino. Opcional.",
+                },
+            },
+            "required": ["session_id", "source_temp_id", "target_temp_id"],
+        },
+    },
+}
+
+_PENDING_UPDATE_NODE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "pending_update_node",
+        "description": (
+            "Aplica patch shallow na configuracao de um no pendente. "
+            "Util para corrigir ou completar config de um no antes do confirm."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "UUID da build session"},
+                "temp_id": {"type": "string", "description": "temp_id do no a atualizar"},
+                "config_patch": {
+                    "type": "object",
+                    "description": "Campos a mesclar na config do no",
+                },
+            },
+            "required": ["session_id", "temp_id", "config_patch"],
+        },
+    },
+}
+
+_PENDING_REMOVE_NODE_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "pending_remove_node",
+        "description": (
+            "Remove um no pendente e suas arestas conectadas da sessao de build. "
+            "Util para descartar nos adicionados por engano antes do confirm."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "UUID da build session"},
+                "temp_id": {"type": "string", "description": "temp_id do no a remover"},
+            },
+            "required": ["session_id", "temp_id"],
+        },
+    },
+}
+
+_PENDING_SET_VARIABLES_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "pending_set_variables",
+        "description": (
+            "Define variaveis do workflow a serem aplicadas quando o build for confirmado. "
+            "Substitui integralmente a lista de variaveis pendentes da sessao."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "UUID da build session"},
+                "variables": {
+                    "type": "array",
+                    "description": "Lista completa de variaveis",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "string",
+                                    "number",
+                                    "integer",
+                                    "boolean",
+                                    "object",
+                                    "array",
+                                    "connection",
+                                    "file_upload",
+                                    "secret",
+                                ],
+                            },
+                            "required": {"type": "boolean"},
+                            "default": {},
+                            "description": {"type": "string"},
+                            "connection_type": {
+                                "type": "string",
+                                "enum": [
+                                    "postgres",
+                                    "mysql",
+                                    "sqlserver",
+                                    "oracle",
+                                    "mongodb",
+                                ],
+                                "description": (
+                                    "Obrigatorio quando type='connection'; indica o "
+                                    "driver esperado em tempo de execucao."
+                                ),
+                            },
+                        },
+                        "required": ["name", "type"],
+                    },
+                },
+            },
+            "required": ["session_id", "variables"],
+        },
+    },
+}
+
+_PENDING_SET_IO_SCHEMA_SCHEMA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "pending_set_io_schema",
+        "description": (
+            "Define o Schema de I/O (inputs/outputs) do subfluxo sendo construido. "
+            "Necessario para que o workflow possa ser chamado como sub-workflow via "
+            "call_workflow e para que o runtime valide as entradas no disparo. "
+            "Os parametros seguem o shape WorkflowParam e geralmente espelham as "
+            "variaveis definidas via pending_set_variables (nome, tipo, required)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string", "description": "UUID da build session"},
+                "inputs": {
+                    "type": "array",
+                    "description": "Lista de parametros de entrada do subfluxo",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "string",
+                                    "integer",
+                                    "number",
+                                    "boolean",
+                                    "object",
+                                    "array",
+                                    "table_reference",
+                                    "connection",
+                                    "file_upload",
+                                    "secret",
+                                ],
+                            },
+                            "required": {"type": "boolean"},
+                            "default": {},
+                            "description": {"type": "string"},
+                            "connection_type": {
+                                "type": "string",
+                                "enum": [
+                                    "postgres",
+                                    "mysql",
+                                    "sqlserver",
+                                    "oracle",
+                                    "mongodb",
+                                ],
+                            },
+                        },
+                        "required": ["name", "type"],
+                    },
+                },
+                "outputs": {
+                    "type": "array",
+                    "description": "Lista de parametros de saida do subfluxo",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "string",
+                                    "integer",
+                                    "number",
+                                    "boolean",
+                                    "object",
+                                    "array",
+                                    "table_reference",
+                                    "connection",
+                                    "file_upload",
+                                    "secret",
+                                ],
+                            },
+                            "required": {"type": "boolean"},
+                            "description": {"type": "string"},
+                        },
+                        "required": ["name", "type"],
+                    },
+                },
+            },
+            "required": ["session_id"],
+        },
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -794,6 +1061,49 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
         "schema": _SET_WORKFLOW_VARIABLES_SCHEMA,
         "requires_approval": True,
         "is_write": True,
+        "returns": "json",
+    },
+    # --- pending build tools (FASE 5) ---
+    "pending_add_node": {
+        "func": pending_add_node,
+        "schema": _PENDING_ADD_NODE_SCHEMA,
+        "requires_approval": False,
+        "is_pending": True,
+        "returns": "json",
+    },
+    "pending_add_edge": {
+        "func": pending_add_edge,
+        "schema": _PENDING_ADD_EDGE_SCHEMA,
+        "requires_approval": False,
+        "is_pending": True,
+        "returns": "json",
+    },
+    "pending_update_node": {
+        "func": pending_update_node,
+        "schema": _PENDING_UPDATE_NODE_SCHEMA,
+        "requires_approval": False,
+        "is_pending": True,
+        "returns": "json",
+    },
+    "pending_remove_node": {
+        "func": pending_remove_node,
+        "schema": _PENDING_REMOVE_NODE_SCHEMA,
+        "requires_approval": False,
+        "is_pending": True,
+        "returns": "json",
+    },
+    "pending_set_variables": {
+        "func": pending_set_variables,
+        "schema": _PENDING_SET_VARIABLES_SCHEMA,
+        "requires_approval": False,
+        "is_pending": True,
+        "returns": "json",
+    },
+    "pending_set_io_schema": {
+        "func": pending_set_io_schema,
+        "schema": _PENDING_SET_IO_SCHEMA_SCHEMA,
+        "requires_approval": False,
+        "is_pending": True,
         "returns": "json",
     },
 }

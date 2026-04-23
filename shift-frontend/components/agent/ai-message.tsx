@@ -10,6 +10,10 @@ import { AIMessageThinking } from "@/components/agent/ai-message-thinking"
 import { AIGuardrailsRefusal } from "@/components/agent/ai-guardrails-refusal"
 import { AIExecutionProgress } from "@/components/agent/ai-execution-progress"
 import { AIPlanCard } from "@/components/agent/ai-plan-card"
+import {
+  AIClarificationCard,
+  type ClarificationSelection,
+} from "@/components/agent/ai-clarification-card"
 
 function formatRelativeTime(isoDate: string): string {
   const diff = Date.now() - new Date(isoDate).getTime()
@@ -25,10 +29,19 @@ interface AIMessageProps {
   message: AgentMessage
   onApprove?: (approvalId: string) => Promise<void>
   onReject?: (approvalId: string, reason?: string) => Promise<void>
+  onClarify?: (selection: ClarificationSelection) => Promise<void> | void
+  isStreaming?: boolean
   onRetry?: () => void
 }
 
-export function AIMessage({ message, onApprove, onReject, onRetry }: AIMessageProps) {
+export function AIMessage({
+  message,
+  onApprove,
+  onReject,
+  onClarify,
+  isStreaming,
+  onRetry,
+}: AIMessageProps) {
   const [showTime, setShowTime] = useState(false)
   const isUser = message.role === "user"
 
@@ -90,6 +103,18 @@ export function AIMessage({ message, onApprove, onReject, onRetry }: AIMessagePr
         />
       ) : null}
 
+      {/* Clarificacao estruturada (chips de escolha) */}
+      {message.clarification && message.clarificationStatus ? (
+        <AIClarificationCard
+          question={message.clarification.question || message.clarificationQuestion || ""}
+          clarification={message.clarification}
+          status={message.clarificationStatus}
+          answer={message.clarificationAnswer}
+          onSelect={onClarify}
+          disabled={isStreaming}
+        />
+      ) : null}
+
       {/* Recusa de guardrails */}
       {message.isGuardrailsRefusal && message.content ? (
         <AIGuardrailsRefusal reason={message.content} />
@@ -100,8 +125,9 @@ export function AIMessage({ message, onApprove, onReject, onRetry }: AIMessagePr
         <AIExecutionProgress toolCalls={message.toolCallsExecuted} />
       ) : null}
 
-      {/* Texto da resposta */}
-      {message.content && !message.isGuardrailsRefusal ? (
+      {/* Texto da resposta — suprimido quando ja existe card de clarificacao,
+          porque o backend envia tambem como delta e duplicaria a pergunta. */}
+      {message.content && !message.isGuardrailsRefusal && !message.clarification ? (
         <div className="text-sm text-foreground leading-relaxed">
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}

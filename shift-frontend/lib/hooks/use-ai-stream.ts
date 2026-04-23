@@ -1,8 +1,14 @@
 "use client"
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react"
-import type { AgentMessage, AgentSSEEvent, ExecutedToolCall } from "@/lib/types/ai-panel"
-import { convertRawPlan } from "@/lib/types/ai-panel"
+import type {
+  AgentMessage,
+  AgentSSEEvent,
+  ClarificationPayload,
+  ClarificationOption,
+  ExecutedToolCall,
+} from "@/lib/types/ai-panel"
+import { convertRawPlan, convertRawClarification } from "@/lib/types/ai-panel"
 import { useAgentApi } from "@/lib/hooks/use-agent-api"
 import { useAIPanelContext } from "@/lib/context/ai-panel-context"
 import { useDashboard } from "@/lib/context/dashboard-context"
@@ -73,6 +79,7 @@ type MessageAction =
   | { type: "APPLY_EVENT"; payload: AgentSSEEvent }
   | { type: "APPROVE_PLAN"; payload: { approvalId: string } }
   | { type: "REJECT_PLAN"; payload: { approvalId: string; reason?: string } }
+  | { type: "ANSWER_CLARIFICATION"; payload: { answer: string } }
 
 function applyEventToStreaming(msg: AgentMessage, event: AgentSSEEvent): AgentMessage {
   switch (event.type) {
@@ -89,13 +96,27 @@ function applyEventToStreaming(msg: AgentMessage, event: AgentSSEEvent): AgentMe
         planProposed: convertRawPlan(event.data.plan),
       }
 
-    case "approval_required":
+    case "approval_required": {
+      // Defesa: approval_required sem approval_id OU sem plan estruturado
+      // nao deve gerar card (cairia no placeholder "INTENCAO acao" Aguardando
+      // eterno). O backend ja filtra o interrupt "build_ready" para nao emitir
+      // esse evento, mas guardamos aqui contra threads antigas ou rewinds.
+      const hasApprovalId =
+        typeof event.data.approval_id === "string" &&
+        event.data.approval_id.length > 0
+      const hasPlan =
+        event.data.plan && typeof event.data.plan === "object"
+      if (!hasApprovalId || !hasPlan) {
+        return { ...msg, thinkingNode: undefined }
+      }
       return {
         ...msg,
+        thinkingNode: undefined,
         approvalId: event.data.approval_id,
         approvalStatus: "pending",
         planProposed: msg.planProposed ?? convertRawPlan(event.data.plan),
       }
+    }
 
     case "tool_call_start": {
       const existing = msg.toolCallsExecuted ?? []
@@ -130,6 +151,25 @@ function applyEventToStreaming(msg: AgentMessage, event: AgentSSEEvent): AgentMe
 
     case "delta":
       return { ...msg, thinkingNode: undefined, content: (msg.content ?? "") + event.data.text }
+
+    case "clarification_required": {
+      // Quando o planner detecta falta de parametro (ex: conexao alvo,
+      // tipo de trigger) emite este evento alem do texto que vira em
+      // `delta`. Guardamos o payload estruturado para renderizar chips
+      // clicaveis; se nao houver options validas, caimos de volta no
+      // texto plano em `content` (o delta cuida disso).
+      const clarification = convertRawClarification(
+        event.data.clarification,
+        event.data.question,
+      )
+      return {
+        ...msg,
+        thinkingNode: undefined,
+        clarificationQuestion: event.data.question,
+        clarification,
+        clarificationStatus: clarification ? "pending" : msg.clarificationStatus,
+      }
+    }
 
     default:
       return msg
@@ -190,15 +230,61 @@ function messageReducer(state: AgentMessage[], action: MessageAction): AgentMess
           : m,
       )
 
+    case "ANSWER_CLARIFICATION": {
+      // Marca como respondido apenas a ultima clarificacao pendente — evita
+      // que uma nova clarificacao (turno seguinte) reative a anterior.
+      const lastPendingIdx = (() => {
+        for (let i = state.length - 1; i >= 0; i -= 1) {
+          if (state[i].clarificationStatus === "pending") return i
+        }
+        return -1
+      })()
+      if (lastPendingIdx === -1) return state
+      return state.map((m, i) =>
+        i === lastPendingIdx
+          ? {
+              ...m,
+              clarificationStatus: "answered" as const,
+              clarificationAnswer: action.payload.answer,
+            }
+          : m,
+      )
+    }
+
     case "APPLY_EVENT": {
       const event = action.payload
       const streamingIdx = state.findIndex((m) => m.id === STREAMING_ID)
 
       if (event.type === "done") {
         if (streamingIdx === -1) return state
+        const streaming = state[streamingIdx]
+        // Em build flows, o grafo roda ate pausar em build_ready sem emitir
+        // delta/plan/tool_calls no canal do chat (a UI de confirmacao vive
+        // no BuildModeContext). A mensagem streaming foi criada com
+        // thinkingNode="starting" e content=null; ao receber `done`, se
+        // nada mais preencheu essa bolha, ela ficaria eternamente como
+        // "Iniciando agente..." sem conteudo. Nesse caso, descartamos a
+        // mensagem — o placeholder persistido pelo backend aparece ao
+        // recarregar a thread, e o card de confirmacao ja esta no chat.
+        const hasContent =
+          (typeof streaming.content === "string" && streaming.content.length > 0) ||
+          Boolean(streaming.planProposed) ||
+          Boolean(streaming.approvalId) ||
+          (streaming.toolCallsExecuted?.length ?? 0) > 0 ||
+          Boolean(streaming.isGuardrailsRefusal) ||
+          Boolean(streaming.clarification) ||
+          Boolean(streaming.clarificationQuestion)
+        if (!hasContent) {
+          return state.filter((_, i) => i !== streamingIdx)
+        }
         return state.map((m, i) =>
           i === streamingIdx
-            ? { ...m, id: `msg-${Date.now()}`, isStreaming: false }
+            ? {
+                ...m,
+                id: `msg-${Date.now()}`,
+                isStreaming: false,
+                thinkingNode: undefined,
+              }
             : m,
         )
       }
@@ -240,6 +326,63 @@ function messageReducer(state: AgentMessage[], action: MessageAction): AgentMess
   }
 }
 
+// ─── Clarification answer helpers ─────────────────────────────────────────────
+
+/**
+ * Formato aceito por `answerClarification`. Pode ser texto livre (usuario
+ * digitou no input) ou uma selecao estruturada de chip (carrega o field e
+ * qual opcao — serve para reescrever a mensagem final com contexto que o
+ * planner preserva entre turnos).
+ */
+export type ClarificationAnswerInput =
+  | { kind: "text"; text: string }
+  | {
+      kind: "option"
+      field: ClarificationPayload["field"]
+      question: string
+      option: ClarificationOption
+      isExtra: boolean
+    }
+
+/**
+ * Transforma uma selecao de chip em texto portugues que o planner consegue
+ * interpretar como resposta explicita a uma pergunta especifica. Sem esse
+ * enriquecimento, o planner recebe so o label ("Criar variavel de conexao")
+ * e, dois turnos depois, perde a ancora — vimos isso gerando um loop onde
+ * ele confundia "nome da variavel" com "renomear conexao existente".
+ */
+function buildClarificationMessage(input: ClarificationAnswerInput): string {
+  if (input.kind === "text") return input.text
+  const { field, option, isExtra } = input
+  if (field === "connection_id") {
+    if (isExtra) {
+      // Chip "Criar variavel de conexao" — ancoramos o caminho de variavel
+      // para a proxima resposta do usuario (nome/tipo) nao ser reinterpretada.
+      return (
+        "Nao quero usar uma conexao existente. Declare uma variavel de workflow " +
+        "do tipo 'connection' (type=connection) e use '{{vars.NOME}}' como " +
+        "connection_id em todos os nos que precisam de conexao. A seguir vou " +
+        "informar o nome da variavel e o tipo de banco (connection_type). " +
+        "Nao modifique, renomeie nem crie nenhuma conexao no catalogo do projeto."
+      )
+    }
+    return (
+      `Use a conexao existente "${option.label}" (connection_id: ${option.value}) ` +
+      "em todos os nos que precisam de conexao."
+    )
+  }
+  if (field === "trigger_type") {
+    return `O trigger deste workflow e: ${option.label} (${option.value}).`
+  }
+  if (field === "workflow_id") {
+    return `Workflow alvo: ${option.label} (${option.value}).`
+  }
+  if (field === "target_table") {
+    return `Tabela alvo: ${option.label}.`
+  }
+  return `Resposta: ${option.label}.`
+}
+
 // ─── Hook principal ───────────────────────────────────────────────────────────
 
 export interface RateLimitInfo {
@@ -256,6 +399,10 @@ export interface UseAIStreamResult {
   sendMessage: (message: string, screenContext: unknown) => Promise<void>
   approve: (approvalId: string) => Promise<void>
   reject: (approvalId: string, reason?: string) => Promise<void>
+  answerClarification: (
+    selection: ClarificationAnswerInput,
+    screenContext: unknown,
+  ) => Promise<void>
   clearError: () => void
   clearRateLimit: () => void
 }
@@ -421,6 +568,47 @@ export function useAIStream(): UseAIStreamResult {
     await runStream((signal) => api.streamReject(tid, approvalId, reason, signal))
   }, [isStreaming, runStream, api])
 
+  const answerClarification = useCallback(async (
+    selection: ClarificationAnswerInput,
+    screenContext: unknown,
+  ) => {
+    if (isStreaming) return
+    // Clique em chip resolve a clarificacao: marca a mensagem anterior como
+    // respondida (congela o card) e reenvia a escolha como mensagem do
+    // usuario, reutilizando o mesmo pipeline de `sendMessage`. O texto que
+    // vira "mensagem do usuario" enriquece a selecao com o field/pergunta
+    // para que o planner mantenha o contexto por multiplos turnos.
+    const finalMessage = buildClarificationMessage(selection)
+    // Label exibido no balao do usuario: se foi chip, mostramos o label
+    // curto; se foi texto, mostramos o proprio texto.
+    const displayLabel = selection.kind === "option"
+      ? selection.option.label
+      : selection.text
+
+    dispatch({ type: "ANSWER_CLARIFICATION", payload: { answer: displayLabel } })
+
+    const tempId = `temp-user-${Date.now()}`
+    dispatch({ type: "ADD_USER", payload: { id: tempId, content: displayLabel } })
+
+    await runStream(async (signal) => {
+      const tid = threadIdRef.current
+      if (!tid) {
+        const workspaceId = selectedWorkspace?.id
+        if (!workspaceId) throw new Error("Selecione um workspace primeiro.")
+        return api.streamCreateThread(
+          {
+            workspaceId,
+            projectId: selectedProject?.id ?? null,
+            screenContext,
+            initialMessage: finalMessage,
+          },
+          signal,
+        )
+      }
+      return api.streamSendMessage(tid, finalMessage, screenContext, signal)
+    }, tempId)
+  }, [isStreaming, runStream, selectedWorkspace, selectedProject, api])
+
   const clearError = useCallback(() => setError(null), [])
   const clearRateLimit = useCallback(() => setRateLimit(null), [])
 
@@ -433,6 +621,7 @@ export function useAIStream(): UseAIStreamResult {
     sendMessage,
     approve,
     reject,
+    answerClarification,
     clearError,
     clearRateLimit,
   }

@@ -16,7 +16,16 @@ export default function AiFullScreenPage() {
   const threadId = params.get("threadId")
   const context = useAIContext()
   const { setActiveThread } = useAIPanelContext()
-  const { messages, isStreaming, error, sendMessage, approve, reject, clearError } = useAIStream()
+  const {
+    messages,
+    isStreaming,
+    error,
+    sendMessage,
+    approve,
+    reject,
+    answerClarification,
+    clearError,
+  } = useAIStream()
 
   useEffect(() => {
     if (threadId) setActiveThread(threadId)
@@ -26,6 +35,24 @@ export default function AiFullScreenPage() {
 
   const handleSend = async (message: string) => {
     await sendMessage(message, context)
+  }
+
+  const handleClarify = async (selection: {
+    option: { value: string; label: string; hint?: string }
+    field: "connection_id" | "trigger_type" | "workflow_id" | "target_table" | "other"
+    question: string
+    isExtra: boolean
+  }) => {
+    await answerClarification(
+      {
+        kind: "option",
+        field: selection.field,
+        question: selection.question,
+        option: selection.option,
+        isExtra: selection.isExtra,
+      },
+      context,
+    )
   }
 
   return (
@@ -51,8 +78,10 @@ export default function AiFullScreenPage() {
           ) : (
             <AIMessageList
               messages={messages}
+              isStreaming={isStreaming}
               onApprove={approve}
               onReject={reject}
+              onClarify={handleClarify}
             />
           )}
 

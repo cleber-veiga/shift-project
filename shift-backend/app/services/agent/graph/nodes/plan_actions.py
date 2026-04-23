@@ -20,12 +20,20 @@ from app.core.logging import get_logger
 from app.db.session import async_session_factory
 from app.services.agent.base import sanitize_llm_string
 from app.services.agent.graph.llm import llm_complete_json_with_usage
-from app.services.agent.graph.prompts import PLANNER_PROMPT
+from app.services.agent.graph.prompts import BUILD_PLANNER_PROMPT, PLANNER_PROMPT
 from app.services.agent.graph.state import PlatformAgentState
 from app.services.agent.safety.budget_service import agent_budget_service
 from app.services.agent.tools.registry import TOOL_REGISTRY, TOOL_SCHEMAS
 
 logger = get_logger(__name__)
+
+_BUILD_INTENTS = {"build_workflow", "extend_workflow", "edit_workflow", "create_sub_workflow"}
+
+
+def _wrap_user_input(text: str) -> str:
+    """Escapes HTML entities and wraps in XML tags to isolate untrusted user input."""
+    escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return f"<user_message>{escaped}</user_message>"
 
 
 def _last_user_message(messages: list[dict[str, Any]]) -> str:
@@ -42,6 +50,92 @@ def _uuid_or_none(raw: Any) -> UUID | None:
         return UUID(str(raw))
     except (TypeError, ValueError):
         return None
+
+
+_VALID_CLARIFICATION_KINDS = {"choice", "multi_choice"}
+_VALID_CLARIFICATION_FIELDS = {
+    "connection_id",
+    "trigger_type",
+    "workflow_id",
+    "target_table",
+    "other",
+}
+
+
+def _normalize_clarification_payload(raw: Any) -> dict[str, Any] | None:
+    """Valida e devolve o payload estruturado de clarification ou None.
+
+    O LLM pode alucinar formas esquisitas; aceitamos somente o shape
+    documentado e truncamos strings para evitar abuso.
+    """
+    if not isinstance(raw, dict):
+        return None
+    kind = raw.get("kind")
+    if kind not in _VALID_CLARIFICATION_KINDS:
+        return None
+
+    field_raw = raw.get("field")
+    field = field_raw if field_raw in _VALID_CLARIFICATION_FIELDS else "other"
+
+    question_raw = raw.get("question")
+    question = (
+        sanitize_llm_string(str(question_raw).strip())[:500]
+        if isinstance(question_raw, str) and question_raw.strip()
+        else None
+    )
+
+    options_out: list[dict[str, Any]] = []
+    for opt in raw.get("options") or []:
+        if not isinstance(opt, dict):
+            continue
+        value = opt.get("value")
+        label = opt.get("label")
+        if value is None or not isinstance(label, str) or not label.strip():
+            continue
+        hint = opt.get("hint")
+        options_out.append(
+            {
+                "value": sanitize_llm_string(str(value))[:200],
+                "label": sanitize_llm_string(label.strip())[:120],
+                "hint": (
+                    sanitize_llm_string(str(hint).strip())[:200]
+                    if isinstance(hint, str) and hint.strip()
+                    else None
+                ),
+            }
+        )
+        if len(options_out) >= 20:
+            break
+    if not options_out:
+        return None
+
+    extra_raw = raw.get("extra_option")
+    extra: dict[str, Any] | None = None
+    if isinstance(extra_raw, dict):
+        value = extra_raw.get("value")
+        label = extra_raw.get("label")
+        if value is not None and isinstance(label, str) and label.strip():
+            extra = {
+                "value": sanitize_llm_string(str(value))[:200],
+                "label": sanitize_llm_string(label.strip())[:120],
+                "hint": (
+                    sanitize_llm_string(str(extra_raw.get("hint")).strip())[:200]
+                    if isinstance(extra_raw.get("hint"), str)
+                    and extra_raw.get("hint", "").strip()
+                    else None
+                ),
+            }
+
+    normalized: dict[str, Any] = {
+        "kind": kind,
+        "field": field,
+        "options": options_out,
+    }
+    if question:
+        normalized["question"] = question
+    if extra:
+        normalized["extra_option"] = extra
+    return normalized
 
 
 async def _check_soft_cap(state: PlatformAgentState) -> str | None:
@@ -70,8 +164,136 @@ async def _check_soft_cap(state: PlatformAgentState) -> str | None:
     return None
 
 
+def _sql_preanalysis(user_message: str) -> dict[str, Any] | None:
+    """Se a mensagem contem um bloco de SQL literal, extrai binds/tabelas para o planner.
+
+    Conservador: so analisa quando ha um delimitador claro de SQL (bloco em
+    ``` ou linha que comeca com SELECT/INSERT/... seguida de FROM/INTO/SET).
+    Isso evita rodar sqlglot sobre linguagem natural que apenas menciona
+    palavras como "DELETE" ou "FROM" (gerava ruido de parse errors no stderr).
+    """
+    import re as _re
+
+    # 1) Bloco SQL explicito (```sql ... ``` ou ``` ... ```)
+    sql_match = _re.search(r"```(?:sql)?\s*([\s\S]+?)```", user_message, _re.IGNORECASE)
+    sql_snippet: str | None = sql_match.group(1).strip() if sql_match else None
+
+    # 2) Sem bloco: exige padrao estrutural de SQL real (DML com clausula tipica)
+    if sql_snippet is None:
+        structural = _re.search(
+            r"\b(SELECT\b[\s\S]+?\bFROM\b"
+            r"|INSERT\s+INTO\b"
+            r"|UPDATE\b[\s\S]+?\bSET\b"
+            r"|DELETE\s+FROM\b"
+            r"|MERGE\s+INTO\b"
+            r"|TRUNCATE\s+TABLE\b)",
+            user_message,
+            _re.IGNORECASE,
+        )
+        if not structural:
+            return None
+        sql_snippet = user_message[:2000]
+
+    if not sql_snippet:
+        return None
+
+    try:
+        from app.services.agent.sql_intelligence.parser import analyze_sql_script
+        return analyze_sql_script(sql_snippet)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def _plan_build(
+    state: PlatformAgentState,
+    intent_data: dict[str, Any],
+    usage_prefix: str = "plan_actions_build",
+) -> dict[str, Any]:
+    """Chama o BUILD_PLANNER_PROMPT para intencoes de construcao de workflow."""
+    user_text = sanitize_llm_string(_last_user_message(state.get("messages", [])))
+    ctx = state.get("user_context") or {}
+    workflow_context = state.get("workflow_context") or {}
+    sql_analysis = _sql_preanalysis(user_text)
+
+    payload_dict: dict[str, Any] = {
+        "intent": intent_data,
+        "user_message": _wrap_user_input(user_text[:4000]),
+        "user_context": ctx,
+    }
+    if workflow_context:
+        wf_json = json.dumps(workflow_context, ensure_ascii=False)
+        payload_dict["workflow_state"] = f"<workflow_state>{wf_json}</workflow_state>"
+    if sql_analysis:
+        payload_dict["sql_pre_analysis"] = sql_analysis
+
+    user_payload = json.dumps(payload_dict, ensure_ascii=False)
+
+    result, usage = await llm_complete_json_with_usage(
+        system=BUILD_PLANNER_PROMPT,
+        user=user_payload,
+        fallback={"workflow_id": None, "ops": [], "summary": ""},
+    )
+    usage_entry = {**usage.usage_entry(), "node": usage_prefix}
+
+    # Planner pode emitir clarification_question quando faltam decisoes chave
+    # (ex: tipo de trigger, conexao a usar). Nesse caso, nao gera ops — o
+    # report_node devolve a pergunta para o usuario responder.
+    raw_clarification = result.get("clarification_question")
+    structured = _normalize_clarification_payload(result.get("clarification"))
+    if isinstance(raw_clarification, str) and raw_clarification.strip():
+        question = sanitize_llm_string(raw_clarification.strip())[:500]
+        if structured is not None:
+            structured.setdefault("question", question)
+        logger.info(
+            "agent.planner.build.clarification_needed",
+            thread_id=state.get("thread_id"),
+            has_structured=structured is not None,
+        )
+        return {
+            "build_plan": None,
+            "proposed_actions": [],
+            "clarification_question": question,
+            "clarification": structured,
+            "token_usage": [usage_entry],
+        }
+
+    workflow_id = result.get("workflow_id")
+    if not workflow_id:
+        logger.info(
+            "agent.planner.build.no_workflow_id",
+            thread_id=state.get("thread_id"),
+        )
+        return {
+            "build_plan": None,
+            "proposed_actions": [],
+            "clarification_question": (
+                "Para construir o workflow preciso saber o ID do workflow alvo. "
+                "Por favor informe o workflow_id."
+            ),
+            "token_usage": [usage_entry],
+        }
+
+    build_plan: dict[str, Any] = {
+        "workflow_id": str(workflow_id),
+        "ops": result.get("ops") or [],
+        "summary": str(result.get("summary") or ""),
+        "intent": intent_data.get("intent"),
+    }
+    logger.info(
+        "agent.planner.build_plan",
+        thread_id=state.get("thread_id"),
+        workflow_id=build_plan["workflow_id"],
+        ops_count=len(build_plan["ops"]),
+    )
+    return {
+        "build_plan": build_plan,
+        "proposed_actions": [],
+        "token_usage": [usage_entry],
+    }
+
+
 async def plan_actions_node(state: PlatformAgentState) -> dict[str, Any]:
-    """Produz proposed_actions a partir da mensagem e da intencao."""
+    """Produz proposed_actions (ou build_plan) a partir da mensagem e da intencao."""
     soft_cap_reason = await _check_soft_cap(state)
     if soft_cap_reason:
         logger.info(
@@ -83,8 +305,11 @@ async def plan_actions_node(state: PlatformAgentState) -> dict[str, Any]:
             "token_soft_cap_reason": soft_cap_reason,
         }
 
+    intent_data = state.get("current_intent") or {"intent": "chat", "summary": ""}
+    if intent_data.get("intent") in _BUILD_INTENTS:
+        return await _plan_build(state, intent_data)
+
     user_text = sanitize_llm_string(_last_user_message(state.get("messages", [])))
-    intent = state.get("current_intent") or {"intent": "chat", "summary": ""}
     catalog = [
         {
             "name": s["function"]["name"],
@@ -96,8 +321,8 @@ async def plan_actions_node(state: PlatformAgentState) -> dict[str, Any]:
 
     user_payload = json.dumps(
         {
-            "intent": intent,
-            "user_message": user_text[:4000],
+            "intent": intent_data,
+            "user_message": _wrap_user_input(user_text[:4000]),
             "available_tools": catalog,
         },
         ensure_ascii=False,

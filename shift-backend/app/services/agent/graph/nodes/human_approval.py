@@ -7,6 +7,11 @@ em agent_approvals e suspende o grafo via interrupt(). O resume traz a decisao
 
 Se nenhuma acao exige aprovacao, passa direto as proposed_actions como
 approved_actions.
+
+Expoe tambem `request_human_approval()` como helper reusavel para outros nos
+que precisam solicitar aprovacao humana (ex.: build_workflow_node quando
+detecta SQL destrutivo). Garante um unico caminho de auditoria via
+agent_approvals + thread_status.
 """
 
 from __future__ import annotations
@@ -26,6 +31,94 @@ from app.services.agent.persistence import (
 )
 
 logger = get_logger(__name__)
+
+
+async def request_human_approval(
+    *,
+    thread_id: str,
+    plan_payload: dict[str, Any],
+    user_id_fallback: str | None = None,
+    approval_type: str = "approval_required",
+) -> tuple[bool, str, str | None]:
+    """Solicita aprovacao humana via agent_approvals + interrupt().
+
+    Persiste agent_approvals(status=pending), marca thread como
+    awaiting_approval, pausa o grafo com interrupt(), e ao retomar grava
+    a decisao (mark_approval_decision) + restaura thread_status.
+
+    Reusado por human_approval_node e build_workflow_node para garantir
+    auditoria consistente (quem aprovou, quando, por que).
+
+    Retorna (approved, approval_id, rejection_reason).
+
+    Requer thread_id valido; levanta ValueError caso contrario.
+    """
+    thread_uuid = UUID(thread_id)
+
+    async with async_session_factory() as session:
+        approval_id = await create_approval(
+            session,
+            thread_id=thread_uuid,
+            proposed_plan=plan_payload,
+        )
+        await update_thread_status(
+            session,
+            thread_id=thread_uuid,
+            status="awaiting_approval",
+        )
+
+    logger.info(
+        "agent.approval.pending",
+        thread_id=thread_id,
+        approval_id=str(approval_id),
+        approval_type=approval_type,
+    )
+
+    decision = interrupt(
+        {
+            "type": approval_type,
+            "approval_id": str(approval_id),
+            "plan": plan_payload,
+        }
+    )
+
+    approved = bool(decision.get("approved", False)) if isinstance(decision, dict) else False
+    decided_by_raw = decision.get("decided_by") if isinstance(decision, dict) else None
+    rejection_reason = (
+        decision.get("rejection_reason") if isinstance(decision, dict) else None
+    )
+
+    if decided_by_raw is None:
+        decided_by_raw = user_id_fallback
+
+    try:
+        decided_by_uuid = UUID(str(decided_by_raw)) if decided_by_raw else None
+    except (TypeError, ValueError):
+        decided_by_uuid = None
+
+    async with async_session_factory() as session:
+        if decided_by_uuid is not None:
+            await mark_approval_decision(
+                session,
+                approval_id=approval_id,
+                approved=approved,
+                decided_by=decided_by_uuid,
+                rejection_reason=rejection_reason,
+            )
+        await update_thread_status(
+            session,
+            thread_id=thread_uuid,
+            status="running" if approved else "completed",
+        )
+
+    logger.info(
+        "agent.approval.resolved",
+        thread_id=thread_id,
+        approval_id=str(approval_id),
+        approved=approved,
+    )
+
+    return approved, str(approval_id), rejection_reason
 
 
 def _to_frontend_plan(
@@ -91,82 +184,36 @@ async def human_approval_node(state: PlatformAgentState) -> dict[str, Any]:
             "approval_id": None,
             "error": "thread_id ausente em human_approval_node",
         }
-    thread_uuid = UUID(thread_id_str)
 
     plan_payload = _to_frontend_plan(state.get("current_intent"), proposed)
-
-    async with async_session_factory() as session:
-        approval_id = await create_approval(
-            session,
-            thread_id=thread_uuid,
-            proposed_plan=plan_payload,
-        )
-        await update_thread_status(
-            session,
-            thread_id=thread_uuid,
-            status="awaiting_approval",
-        )
-
-    logger.info(
-        "agent.approval.pending",
-        thread_id=thread_id_str,
-        approval_id=str(approval_id),
-        actions=len(proposed),
-    )
-
-    decision = interrupt(
-        {
-            "type": "approval_required",
-            "approval_id": str(approval_id),
-            "plan": plan_payload,
-        }
-    )
-
-    approved = bool(decision.get("approved", False)) if isinstance(decision, dict) else False
-    decided_by_raw = decision.get("decided_by") if isinstance(decision, dict) else None
-    rejection_reason = (
-        decision.get("rejection_reason") if isinstance(decision, dict) else None
-    )
-
-    if decided_by_raw is None:
-        ctx = state.get("user_context") or {}
-        decided_by_raw = ctx.get("user_id")
+    ctx = state.get("user_context") or {}
+    user_id_fallback = ctx.get("user_id")
 
     try:
-        decided_by_uuid = UUID(str(decided_by_raw)) if decided_by_raw else None
-    except (TypeError, ValueError):
-        decided_by_uuid = None
-
-    async with async_session_factory() as session:
-        if decided_by_uuid is not None:
-            await mark_approval_decision(
-                session,
-                approval_id=approval_id,
-                approved=approved,
-                decided_by=decided_by_uuid,
-                rejection_reason=rejection_reason,
-            )
-        await update_thread_status(
-            session,
-            thread_id=thread_uuid,
-            status="running" if approved else "completed",
+        approved, approval_id, rejection_reason = await request_human_approval(
+            thread_id=thread_id_str,
+            plan_payload=plan_payload,
+            user_id_fallback=str(user_id_fallback) if user_id_fallback else None,
         )
-
-    logger.info(
-        "agent.approval.resolved",
-        thread_id=thread_id_str,
-        approval_id=str(approval_id),
-        approved=approved,
-    )
+    except (TypeError, ValueError) as exc:
+        logger.exception(
+            "agent.approval.request_failed",
+            thread_id=thread_id_str,
+        )
+        return {
+            "approved_actions": [],
+            "approval_id": None,
+            "error": f"Falha ao solicitar aprovacao: {exc}",
+        }
 
     if not approved:
         return {
             "approved_actions": [],
-            "approval_id": str(approval_id),
+            "approval_id": approval_id,
             "error": rejection_reason or "Acoes rejeitadas pelo usuario.",
         }
 
     return {
         "approved_actions": proposed,
-        "approval_id": str(approval_id),
+        "approval_id": approval_id,
     }

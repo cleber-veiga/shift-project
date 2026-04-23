@@ -5,10 +5,12 @@ Rotas de execucao permanecem em workflows.py.
 """
 
 import re
-from typing import Any
+from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
+from fastapi.responses import StreamingResponse
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 _VAR_REF_RE = re.compile(r"\{\{\s*vars\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
@@ -47,8 +49,9 @@ def _collect_referenced_vars(definition: dict[str, Any] | None) -> set[str]:
     return found
 
 from app.api.dependencies import get_current_user, get_db
-from app.core.security import require_permission
-from app.models import User
+from app.core.security import authorization_service, require_permission
+from app.models import Project, User
+from app.models.workflow import Workflow
 from app.schemas.workflow import (
     ConnectionOptionResponse,
     VariablesSchemaResponse,
@@ -165,6 +168,54 @@ async def get_workflow(
             detail=f"Workflow '{workflow_id}' nao encontrado.",
         )
     return WorkflowResponse.model_validate(workflow)
+
+
+@router.get(
+    "/workflows/{workflow_id}/definition/events",
+    response_class=StreamingResponse,
+)
+async def stream_definition_events(
+    workflow_id: UUID,
+    since: Optional[int] = Query(None, description="Replay eventos com seq > since"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    """Stream SSE de mudancas na definicao de um workflow.
+
+    Conectar com EventSource('/api/v1/workflows/{id}/definition/events').
+    Fornecer ?since=<seq> para replay de eventos perdidos ao reconectar.
+    """
+    # Explicit scope check — always 404 (never 403) to avoid leaking resource existence
+    result = await db.execute(
+        select(func.coalesce(Workflow.workspace_id, Project.workspace_id))
+        .select_from(Workflow)
+        .outerjoin(Project, Project.id == Workflow.project_id)
+        .where(Workflow.id == workflow_id)
+    )
+    effective_ws_id = result.scalar_one_or_none()
+    if effective_ws_id is None or not await authorization_service.has_permission(
+        db=db,
+        user_id=current_user.id,
+        scope="workspace",
+        required_role="VIEWER",
+        scope_id=effective_ws_id,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workflow nao encontrado.",
+        )
+
+    from app.services.definition_event_service import definition_event_service
+
+    return StreamingResponse(
+        definition_event_service.sse_stream(workflow_id=workflow_id, since_seq=since),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.put(

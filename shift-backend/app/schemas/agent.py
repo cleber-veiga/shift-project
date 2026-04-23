@@ -23,6 +23,10 @@ class MessageResponse(BaseModel):
     tool_calls: list[dict[str, Any]] | None
     tool_name: str | None
     created_at: datetime
+    # Metadados auxiliares persistidos pelo chat_service (ex: token_usage,
+    # payload de interrupt, clarification estruturada). O frontend lê para
+    # rehidratar cards ao reabrir a thread.
+    msg_metadata: dict[str, Any] | None = None
 
     class Config:
         from_attributes = True

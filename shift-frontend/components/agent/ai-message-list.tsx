@@ -4,16 +4,25 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { ChevronDown } from "lucide-react"
 import type { AgentMessage } from "@/lib/types/ai-panel"
 import { AIMessage } from "@/components/agent/ai-message"
+import type { ClarificationSelection } from "@/components/agent/ai-clarification-card"
 
 const SCROLL_THRESHOLD = 40
 
 interface AIMessageListProps {
   messages: AgentMessage[]
+  isStreaming?: boolean
   onApprove: (approvalId: string) => Promise<void>
   onReject: (approvalId: string, reason?: string) => Promise<void>
+  onClarify?: (selection: ClarificationSelection) => Promise<void> | void
 }
 
-export function AIMessageList({ messages, onApprove, onReject }: AIMessageListProps) {
+export function AIMessageList({
+  messages,
+  isStreaming,
+  onApprove,
+  onReject,
+  onClarify,
+}: AIMessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const isAtBottomRef = useRef(true)
@@ -55,8 +64,10 @@ export function AIMessageList({ messages, onApprove, onReject }: AIMessageListPr
           <AIMessage
             key={msg.id}
             message={msg}
+            isStreaming={isStreaming}
             onApprove={onApprove}
             onReject={onReject}
+            onClarify={onClarify}
           />
         ))}
         {/* Ancora para scroll */}

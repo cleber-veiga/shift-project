@@ -17,7 +17,10 @@ from app.services.agent.graph.state import PlatformAgentState
 
 logger = get_logger(__name__)
 
-_VALID = {"query", "action", "diagnose", "chat"}
+_VALID = {
+    "query", "action", "diagnose", "chat",
+    "build_workflow", "extend_workflow", "edit_workflow", "create_sub_workflow",
+}
 
 
 def _last_user_message(messages: list[dict[str, Any]]) -> str:

@@ -31,6 +31,7 @@ from .workflow import (
     WorkflowExecution,
     WorkflowVersion,
 )
+from .workflow_definition_event import WorkflowDefinitionEvent
 from .workspace import (
     Workspace,
     WorkspaceMember,
@@ -68,6 +69,7 @@ __all__ = [
     "WebhookTestCapture",
     "Workflow",
     "WorkflowExecution",
+    "WorkflowDefinitionEvent",
     "WorkflowVersion",
     "Workspace",
     "WorkspaceMember",

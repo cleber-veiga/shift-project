@@ -37,6 +37,7 @@ from app.api.v1.playground import router as playground_router
 from app.api.v1.saved_queries import router as saved_queries_router
 from app.api.v1.workflow_versions import router as workflow_versions_router
 from app.api.v1.workflows_crud import router as workflow_crud_router
+from app.api.v1.workflow_build import router as workflow_build_router
 from app.api.v1.workspaces import router as workspaces_router
 from app.core.logging import get_logger
 from app.core.middleware import RequestIDMiddleware
@@ -50,6 +51,19 @@ from app.services.scheduler_service import bootstrap_schedules, scheduler
 from app.services.workflow_service import cleanup_orphaned_executions
 
 logger = get_logger(__name__)
+
+
+async def _build_session_cleanup_loop(interval_seconds: float = 300.0) -> None:
+    """Remove build sessions expiradas em loop."""
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            from app.services.build_session_service import build_session_service as _bss
+            removed = await _bss.cleanup_expired()
+            if removed:
+                logger.info("build_session.cleanup.purged", count=removed)
+        except Exception:  # noqa: BLE001
+            logger.exception("build_session.cleanup_failed")
 
 
 async def _purge_webhook_captures_loop(interval_seconds: float = 300.0) -> None:
@@ -80,6 +94,9 @@ async def lifespan(app: FastAPI):
     purge_task = asyncio.create_task(
         _purge_webhook_captures_loop(), name="webhook-capture-purge"
     )
+    cleanup_task = asyncio.create_task(
+        _build_session_cleanup_loop(), name="build-session-cleanup"
+    )
     logger.info("scheduler.started")
     try:
         yield
@@ -87,6 +104,9 @@ async def lifespan(app: FastAPI):
         purge_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await purge_task
+        cleanup_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await cleanup_task
         scheduler.shutdown(wait=True)
         logger.info("scheduler.stopped")
         await close_checkpointer()
@@ -151,6 +171,7 @@ app.include_router(workflow_router, prefix="/api/v1")
 # "callable" seria capturado como workflow_id e rejeitado como UUID inválido.
 app.include_router(workflow_versions_router, prefix="/api/v1")
 app.include_router(workflow_crud_router, prefix="/api/v1")
+app.include_router(workflow_build_router, prefix="/api/v1")
 app.include_router(playground_router, prefix="/api/v1")
 app.include_router(saved_queries_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1")

@@ -4,6 +4,7 @@ import { Fragment, memo, useCallback, useEffect, useRef, useState } from "react"
 import { Handle, Position, useReactFlow, type NodeProps } from "@xyflow/react"
 import {
   AlertTriangle,
+  Bot,
   CheckCircle2,
   Copy,
   Loader2,
@@ -244,6 +245,7 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
 
   const definition  = getNodeDefinition(type ?? "")
   const nodeData    = data as Record<string, unknown>
+  const isPending   = nodeData.__pending === true
   const customIcon  = typeof nodeData.icon === "string" ? nodeData.icon : null
   const customColor = typeof nodeData.color === "string" && nodeData.color.trim() !== "" ? nodeData.color : null
   const theme       = themes[definition?.color ?? "blue"] ?? themes.blue
@@ -331,12 +333,21 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
     <div
       className={cn(
         "group/node relative w-[240px] rounded-2xl border bg-card shadow-md transition-all duration-200",
-        theme.border,
-        execBorder,
-        selected && `ring-2 ring-offset-2 ring-offset-background ${theme.ring}`,
+        isPending
+          ? "border-dashed border-2 border-violet-400 dark:border-violet-500 opacity-60"
+          : theme.border,
+        !isPending && execBorder,
+        selected && `ring-2 ring-offset-2 ring-offset-background ${isPending ? "ring-violet-400/60" : theme.ring}`,
         !enabled && "opacity-50",
       )}
     >
+      {/* Ghost badge */}
+      {isPending && (
+        <span className="absolute -top-2 -right-2 z-10 flex items-center gap-0.5 rounded-full bg-violet-500 px-1.5 py-0.5 text-[9px] font-bold text-white shadow-sm">
+          <Bot className="size-2.5" />
+          IA
+        </span>
+      )}
       {/* ── Target handle (left) ── */}
       {definition?.category !== "trigger" && (
         <Handle

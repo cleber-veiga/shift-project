@@ -30,6 +30,7 @@ from app.models.workspace import Workspace
 from app.services.agent.context import UserContext
 from app.services.agent.events import (
     EVT_APPROVAL_REQUIRED,
+    EVT_CLARIFICATION,
     EVT_DELTA,
     EVT_DONE,
     EVT_ERROR,
@@ -49,6 +50,50 @@ from app.services.agent.thread_service import thread_service
 logger = get_logger(__name__)
 
 _TOOL_CALL_PREVIEW = 500
+
+
+def _synthesize_interrupt_placeholder(
+    *,
+    current_intent: dict[str, Any] | None,
+    interrupt_payload: dict[str, Any] | None,
+    build_plan: dict[str, Any] | None,
+) -> str:
+    """Gera um texto curto de assistente para salvar quando o grafo e suspenso.
+
+    O texto precisa transmitir, ao reabrir a conversa, em que ponto a
+    interacao parou — aguardando aprovacao de SQL destrutivo, aguardando
+    confirmacao de build, etc. Nao substitui o final_report (que viria do
+    report_node apos a conclusao), mas serve como ancora de contexto.
+    """
+    interrupt_type = (interrupt_payload or {}).get("type")
+    plan = (interrupt_payload or {}).get("plan") or {}
+    summary = str(plan.get("summary") or "").strip()
+    impact = str(plan.get("impact") or "").strip()
+
+    if interrupt_type == "build_ready":
+        nodes = len((interrupt_payload or {}).get("pending_nodes") or [])
+        edges = len((interrupt_payload or {}).get("pending_edges") or [])
+        plan_summary = str((build_plan or {}).get("summary") or "").strip()
+        parts = ["Proposta de construcao aguardando sua confirmacao no canvas."]
+        if plan_summary:
+            parts.append(plan_summary)
+        if nodes or edges:
+            parts.append(f"{nodes} no(s) e {edges} conexao(oes) pendentes.")
+        return " ".join(parts)
+
+    if interrupt_type in {"approval_required", None} and plan:
+        parts = []
+        if summary:
+            parts.append(summary)
+        if impact:
+            parts.append(f"Impacto: {impact}")
+        parts.append("Aguardando sua aprovacao para prosseguir.")
+        return " ".join(parts)
+
+    intent_name = str((current_intent or {}).get("intent") or "").strip()
+    if intent_name in {"build_workflow", "create_sub_workflow", "extend_workflow"}:
+        return "Plano de construcao gerado — aguardando proxima etapa."
+    return "Execucao pausada aguardando uma decisao."
 
 
 def _to_frontend_plan(
@@ -357,6 +402,20 @@ class AgentChatService:
         current_intent: dict[str, Any] | None = (
             input_.get("current_intent") if isinstance(input_, dict) else None
         )
+        # Metadados capturados durante o stream — usados para persistir uma
+        # mensagem de assistente mesmo quando o grafo e suspenso por interrupt,
+        # de modo que ao reabrir a conversa o usuario veja o contexto (plano
+        # proposto, build em andamento, etc.) em vez de apenas o prompt dele.
+        last_interrupt_payload: dict[str, Any] | None = None
+        last_build_plan: dict[str, Any] | None = None
+        # Clarification estruturada emitida pelo planner quando falta um dado
+        # que so o usuario pode responder (conexao alvo, tipo de trigger, ...).
+        # Guardamos para: (a) emitir EVT_CLARIFICATION como evento dedicado
+        # alem do texto em final_report; (b) persistir em msg_metadata para
+        # que a thread reabra renderizando o card de selecao em vez de
+        # perguntar novamente.
+        last_clarification: dict[str, Any] | None = None
+        last_clarification_question: str | None = None
 
         try:
             async for event in graph.astream_events(input_, version="v2", config=config):
@@ -372,6 +431,7 @@ class AgentChatService:
                     "human_approval",
                     "execute",
                     "report",
+                    "build_workflow",
                 }:
                     yield sse_event(EVT_THINKING, {"node": node_name})
 
@@ -384,7 +444,42 @@ class AgentChatService:
                     interrupted = True
                     interrupts = data["chunk"]["__interrupt__"]
                     payload = interrupts[0].value if interrupts else {}
+                    interrupt_type = payload.get("type")
+
+                    # O nó build_workflow usa DOIS interrupts distintos:
+                    #   - "approval_required": aprovacao humana de acao sensivel
+                    #     (ex: SQL destrutivo) — precisa aparecer no chat com
+                    #     plano + botoes de aprovar/rejeitar.
+                    #   - "build_ready": pausa aguardando o usuario confirmar
+                    #     a aplicacao dos ghost nodes/edges no canvas. Esse
+                    #     gate ja e tratado pelo BuildModeContext (via canal
+                    #     SSE de workflow_definition_events + AIBuildConfirmationCard).
+                    #     Se emitissemos approval_required aqui, o frontend
+                    #     criaria um card fantasma com plan=null (cai no
+                    #     placeholder "INTENCAO acao" e "Aguardando" eterno
+                    #     porque nao ha approval_id para resolver).
+                    if interrupt_type == "build_ready":
+                        # Nao emite approval_required; o card de confirmacao
+                        # sera renderizado pelo BuildModeContext quando o
+                        # estado passar para awaiting_confirmation. Ainda
+                        # precisamos marcar a thread para o cliente saber
+                        # que o stream nao continuara ate ter uma decisao.
+                        last_interrupt_payload = payload
+                        try:
+                            await thread_service.update_status(
+                                db,
+                                thread_id=thread.id,
+                                status_value="awaiting_approval",
+                            )
+                        except Exception:
+                            logger.exception(
+                                "agent.chat.status_update_failed",
+                                thread_id=str(thread.id),
+                            )
+                        continue
+
                     approval_id = payload.get("approval_id")
+                    last_interrupt_payload = payload
                     yield sse_event(
                         EVT_APPROVAL_REQUIRED,
                         {"approval_id": approval_id, "plan": payload.get("plan")},
@@ -423,6 +518,28 @@ class AgentChatService:
                 elif evt_name == "on_chain_end" and node_name == "plan_actions":
                     output = data.get("output") or {}
                     actions = output.get("proposed_actions") or []
+                    build_plan = output.get("build_plan")
+                    if isinstance(build_plan, dict):
+                        last_build_plan = build_plan
+                    clar_question = output.get("clarification_question")
+                    clar_payload = output.get("clarification")
+                    if isinstance(clar_question, str) and clar_question.strip():
+                        last_clarification_question = clar_question
+                        if isinstance(clar_payload, dict):
+                            last_clarification = clar_payload
+                        # Emite evento dedicado para que a UI renderize
+                        # chips/botoes ao inves de so mostrar texto. O delta
+                        # com a pergunta ainda sera enviado quando o
+                        # report_node concluir.
+                        yield sse_event(
+                            EVT_CLARIFICATION,
+                            {
+                                "question": clar_question,
+                                "clarification": clar_payload
+                                if isinstance(clar_payload, dict)
+                                else None,
+                            },
+                        )
                     if actions:
                         yield sse_event(
                             EVT_PLAN_PROPOSED,
@@ -486,6 +603,16 @@ class AgentChatService:
         if not interrupted:
             if final_report:
                 metadata = _aggregate_token_usage(token_usage_entries)
+                # Quando o turno terminou em uma pergunta de clarificacao
+                # com opcoes estruturadas, preservamos o payload em
+                # msg_metadata para que o frontend rehidrate o card de
+                # selecao ao reabrir a conversa (e nao apenas o texto).
+                if last_clarification is not None or last_clarification_question:
+                    metadata = {
+                        **(metadata or {}),
+                        "clarification": last_clarification,
+                        "clarification_question": last_clarification_question,
+                    }
                 try:
                     await thread_service.add_message(
                         db,
@@ -511,6 +638,57 @@ class AgentChatService:
                 )
 
             yield sse_event(EVT_DONE, {"thread_status": final_status})
+        else:
+            # Grafo suspenso por interrupt() (ex.: aprovacao humana). O status
+            # ja foi atualizado para awaiting_approval junto ao approval_required.
+            # Ainda assim precisamos sinalizar fim de stream para o cliente sair
+            # do estado isStreaming/thinking; caso contrario a UI fica com
+            # spinner eterno aguardando um `done` que nao vem.
+
+            # Persistimos uma mensagem de assistente mesmo sem final_report: em
+            # build flows o report_node nunca roda (build_workflow fica pausado
+            # no interrupt e a confirmacao acontece via POST /confirm, fora do
+            # grafo). Sem isso, ao reabrir a conversa o usuario veria apenas o
+            # proprio prompt, perdendo completamente o contexto do plano, do
+            # build em andamento e das aprovacoes ja emitidas.
+            try:
+                placeholder = _synthesize_interrupt_placeholder(
+                    current_intent=current_intent,
+                    interrupt_payload=last_interrupt_payload,
+                    build_plan=last_build_plan,
+                )
+                metadata = _aggregate_token_usage(token_usage_entries)
+                if last_interrupt_payload is not None:
+                    # Guardamos o payload do interrupt nos metadados para que o
+                    # frontend possa reconstruir o card (plano destrutivo, build
+                    # em andamento) ao recarregar a thread, alem do ja existente
+                    # pending_approval que decorra a ultima mensagem.
+                    metadata = {
+                        **(metadata or {}),
+                        "interrupt": {
+                            "type": last_interrupt_payload.get("type"),
+                            "approval_id": last_interrupt_payload.get("approval_id"),
+                            "plan": last_interrupt_payload.get("plan"),
+                            "session_id": last_interrupt_payload.get("session_id"),
+                            "workflow_id": last_interrupt_payload.get("workflow_id"),
+                        },
+                    }
+                if last_build_plan is not None:
+                    metadata = {**(metadata or {}), "build_plan": last_build_plan}
+                await thread_service.add_message(
+                    db,
+                    thread_id=thread.id,
+                    role="assistant",
+                    content=placeholder,
+                    msg_metadata=metadata,
+                )
+            except Exception:
+                logger.exception(
+                    "agent.chat.persist_interrupted_msg_failed",
+                    thread_id=str(thread.id),
+                )
+
+            yield sse_event(EVT_DONE, {"thread_status": "awaiting_approval"})
 
 
 agent_chat_service = AgentChatService()

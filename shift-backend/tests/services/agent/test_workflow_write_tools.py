@@ -17,6 +17,8 @@ from uuid import uuid4
 
 import pytest
 
+from unittest.mock import patch as _patch
+
 from app.services.agent.base import AgentPermissionError
 from app.services.agent.context import UserContext
 from app.services.agent.tools.workflow_write_tools import (
@@ -28,6 +30,22 @@ from app.services.agent.tools.workflow_write_tools import (
     set_workflow_variables,
     update_node_config,
 )
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _mock_definition_event_service():
+    """Suprime chamadas reais ao definition_event_service em todos os testes deste modulo."""
+    with _patch(
+        "app.services.agent.tools.workflow_write_tools.definition_event_service"
+    ) as mock_svc:
+        mock_svc.publish = AsyncMock()
+        mock_svc.publish_within_tx = AsyncMock()
+        yield mock_svc
 
 
 # ---------------------------------------------------------------------------
@@ -737,3 +755,69 @@ async def test_audit_log_written_on_remove_node():
     assert kwargs["tool_name"] == "remove_node"
     assert kwargs["log_metadata"]["before"]["node_count"] == 1
     assert kwargs["log_metadata"]["after"]["node_count"] == 0
+
+
+# ===========================================================================
+# Atomicidade: commit unico por operacao
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_write_tool_atomic_on_flush_failure():
+    """Se db.flush() falhar apos a mutacao, db.commit() nao deve ser chamado
+    e publish_within_tx nao deve ser invocado (transacao nunca persistida)."""
+    ctx = make_ctx()
+    wf = make_workflow(workspace_id=ctx.workspace_id)
+    db = _db_returning(wf)
+    db.flush = AsyncMock(side_effect=Exception("DB flush error"))
+
+    with patch("app.services.agent.tools.workflow_write_tools.has_processor", return_value=True):
+        with pytest.raises(Exception, match="DB flush error"):
+            await add_node(
+                db=db, ctx=ctx,
+                workflow_id=str(wf.id),
+                node_type="sql_script",
+                position={"x": 0, "y": 0},
+            )
+
+    db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_write_tool_single_commit_on_success():
+    """Cada write tool deve chamar db.commit() exatamente uma vez (commit unico)."""
+    ctx = make_ctx()
+    wf = make_workflow(workspace_id=ctx.workspace_id)
+    db = _db_returning(wf)
+
+    with patch("app.services.agent.tools.workflow_write_tools.has_processor", return_value=True):
+        await add_node(
+            db=db, ctx=ctx,
+            workflow_id=str(wf.id),
+            node_type="sql_script",
+            position={"x": 0, "y": 0},
+        )
+
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_write_tool_uses_publish_within_tx_not_publish():
+    """Write tools devem usar publish_within_tx (nao publish) para garantir atomicidade."""
+    ctx = make_ctx()
+    wf = make_workflow(workspace_id=ctx.workspace_id)
+    db = _db_returning(wf)
+
+    with patch("app.services.agent.tools.workflow_write_tools.has_processor", return_value=True), \
+         patch("app.services.agent.tools.workflow_write_tools.definition_event_service") as mock_svc:
+        mock_svc.publish_within_tx = AsyncMock()
+        mock_svc.publish = AsyncMock()
+        await add_node(
+            db=db, ctx=ctx,
+            workflow_id=str(wf.id),
+            node_type="sql_script",
+            position={"x": 50, "y": 50},
+        )
+
+    mock_svc.publish_within_tx.assert_awaited_once()
+    mock_svc.publish.assert_not_awaited()

@@ -29,6 +29,7 @@ from app.services.agent.base import (
 )
 from app.services.agent.context import UserContext
 from app.services.agent.persistence import write_audit_log
+from app.services.definition_event_service import definition_event_service
 from app.services.workflow.nodes import has_processor, list_node_types
 
 # ---------------------------------------------------------------------------
@@ -170,6 +171,7 @@ async def create_workflow(
     name: str,
     description: str | None = None,
     thread_id: UUID | None = None,
+    client_mutation_id: str | None = None,
 ) -> str:
     """Cria um workflow vazio (draft) em um projeto.
 
@@ -212,15 +214,22 @@ async def create_workflow(
     db.add(wf)
     await db.flush()
     await db.refresh(wf)
-    await db.commit()
 
     result = {"workflow_id": str(wf.id)}
+    await definition_event_service.publish_within_tx(
+        db,
+        workflow_id=wf.id,
+        event_type="workflow_created",
+        payload={"workflow_id": str(wf.id), "name": name},
+        client_mutation_id=client_mutation_id,
+    )
     await _audit(
         db, ctx, thread_id, "create_workflow",
         {"project_id": project_id, "name": name},
         None,
         result,
     )
+    await db.commit()
     return _ok(result)
 
 
@@ -233,6 +242,7 @@ async def add_node(
     position: dict[str, Any],
     config: dict[str, Any] | None = None,
     thread_id: UUID | None = None,
+    client_mutation_id: str | None = None,
 ) -> str:
     """Adiciona um novo no ao workflow.
 
@@ -275,15 +285,27 @@ async def add_node(
     definition["nodes"] = nodes
     wf.definition = definition
     await db.flush()
-    await db.commit()
 
     result = {"node_id": node_id}
+    await definition_event_service.publish_within_tx(
+        db,
+        workflow_id=wid,
+        event_type="node_added",
+        payload={
+            "node_id": node_id,
+            "node_type": node_type,
+            "position": {"x": float(position["x"]), "y": float(position["y"])},
+            "data": config or {},
+        },
+        client_mutation_id=client_mutation_id,
+    )
     await _audit(
         db, ctx, thread_id, "add_node",
         {"workflow_id": workflow_id, "node_type": node_type},
         {"node_ids": before_ids},
         {"node_ids": [n["id"] for n in nodes]},
     )
+    await db.commit()
     return _ok(result)
 
 
@@ -295,6 +317,7 @@ async def update_node_config(
     node_id: str,
     config_patch: dict[str, Any],
     thread_id: UUID | None = None,
+    client_mutation_id: str | None = None,
 ) -> str:
     """Atualiza parcialmente o campo `data` de um no existente (merge shallow).
 
@@ -328,15 +351,22 @@ async def update_node_config(
     definition["nodes"] = nodes
     wf.definition = definition
     await db.flush()
-    await db.commit()
 
     result = {"node_id": node_id}
+    await definition_event_service.publish_within_tx(
+        db,
+        workflow_id=wid,
+        event_type="node_updated",
+        payload={"node_id": node_id, "data": nodes[idx]["data"]},
+        client_mutation_id=client_mutation_id,
+    )
     await _audit(
         db, ctx, thread_id, "update_node_config",
         {"workflow_id": workflow_id, "node_id": node_id},
         {"data": before_data},
         {"data": nodes[idx]["data"]},
     )
+    await db.commit()
     return _ok(result)
 
 
@@ -347,6 +377,7 @@ async def remove_node(
     workflow_id: str,
     node_id: str,
     thread_id: UUID | None = None,
+    client_mutation_id: str | None = None,
 ) -> str:
     """Remove um no e todas as arestas conectadas a ele.
 
@@ -385,15 +416,22 @@ async def remove_node(
     definition["edges"] = edges
     wf.definition = definition
     await db.flush()
-    await db.commit()
 
     result = {"removed_edges": removed_edges}
+    await definition_event_service.publish_within_tx(
+        db,
+        workflow_id=wid,
+        event_type="node_removed",
+        payload={"node_id": node_id, "removed_edges": removed_edges},
+        client_mutation_id=client_mutation_id,
+    )
     await _audit(
         db, ctx, thread_id, "remove_node",
         {"workflow_id": workflow_id, "node_id": node_id},
         before,
         {"node_count": len(nodes), "edge_count": len(edges)},
     )
+    await db.commit()
     return _ok(result)
 
 
@@ -407,6 +445,7 @@ async def add_edge(
     source_handle: str | None = None,
     target_handle: str | None = None,
     thread_id: UUID | None = None,
+    client_mutation_id: str | None = None,
 ) -> str:
     """Adiciona uma aresta entre dois nos existentes.
 
@@ -448,15 +487,31 @@ async def add_edge(
     definition["edges"] = edges
     wf.definition = definition
     await db.flush()
-    await db.commit()
 
     result = {"edge_id": edge_id}
+    event_payload: dict[str, Any] = {
+        "edge_id": edge_id,
+        "source": source_id,
+        "target": target_id,
+    }
+    if source_handle is not None:
+        event_payload["sourceHandle"] = source_handle
+    if target_handle is not None:
+        event_payload["targetHandle"] = target_handle
+    await definition_event_service.publish_within_tx(
+        db,
+        workflow_id=wid,
+        event_type="edge_added",
+        payload=event_payload,
+        client_mutation_id=client_mutation_id,
+    )
     await _audit(
         db, ctx, thread_id, "add_edge",
         {"workflow_id": workflow_id, "source_id": source_id, "target_id": target_id},
         {"edge_count": len(edges) - 1},
         {"edge_count": len(edges)},
     )
+    await db.commit()
     return _ok(result)
 
 
@@ -467,6 +522,7 @@ async def remove_edge(
     workflow_id: str,
     edge_id: str,
     thread_id: UUID | None = None,
+    client_mutation_id: str | None = None,
 ) -> str:
     """Remove uma aresta do workflow.
 
@@ -495,14 +551,21 @@ async def remove_edge(
     definition["edges"] = edges
     wf.definition = definition
     await db.flush()
-    await db.commit()
 
+    await definition_event_service.publish_within_tx(
+        db,
+        workflow_id=wid,
+        event_type="edge_removed",
+        payload={"edge_id": edge_id},
+        client_mutation_id=client_mutation_id,
+    )
     await _audit(
         db, ctx, thread_id, "remove_edge",
         {"workflow_id": workflow_id, "edge_id": edge_id},
         {"edge_count": before_count},
         {"edge_count": len(edges)},
     )
+    await db.commit()
     return _ok({})
 
 
@@ -513,6 +576,7 @@ async def set_workflow_variables(
     workflow_id: str,
     variables: list[dict[str, Any]],
     thread_id: UUID | None = None,
+    client_mutation_id: str | None = None,
 ) -> str:
     """Substitui integralmente a lista de variaveis do workflow.
 
@@ -555,13 +619,20 @@ async def set_workflow_variables(
     definition["variables"] = clean_vars
     wf.definition = definition
     await db.flush()
-    await db.commit()
 
     result = {"variables_count": len(clean_vars)}
+    await definition_event_service.publish_within_tx(
+        db,
+        workflow_id=wid,
+        event_type="variables_updated",
+        payload={"variables": clean_vars},
+        client_mutation_id=client_mutation_id,
+    )
     await _audit(
         db, ctx, thread_id, "set_workflow_variables",
         {"workflow_id": workflow_id, "variables_count": len(clean_vars)},
         {"variables": before_vars},
         {"variables": clean_vars},
     )
+    await db.commit()
     return _ok(result)

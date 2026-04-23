@@ -10,6 +10,7 @@ Fase 6: expoe LLMResponse com contagem de tokens para auditoria/budget.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
@@ -50,6 +51,7 @@ def _common_kwargs() -> dict[str, Any]:
         "model": settings.AGENT_LLM_MODEL,
         "temperature": 0.2,
         "max_tokens": 4096,
+        "timeout": 30.0,
     }
     if settings.LLM_API_KEY:
         kwargs["api_key"] = settings.LLM_API_KEY
@@ -85,7 +87,11 @@ async def llm_complete_with_usage(
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
 
-    response = await litellm.acompletion(**kwargs)
+    try:
+        response = await litellm.acompletion(**kwargs)
+    except (litellm.Timeout, asyncio.TimeoutError) as exc:
+        logger.warning("agent.llm.timeout", model=settings.AGENT_LLM_MODEL)
+        raise RuntimeError("LLM timeout: modelo nao respondeu em 30 segundos.") from exc
     try:
         content = response.choices[0].message.content or ""
     except (AttributeError, IndexError) as exc:
@@ -159,7 +165,11 @@ async def llm_stream(
     kwargs["messages"] = messages
     kwargs["stream"] = True
 
-    response = await litellm.acompletion(**kwargs)
+    try:
+        response = await litellm.acompletion(**kwargs)
+    except (litellm.Timeout, asyncio.TimeoutError) as exc:
+        logger.warning("agent.llm.stream.timeout", model=settings.AGENT_LLM_MODEL)
+        raise RuntimeError("LLM stream timeout: modelo nao respondeu em 30 segundos.") from exc
     async for chunk in response:
         delta = chunk.choices[0].delta if chunk.choices else None
         if delta and delta.content:

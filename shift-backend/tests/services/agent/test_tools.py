@@ -301,7 +301,7 @@ async def test_execute_tool_permission_error_returns_string(
 
 
 def test_all_tools_have_valid_schemas() -> None:
-    assert len(TOOL_REGISTRY) == 22
+    assert len(TOOL_REGISTRY) == 27
     for name, entry in TOOL_REGISTRY.items():
         schema = entry["schema"]
         assert schema["type"] == "function", f"{name}: type != 'function'"

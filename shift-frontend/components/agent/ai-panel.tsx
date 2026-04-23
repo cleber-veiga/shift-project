@@ -12,6 +12,8 @@ import { AIInputBox } from "@/components/agent/ai-input-box"
 import { AIErrorBanner } from "@/components/agent/ai-error-banner"
 import { AIRateLimitBanner } from "@/components/agent/ai-rate-limit-banner"
 import { AIThreadHistory } from "@/components/agent/ai-thread-history"
+import { AIBuildConfirmationCard } from "@/components/agent/ai-build-confirmation-card"
+import type { ClarificationSelection } from "@/components/agent/ai-clarification-card"
 
 function AIConversation() {
   const context = useAIContext()
@@ -23,6 +25,7 @@ function AIConversation() {
     sendMessage,
     approve,
     reject,
+    answerClarification,
     clearError,
     clearRateLimit,
   } = useAIStream()
@@ -34,6 +37,23 @@ function AIConversation() {
 
   const handleSend = async (message: string) => {
     await sendMessage(message, context)
+  }
+
+  // Chip de clarificacao clicado: delega ao hook, que ja marca a mensagem
+  // anterior como respondida e envia a escolha como nova mensagem. A
+  // selecao chega estruturada (field + opcao) para o hook poder ancorar o
+  // contexto na mensagem enviada ao planner.
+  const handleClarify = async (selection: ClarificationSelection) => {
+    await answerClarification(
+      {
+        kind: "option",
+        field: selection.field,
+        question: selection.question,
+        option: selection.option,
+        isExtra: selection.isExtra,
+      },
+      context,
+    )
   }
 
   if (!activeThreadId && messages.length === 0) {
@@ -70,9 +90,17 @@ function AIConversation() {
       ) : null}
       <AIMessageList
         messages={messages}
+        isStreaming={isStreaming}
         onApprove={approve}
         onReject={reject}
+        onClarify={handleClarify}
       />
+      {/* Confirmacao de build aparece logo acima do input quando o agente
+          termina de propor os ghost nodes — mantem tudo no chat, sem exigir
+          que o usuario saia para a barra flutuante do canvas. */}
+      <div className="px-3 pb-2 empty:hidden">
+        <AIBuildConfirmationCard />
+      </div>
       <AIInputBox
         onSend={(msg) => void handleSend(msg)}
         disabled={isStreaming || rateLimit !== null}

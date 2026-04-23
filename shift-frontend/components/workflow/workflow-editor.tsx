@@ -10,6 +10,8 @@ import {
   type Connection,
   type Node,
   type Edge,
+  type NodeChange,
+  type EdgeChange,
   type NodeTypes,
   type EdgeTypes,
   ReactFlowProvider,
@@ -53,6 +55,17 @@ import {
 import { useDashboard } from "@/lib/context/dashboard-context"
 import { useRegisterAIContext } from "@/lib/context/ai-context"
 import { CustomNodesContext, findCustomNode } from "@/lib/workflow/custom-nodes-context"
+import {
+  useWorkflowDefinitionStream,
+  type BuildModeHandlers,
+} from "@/lib/hooks/use-workflow-definition-stream"
+import { useBuildMode } from "@/lib/workflow/build-mode-context"
+import { useToast } from "@/lib/context/toast-context"
+// BuildModeBar foi removida — a confirmacao/cancelamento do build agora acontece
+// no chat via AIBuildConfirmationCard, evitando duplicar o controle no topo do
+// canvas. Se futuramente precisarmos de fallback para quando o chat esta fechado,
+// podemos reintroduzir condicionalmente aqui.
+import { BuildOpsPanel } from "@/components/workflow/build-ops-panel"
 
 /** Build nodeTypes map — all custom node types share one component */
 function buildNodeTypes(): NodeTypes {
@@ -158,6 +171,99 @@ function WorkflowEditorInner({
   // ── Schedule state (cron agendado no Prefect) ───────────────────────────
   const [scheduleStatus, setScheduleStatus] = useState<WorkflowScheduleStatus | null>(null)
 
+  // ── Build mode (ghost nodes from Platform Agent FASE 3) ─────────────────
+  const {
+    buildState,
+    sessionId: buildSessionId,
+    pendingNodes,
+    pendingEdges,
+    enterBuildMode,
+    setAwaiting: setBuildAwaiting,
+    exitBuildMode,
+    addPendingNode,
+    addPendingEdge,
+    updatePendingNode: updatePendingNodeInCtx,
+    removePendingNode,
+    removePendingEdge,
+    flushPendingToReal,
+    // confirmBuild nao e mais chamado aqui — o AIBuildConfirmationCard
+    // consome o mesmo contexto e dispara a confirmacao direto no chat.
+    cancelBuild,
+    canUndo,
+  } = useBuildMode()
+
+  const pendingNodesRef = useRef<typeof pendingNodes>(pendingNodes)
+  const pendingEdgesRef = useRef<typeof pendingEdges>(pendingEdges)
+  pendingNodesRef.current = pendingNodes
+  pendingEdgesRef.current = pendingEdges
+
+  const isInBuildMode = buildState !== "idle"
+  const toast = useToast()
+
+  const buildModeStreamHandlers = useMemo<BuildModeHandlers>(
+    () => ({
+      onBuildStarted: (sessionId) => enterBuildMode(sessionId),
+      onPendingNodeAdded: (node) => addPendingNode(node),
+      onPendingEdgeAdded: (edge) => addPendingEdge(edge),
+      onPendingNodeUpdated: (nodeId, patch) => updatePendingNodeInCtx(nodeId, patch),
+      onPendingNodeRemoved: (nodeId) => removePendingNode(nodeId),
+      onPendingEdgeRemoved: (edgeId) => removePendingEdge(edgeId),
+      onBuildReady: () => setBuildAwaiting(),
+      onBuildConfirmed: (_ghosts, _ghostEdges) => {
+        // Promote ghosts → real usando o contexto, que acessa o valor mais
+        // recente de pendingNodes/pendingEdges via setState updater — evita a
+        // race condition dos refs (pendingNodesRef pode estar stale quando
+        // build_confirmed chega no mesmo microtask batch de pending_node_added).
+        // Os argumentos posicionais sao ignorados intencionalmente.
+        const { nodeCount, edgeCount } = flushPendingToReal(setNodes, setEdges)
+        exitBuildMode(true)
+        const title = `${nodeCount} no${nodeCount !== 1 ? "s" : ""} adicionado${nodeCount !== 1 ? "s" : ""}`
+        const description = `${edgeCount > 0 ? `${edgeCount} conexao${edgeCount !== 1 ? "es" : ""} criada${edgeCount !== 1 ? "s" : ""}. ` : ""}Use o painel lateral para desfazer.`
+        toast.success(title, description)
+      },
+      onBuildCancelled: () => exitBuildMode(false),
+      onSseDropDetected: () => {
+        // SSE silent for 15s during build - auto-cancel to avoid stuck state
+        void cancelBuild(workflowId)
+      },
+    }),
+    [
+      addPendingEdge,
+      addPendingNode,
+      toast,
+      cancelBuild,
+      enterBuildMode,
+      exitBuildMode,
+      flushPendingToReal,
+      removePendingEdge,
+      removePendingNode,
+      setBuildAwaiting,
+      setEdges,
+      setNodes,
+      updatePendingNodeInCtx,
+      workflowId,
+    ],
+  )
+
+  // ── Definition stream (SSE from Platform Agent write tools) ─────────────
+  const localMutationIds = useRef<Set<string>>(new Set())
+  const { status: streamStatus, registerLocalMutation } = useWorkflowDefinitionStream({
+    workflowId,
+    enabled: workflowId !== "new" && !isLoading,
+    setNodes,
+    setEdges,
+    setVariables,
+    localMutationIds,
+    pendingNodesRef,
+    pendingEdgesRef,
+    // Drop detector deve rodar SO durante construcao ativa. Em
+    // awaiting_confirmation o stream fica naturalmente silencioso porque
+    // estamos esperando o usuario decidir — nao podemos auto-cancelar nesse
+    // estado (bug: "a barra aparecia por um momento e sumia").
+    buildModeActive: buildState === "building",
+    buildModeHandlers: buildModeStreamHandlers,
+  })
+
   const refreshScheduleStatus = useCallback(async () => {
     if (workflowId === "new") return
     try {
@@ -247,6 +353,16 @@ function WorkflowEditorInner({
     }
   }, [workflowId, setNodes, setEdges, refreshScheduleStatus])
 
+  // ── Esc cancels build mode ───────────────────────────────────────────────
+  useEffect(() => {
+    if (!isInBuildMode) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") void cancelBuild(workflowId)
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [isInBuildMode, cancelBuild, workflowId])
+
   // ── Load custom node definitions (composite_insert palette) ──────────────
   useEffect(() => {
     const wsId = workflowWorkspaceId ?? selectedWorkspace?.id
@@ -268,12 +384,34 @@ function WorkflowEditorInner({
     }
   }, [workflowWorkspaceId, selectedWorkspace?.id])
 
+  // ── Node/edge change wrappers that mark dirty for user-initiated changes ──
+  const onNodesChangeDirty = useCallback(
+    (changes: NodeChange[]) => {
+      onNodesChange(changes)
+      if (changes.some((c) => c.type === "position" || c.type === "remove")) {
+        setDirty(true)
+      }
+    },
+    [onNodesChange],
+  )
+
+  const onEdgesChangeDirty = useCallback(
+    (changes: EdgeChange[]) => {
+      onEdgesChange(changes)
+      if (changes.some((c) => c.type === "remove")) {
+        setDirty(true)
+      }
+    },
+    [onEdgesChange],
+  )
+
   // ── Edge connections ─────────────────────────────────────────────────────
   const onConnect = useCallback(
     (params: Connection) => {
       setEdges((eds) =>
         addEdge({ ...params, style: { strokeWidth: 2 }, animated: true }, eds),
       )
+      setDirty(true)
     },
     [setEdges],
   )
@@ -343,6 +481,7 @@ function WorkflowEditorInner({
       }
 
       setNodes((nds) => [...nds, newNode])
+      setDirty(true)
     },
     [reactFlowInstance, setNodes, customNodes],
   )
@@ -366,6 +505,7 @@ function WorkflowEditorInner({
         const { [nodeId]: _, ...rest } = prev
         return rest
       })
+      setDirty(true)
     },
     [setNodes],
   )
@@ -392,10 +532,11 @@ function WorkflowEditorInner({
     }
   }
 
-  // Mark dirty on relevant state changes
+  // Mark dirty only on metadata changes (not nodes/edges — those use inline setDirty)
   useEffect(() => {
-    setDirty(true)
-  }, [nodes, edges, workflowMeta, ioSchema, name, description, variables])
+    if (!isLoading) setDirty(true)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name, description, workflowMeta, ioSchema])
 
   // ── Export workflow as JSON file ─────────────────────────────────────────
   const handleExport = useCallback(() => {
@@ -459,6 +600,7 @@ function WorkflowEditorInner({
         if (typeof data.is_published === "boolean") setIsPublished(data.is_published)
         // Clear execution states (imported flow hasn't been run)
         setNodeExecStates({})
+        setDirty(true)
         setStatusMessage("Workflow importado! Clique em Salvar para persistir.")
         setTimeout(() => setStatusMessage(null), 4000)
       } catch {
@@ -781,6 +923,44 @@ function WorkflowEditorInner({
           </div>
         )}
 
+        {/* Build mode bar foi movida para o chat (AIBuildConfirmationCard) para
+            evitar duplicar o controle de confirmacao. O card no chat consome o
+            mesmo BuildModeContext e chama confirmBuild/cancelBuild. */}
+
+        {/* Build ops panel — lateral overlay listing proposed ops + undo */}
+        {(isInBuildMode || canUndo) && (
+          <div className="absolute right-3 top-3 z-10 pointer-events-auto">
+            <BuildOpsPanel
+              workflowId={workflowId}
+              sessionId={buildSessionId}
+              onSelectNode={(nodeId) => {
+                setNodes((prev) => prev.map((n) => ({ ...n, selected: n.id === nodeId })))
+              }}
+            />
+          </div>
+        )}
+
+        {/* Agent stream status indicator */}
+        {workflowId !== "new" && !isLoading && (
+          <div className="flex h-5 shrink-0 items-center gap-1.5 border-b border-border bg-muted/10 px-3">
+            <span
+              className={cn(
+                "size-1.5 rounded-full",
+                streamStatus === "connected" && "bg-green-500",
+                streamStatus === "connecting" && "bg-yellow-400 animate-pulse",
+                streamStatus === "reconnecting" && "bg-yellow-400 animate-pulse",
+                streamStatus === "error" && "bg-red-400",
+              )}
+            />
+            <span className="text-[10px] text-muted-foreground">
+              {streamStatus === "connected" && "Agente conectado"}
+              {streamStatus === "connecting" && "Conectando ao agente..."}
+              {streamStatus === "reconnecting" && "Reconectando..."}
+              {streamStatus === "error" && "Agente desconectado"}
+            </span>
+          </div>
+        )}
+
         {/* Tabs: Editor (canvas) | Executions (historico) */}
         <div className="flex shrink-0 items-center gap-1 border-b border-border bg-muted/20 px-4">
           <TabSwitch
@@ -866,24 +1046,33 @@ function WorkflowEditorInner({
               </div>
             )}
 
+            {/* Read-only overlay during build mode */}
+            {isInBuildMode && (
+              <div className="pointer-events-none absolute inset-0 z-10 rounded-sm ring-2 ring-inset ring-violet-400/30" />
+            )}
+
             <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              onNodesChange={onNodesChange}
-              onEdgesChange={onEdgesChange}
-              onConnect={onConnect}
+              nodes={isInBuildMode ? [...nodes, ...pendingNodes] : nodes}
+              edges={isInBuildMode ? [...edges, ...pendingEdges] : edges}
+              onNodesChange={isInBuildMode ? undefined : onNodesChangeDirty}
+              onEdgesChange={isInBuildMode ? undefined : onEdgesChangeDirty}
+              onConnect={isInBuildMode ? undefined : onConnect}
               onNodeClick={onNodeClick}
-              onNodeDoubleClick={onNodeDoubleClick}
+              onNodeDoubleClick={isInBuildMode ? undefined : onNodeDoubleClick}
               onPaneClick={onPaneClick}
-              onDragOver={onDragOver}
-              onDrop={onDrop}
+              onDragOver={isInBuildMode ? undefined : onDragOver}
+              onDrop={isInBuildMode ? undefined : onDrop}
               onInit={setReactFlowInstance}
               nodeTypes={nodeTypes}
               edgeTypes={EDGE_TYPES}
               fitView
-              deleteKeyCode={["Backspace", "Delete"]}
+              deleteKeyCode={isInBuildMode ? null : ["Backspace", "Delete"]}
+              nodesDraggable={!isInBuildMode}
+              nodesConnectable={!isInBuildMode}
+              elementsSelectable={!isInBuildMode}
+              edgesFocusable={!isInBuildMode}
               panOnDrag={canvasMode === "pan" ? [0, 1, 2] : [1, 2]}
-              selectionOnDrag={canvasMode === "select"}
+              selectionOnDrag={!isInBuildMode && canvasMode === "select"}
               selectionMode={SelectionMode.Partial}
               multiSelectionKeyCode={["Shift", "Meta", "Control"]}
               panActivationKeyCode="Space"
@@ -1092,6 +1281,8 @@ function TabSwitch({
 }
 
 export function WorkflowEditor(props: WorkflowEditorProps) {
+  // BuildModeProvider subiu para o layout privado (app/(private)/layout.tsx)
+  // para que o AIPanel possa consumir o mesmo state. Aqui nao re-instanciamos.
   return (
     <ReactFlowProvider>
       <WorkflowEditorInner {...props} />

@@ -9,6 +9,8 @@ const NODE_LABELS: Record<string, string> = {
   plan_actions: "Planejando acoes...",
   execute: "Executando...",
   report: "Preparando resposta...",
+  build_workflow: "Construindo workflow...",
+  human_approval: "Aguardando aprovacao...",
 }
 
 interface AIMessageThinkingProps {

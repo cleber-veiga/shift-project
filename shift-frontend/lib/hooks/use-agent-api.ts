@@ -11,8 +11,9 @@ import type {
   AgentMessage,
   ProposedPlan,
   RawProposedPlan,
+  RawClarificationPayload,
 } from "@/lib/types/ai-panel"
-import { convertRawPlan } from "@/lib/types/ai-panel"
+import { convertRawPlan, convertRawClarification } from "@/lib/types/ai-panel"
 
 function getApiBaseUrl() {
   const value = process.env.NEXT_PUBLIC_API_BASE_URL
@@ -41,14 +42,40 @@ function authHeaders(session: AuthSession): HeadersInit {
   }
 }
 
-// Converte a resposta raw do backend (snake_case) para AgentMessage (camelCase)
+// Converte a resposta raw do backend (snake_case) para AgentMessage (camelCase).
+// Se o metadata persistido contiver `clarification` estruturada, rehidrata
+// o card com status="answered" por default (historico ja respondido). O
+// caller pode promover para "pending" se a clarificacao ainda for a ultima
+// do thread — ver convertThreadDetail abaixo.
 function convertMessage(raw: RawAgentMessage): AgentMessage {
+  const meta = raw.msg_metadata ?? null
+  const clarificationRaw = meta && typeof meta === "object"
+    ? (meta.clarification as RawClarificationPayload | null | undefined)
+    : undefined
+  const clarificationQuestion = meta && typeof meta === "object"
+    ? (typeof meta.clarification_question === "string"
+        ? (meta.clarification_question as string)
+        : undefined)
+    : undefined
+  const clarification = convertRawClarification(
+    clarificationRaw,
+    clarificationQuestion,
+  )
   return {
     id: raw.id,
     role: raw.role as AgentMessage["role"],
     content: raw.content,
     toolName: raw.tool_name ?? undefined,
     createdAt: raw.created_at,
+    ...(clarification
+      ? {
+          clarification,
+          clarificationQuestion: clarification.question,
+          clarificationStatus: "answered" as const,
+        }
+      : clarificationQuestion
+        ? { clarificationQuestion }
+        : {}),
   }
 }
 
@@ -59,6 +86,7 @@ interface RawAgentMessage {
   tool_name?: string | null
   tool_calls?: unknown[] | null
   created_at: string
+  msg_metadata?: Record<string, unknown> | null
 }
 
 interface RawPendingApproval {
@@ -117,6 +145,29 @@ function convertThreadDetail(raw: RawThreadDetail): AgentThreadDetail {
         planProposed: pendingApproval.proposedPlan as ProposedPlan,
         approvalId: pendingApproval.id,
         approvalStatus: "pending",
+      }
+    }
+  }
+
+  // Clarificacoes persistidas em msg_metadata vem com status="answered" por
+  // default (o caller ja respondeu). Promove a ultima para "pending" quando
+  // nao houver mensagem de usuario posterior — ou seja, a thread foi reaberta
+  // enquanto a pergunta ainda estava no ar.
+  const lastClarificationIdx = (() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].clarification) return i
+    }
+    return -1
+  })()
+  if (lastClarificationIdx >= 0) {
+    const hasLaterUserMessage = messages
+      .slice(lastClarificationIdx + 1)
+      .some((m) => m.role === "user")
+    if (!hasLaterUserMessage) {
+      messages[lastClarificationIdx] = {
+        ...messages[lastClarificationIdx],
+        clarificationStatus: "pending",
+        clarificationAnswer: undefined,
       }
     }
   }

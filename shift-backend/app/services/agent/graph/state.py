@@ -52,3 +52,23 @@ class PlatformAgentState(TypedDict, total=False):
     # parametros obrigatorios ausentes que so o usuario pode fornecer
     # (ex: nome de um novo projeto). Curto-circuita para report_node.
     clarification_question: str | None
+    # Payload estruturado que acompanha clarification_question quando
+    # o planner quer oferecer opcoes selecionaveis (chips/radio no chat)
+    # em vez de texto livre. Shape:
+    #   {
+    #     "kind": "choice" | "multi_choice",
+    #     "field": "connection_id" | "trigger_type" | ...,
+    #     "question": "...",  # espelha clarification_question
+    #     "options": [
+    #       {"value": "<id>", "label": "Nome", "hint": "metadado extra"}
+    #     ],
+    #     "extra_option": {"value": "...", "label": "...", "hint": "..."}
+    #   }
+    clarification: dict[str, Any] | None
+    # Fase 4: build mode — ID da build session ativa (string UUID).
+    build_session_id: str | None
+    # Fase 4: plano estruturado de mutacoes produzido pelo build planner.
+    # Campos: workflow_id, ops: [{op, node_type, label, config, ...}], summary.
+    build_plan: dict[str, Any] | None
+    # Fase 4: contexto do workflow alvo (nos/arestas existentes) para o planner.
+    workflow_context: dict[str, Any] | None
