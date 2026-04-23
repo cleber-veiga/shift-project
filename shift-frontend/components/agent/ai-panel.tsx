@@ -51,6 +51,7 @@ function AIConversation() {
         question: selection.question,
         option: selection.option,
         isExtra: selection.isExtra,
+        connectionVariable: selection.connectionVariable,
       },
       context,
     )

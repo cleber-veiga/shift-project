@@ -362,7 +362,13 @@
       "Bash(python -c \"from app.services.agent.graph.prompts import BUILD_PLANNER_PROMPT; print\\(len\\(BUILD_PLANNER_PROMPT\\)\\); print\\('OK'\\)\")",
       "Bash(python -c \"from app.services.agent.tools.registry import TOOL_REGISTRY, TOOL_SCHEMAS; print\\('registry ok', 'pending_set_io_schema' in TOOL_REGISTRY\\); from app.services.agent.graph.nodes.build_workflow import _PENDING_DISPATCH; print\\('dispatch ok', 'pending_set_io_schema' in _PENDING_DISPATCH\\); from app.services.build_session_service import build_session_service; print\\('service ok', hasattr\\(build_session_service, 'set_io_schema'\\)\\); from app.services.agent.graph.nodes.load_workflow_context import load_workflow_context_node; print\\('context ok'\\)\")",
       "Bash(python -c \"from app.services.agent.chat_service import agent_chat_service; from app.services.agent.events import EVT_CLARIFICATION; from app.schemas.agent import MessageResponse; print\\('OK', EVT_CLARIFICATION\\)\")",
-      "Bash(python -c \"from app.services.agent.graph.prompts import BUILD_PLANNER_PROMPT; assert 'CONTINUIDADE' in BUILD_PLANNER_PROMPT; assert 'ConstrushowDb' in BUILD_PLANNER_PROMPT; print\\('prompt OK, len=', len\\(BUILD_PLANNER_PROMPT\\)\\)\")"
+      "Bash(python -c \"from app.services.agent.graph.prompts import BUILD_PLANNER_PROMPT; assert 'CONTINUIDADE' in BUILD_PLANNER_PROMPT; assert 'ConstrushowDb' in BUILD_PLANNER_PROMPT; print\\('prompt OK, len=', len\\(BUILD_PLANNER_PROMPT\\)\\)\")",
+      "Bash(python -c \"from app.services.agent.chat_service import agent_chat_service; from app.services.agent.graph.llm import llm_complete; print\\('OK'\\)\")",
+      "Bash(./venv/Scripts/python.exe -m pip install \"langsmith>=0.1.100,<1.0\")",
+      "Bash(./venv/Scripts/python.exe -c ' *)",
+      "Bash(./venv/Scripts/python.exe -c \"import langchain_openai; import langchain_anthropic; print\\('openai:', langchain_openai.__version__\\); print\\('anthropic:', langchain_anthropic.__version__\\)\")",
+      "Bash(./venv/Scripts/python.exe -c \"from app.services.agent.graph.llm import llm_complete_with_usage, llm_complete, llm_complete_json_with_usage, llm_complete_json, llm_stream, LLMResponse; print\\('llm.py imports OK'\\)\")",
+      "Bash(./venv/Scripts/python.exe -c \"from app.services.agent.chat_service import agent_chat_service; print\\('chat_service imports OK'\\); from app.services.agent.graph.nodes.guardrails import guardrails_node; from app.services.agent.graph.nodes.understand_intent import understand_intent_node; from app.services.agent.graph.nodes.plan_actions import plan_actions_node; from app.services.agent.graph.nodes.report import report_node; print\\('all nodes import OK'\\)\")"
     ]
   }
 }

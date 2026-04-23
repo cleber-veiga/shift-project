@@ -43,6 +43,43 @@ def _last_user_message(messages: list[dict[str, Any]]) -> str:
     return ""
 
 
+def _format_conversation_history(
+    messages: list[dict[str, Any]],
+    *,
+    max_turns: int = 12,
+    max_chars_per_turn: int = 2000,
+) -> str:
+    """Serializa as ultimas `max_turns` mensagens user/assistant para o planner.
+
+    O build planner precisa do HISTORICO inteiro porque decisoes tomadas em
+    turnos anteriores (ex: "quero variavel de conexao", "os DELETEs que
+    listei no primeiro turno") sao obrigatorias para a construcao correta
+    dos nos. Usar so a ultima mensagem fazia o planner esquecer os SQLs e
+    a escolha de variavel na resposta de uma clarificacao — o motivo exato
+    dos bugs relatados pelo usuario (DELETEs virando SELECT placeholder,
+    variavel de conexao sendo ignorada).
+
+    Retorno: bloco texto delimitado por tags XML, pronto para ir no payload
+    JSON do user prompt. Cada mensagem fica envolta em <turn role=...>.
+    Truncamos cada turn para evitar prompts gigantes em threads longas.
+    """
+    relevant = [
+        m for m in messages
+        if m.get("role") in {"user", "assistant"} and str(m.get("content") or "").strip()
+    ]
+    if not relevant:
+        return ""
+    tail = relevant[-max_turns:]
+    parts: list[str] = []
+    for msg in tail:
+        role = msg.get("role")
+        content = sanitize_llm_string(str(msg.get("content") or ""))[:max_chars_per_turn]
+        # escape XML no conteudo para evitar que o usuario feche tags de turn
+        escaped = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        parts.append(f"<turn role=\"{role}\">{escaped}</turn>")
+    return "<conversation_history>\n" + "\n".join(parts) + "\n</conversation_history>"
+
+
 def _uuid_or_none(raw: Any) -> UUID | None:
     if raw is None:
         return None
@@ -210,16 +247,36 @@ async def _plan_build(
     usage_prefix: str = "plan_actions_build",
 ) -> dict[str, Any]:
     """Chama o BUILD_PLANNER_PROMPT para intencoes de construcao de workflow."""
-    user_text = sanitize_llm_string(_last_user_message(state.get("messages", [])))
+    all_messages = state.get("messages") or []
+    user_text = sanitize_llm_string(_last_user_message(all_messages))
     ctx = state.get("user_context") or {}
     workflow_context = state.get("workflow_context") or {}
-    sql_analysis = _sql_preanalysis(user_text)
+
+    # Pre-analise SQL considera TODAS as mensagens do usuario: o SQL pode ter
+    # sido fornecido em um turno anterior (ex: usuario colou os DELETEs, depois
+    # respondeu a uma clarificacao de conexao). Concatenamos os conteudos de
+    # user para que o parser encontre os blocos SQL mesmo quando estao no
+    # historico, nao na ultima mensagem.
+    user_messages_concat = "\n\n".join(
+        sanitize_llm_string(str(m.get("content") or ""))
+        for m in all_messages
+        if m.get("role") == "user"
+    )
+    sql_analysis = _sql_preanalysis(user_messages_concat or user_text)
+
+    conversation = _format_conversation_history(all_messages)
 
     payload_dict: dict[str, Any] = {
         "intent": intent_data,
         "user_message": _wrap_user_input(user_text[:4000]),
         "user_context": ctx,
     }
+    # O historico completo e CRITICO para multiturno: decisoes tomadas em
+    # turnos anteriores (escolha de conexao vs variavel, SQLs colados antes
+    # de responder uma clarificacao) precisam chegar ao planner, senao ele
+    # reinterpreta a conversa do zero e perde o contexto.
+    if conversation:
+        payload_dict["conversation_history"] = conversation
     if workflow_context:
         wf_json = json.dumps(workflow_context, ensure_ascii=False)
         payload_dict["workflow_state"] = f"<workflow_state>{wf_json}</workflow_state>"

@@ -42,6 +42,7 @@ export default function AiFullScreenPage() {
     field: "connection_id" | "trigger_type" | "workflow_id" | "target_table" | "other"
     question: string
     isExtra: boolean
+    connectionVariable?: { name: string; connectionType: string }
   }) => {
     await answerClarification(
       {
@@ -50,6 +51,7 @@ export default function AiFullScreenPage() {
         question: selection.question,
         option: selection.option,
         isExtra: selection.isExtra,
+        connectionVariable: selection.connectionVariable,
       },
       context,
     )

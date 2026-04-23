@@ -126,6 +126,12 @@ export function BuildModeProvider({ children }: { children: ReactNode }) {
   // Preserved after exitBuildMode so undoBuild can still reference the confirmed session.
   const confirmedSessionIdRef = useRef<string | null>(null)
   const confirmedWorkflowIdRef = useRef<string | null>(null)
+  // Mirrors de pendingNodes/pendingEdges. Usados em flushPendingToReal para
+  // ler o valor mais recente sem precisar chamar setPendingNodes com um
+  // updater que, por sua vez, invocava setRealNodes — padrao proibido pelo
+  // React (setState de outro componente durante render/updater de setState).
+  const pendingNodesRef = useRef<Node[]>([])
+  const pendingEdgesRef = useRef<Edge[]>([])
 
   // ---------------------------------------------------------------------------
   // State transitions (called from SSE hook)
@@ -134,6 +140,8 @@ export function BuildModeProvider({ children }: { children: ReactNode }) {
   const enterBuildMode = useCallback((sid: string) => {
     setSessionId(sid)
     sessionIdRef.current = sid
+    pendingNodesRef.current = []
+    pendingEdgesRef.current = []
     setPendingNodes([])
     setPendingEdges([])
     setPendingOps([])
@@ -154,6 +162,8 @@ export function BuildModeProvider({ children }: { children: ReactNode }) {
     setBuildState("idle")
     setSessionId(null)
     sessionIdRef.current = null
+    pendingNodesRef.current = []
+    pendingEdgesRef.current = []
     setPendingNodes([])
     setPendingEdges([])
     if (confirmed) {
@@ -182,10 +192,12 @@ export function BuildModeProvider({ children }: { children: ReactNode }) {
       position: raw.position as { x: number; y: number },
       data: { ...((raw.data as Record<string, unknown>) ?? {}), __pending: true },
     }
-    setPendingNodes((prev) => {
-      if (prev.some((n) => n.id === node.id)) return prev
-      return [...prev, node]
-    })
+    // Ref e source of truth: atualizado sincronamente para que eventos SSE
+    // consecutivos (antes do React renderizar) nao sofram race. setState
+    // apenas sincroniza a UI.
+    if (pendingNodesRef.current.some((n) => n.id === node.id)) return
+    pendingNodesRef.current = [...pendingNodesRef.current, node]
+    setPendingNodes(pendingNodesRef.current)
     setPendingOps((prev) => {
       if (prev.some((op) => op.id === node.id)) return prev
       const data = node.data as Record<string, unknown>
@@ -213,10 +225,9 @@ export function BuildModeProvider({ children }: { children: ReactNode }) {
       style: { strokeWidth: 2, strokeDasharray: "6 4" },
       animated: true,
     }
-    setPendingEdges((prev) => {
-      if (prev.some((e) => e.id === edge.id)) return prev
-      return [...prev, edge]
-    })
+    if (pendingEdgesRef.current.some((e) => e.id === edge.id)) return
+    pendingEdgesRef.current = [...pendingEdgesRef.current, edge]
+    setPendingEdges(pendingEdgesRef.current)
     setPendingOps((prev) => {
       if (prev.some((op) => op.id === edge.id)) return prev
       return [
@@ -233,68 +244,83 @@ export function BuildModeProvider({ children }: { children: ReactNode }) {
 
   const updatePendingNode = useCallback(
     (nodeId: string, dataPatch: Record<string, unknown>) => {
-      setPendingNodes((prev) =>
-        prev.map((n) =>
-          n.id === nodeId
-            ? { ...n, data: { ...n.data, ...dataPatch, __pending: true } }
-            : n,
-        ),
+      pendingNodesRef.current = pendingNodesRef.current.map((n) =>
+        n.id === nodeId
+          ? { ...n, data: { ...n.data, ...dataPatch, __pending: true } }
+          : n,
       )
+      setPendingNodes(pendingNodesRef.current)
     },
     [],
   )
 
   const removePendingNode = useCallback((nodeId: string) => {
-    setPendingNodes((prev) => prev.filter((n) => n.id !== nodeId))
-    setPendingEdges((prev) =>
-      prev.filter((e) => e.source !== nodeId && e.target !== nodeId),
+    pendingNodesRef.current = pendingNodesRef.current.filter(
+      (n) => n.id !== nodeId,
     )
+    pendingEdgesRef.current = pendingEdgesRef.current.filter(
+      (e) => e.source !== nodeId && e.target !== nodeId,
+    )
+    setPendingNodes(pendingNodesRef.current)
+    setPendingEdges(pendingEdgesRef.current)
   }, [])
 
   const removePendingEdge = useCallback((edgeId: string) => {
-    setPendingEdges((prev) => prev.filter((e) => e.id !== edgeId))
+    pendingEdgesRef.current = pendingEdgesRef.current.filter(
+      (e) => e.id !== edgeId,
+    )
+    setPendingEdges(pendingEdgesRef.current)
   }, [])
 
-  // Sincronamente promove ghost nodes/edges para o canvas real. Usamos setters
-  // com updater para ler o valor MAIS RECENTE de pendingNodes/pendingEdges —
-  // refs externos podem estar stale quando multiplos eventos SSE chegam antes
-  // do proximo render. Retorna contagens para feedback (toast).
+  // Sincronamente promove ghost nodes/edges para o canvas real. Le o valor
+  // mais recente de pendingNodes/pendingEdges de refs espelho (sincronizados
+  // em useEffect). Antes usavamos setPendingNodes com updater para capturar
+  // o valor fresco, mas isso disparava setRealNodes DE DENTRO de um updater
+  // — padrao proibido pelo React ("Cannot update a component while rendering
+  // a different component") porque updaters podem ser reexecutados em
+  // StrictMode/Concurrent. Agora cada setState e chamado no escopo plano do
+  // callback, sem aninhamento.
   const flushPendingToReal = useCallback<BuildModeContextValue["flushPendingToReal"]>(
     (setRealNodes, setRealEdges) => {
-      let nodeCount = 0
-      let edgeCount = 0
+      const currentNodes = pendingNodesRef.current
+      const currentEdges = pendingEdgesRef.current
+      const nodeCount = currentNodes.length
+      const edgeCount = currentEdges.length
 
-      setPendingNodes((currentPending) => {
-        nodeCount = currentPending.length
-        if (currentPending.length > 0) {
-          const promoted = currentPending.map((g) => ({
-            ...g,
-            data: { ...(g.data as Record<string, unknown>), __pending: undefined },
-          }))
-          setRealNodes((prevReal) => {
-            const fresh = promoted.filter((p) => !prevReal.some((n) => n.id === p.id))
-            return [...prevReal, ...fresh]
-          })
-        }
-        return []
-      })
+      if (nodeCount > 0) {
+        const promoted = currentNodes.map((g) => ({
+          ...g,
+          data: { ...(g.data as Record<string, unknown>), __pending: undefined },
+        }))
+        setRealNodes((prevReal) => {
+          const fresh = promoted.filter((p) => !prevReal.some((n) => n.id === p.id))
+          return [...prevReal, ...fresh]
+        })
+      }
 
-      setPendingEdges((currentPending) => {
-        edgeCount = currentPending.length
-        if (currentPending.length > 0) {
-          const promoted = currentPending.map((g) => ({
-            ...g,
-            data: { ...(g.data as Record<string, unknown>), __pending: undefined },
-            style: { strokeWidth: 2 },
-            animated: true,
-          }))
-          setRealEdges((prevReal) => {
-            const fresh = promoted.filter((p) => !prevReal.some((e) => e.id === p.id))
-            return [...prevReal, ...fresh]
-          })
-        }
-        return []
-      })
+      if (edgeCount > 0) {
+        const promoted = currentEdges.map((g) => ({
+          ...g,
+          data: { ...(g.data as Record<string, unknown>), __pending: undefined },
+          style: { strokeWidth: 2 },
+          animated: true,
+        }))
+        setRealEdges((prevReal) => {
+          const fresh = promoted.filter((p) => !prevReal.some((e) => e.id === p.id))
+          return [...prevReal, ...fresh]
+        })
+      }
+
+      // Limpa o estado de ghosts apos promover: refs sao a source of truth,
+      // setState apenas sincroniza a UI.
+      if (nodeCount > 0) {
+        pendingNodesRef.current = []
+        setPendingNodes([])
+      }
+      if (edgeCount > 0) {
+        pendingEdgesRef.current = []
+        setPendingEdges([])
+      }
 
       return { nodeCount, edgeCount }
     },

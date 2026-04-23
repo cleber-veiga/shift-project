@@ -342,6 +342,16 @@ export type ClarificationAnswerInput =
       question: string
       option: ClarificationOption
       isExtra: boolean
+      /**
+       * Dados capturados inline no card (form de "Criar variavel de
+       * conexao"). Quando presentes, buildClarificationMessage monta uma
+       * instrucao completa de declaracao de variavel + connection_id
+       * referenciado — evita o pingue-pongue de turnos de texto livre.
+       */
+      connectionVariable?: {
+        name: string
+        connectionType: string
+      }
     }
 
 /**
@@ -353,26 +363,39 @@ export type ClarificationAnswerInput =
  */
 function buildClarificationMessage(input: ClarificationAnswerInput): string {
   if (input.kind === "text") return input.text
-  const { field, option, isExtra } = input
+  const { field, option, isExtra, connectionVariable } = input
   if (field === "connection_id") {
-    if (isExtra) {
-      // Chip "Criar variavel de conexao" — ancoramos o caminho de variavel
-      // para a proxima resposta do usuario (nome/tipo) nao ser reinterpretada.
+    if (isExtra && connectionVariable) {
+      // Form inline submetido: mandamos tudo numa unica instrucao completa,
+      // sem depender do planner extrair nome/tipo de texto livre em turnos
+      // subsequentes. A mensagem diz EXATAMENTE o que fazer.
+      const { name, connectionType } = connectionVariable
       return (
-        "Nao quero usar uma conexao existente. Declare uma variavel de workflow " +
-        "do tipo 'connection' (type=connection) e use '{{vars.NOME}}' como " +
-        "connection_id em todos os nos que precisam de conexao. A seguir vou " +
-        "informar o nome da variavel e o tipo de banco (connection_type). " +
-        "Nao modifique, renomeie nem crie nenhuma conexao no catalogo do projeto."
+        `Declare uma variavel de workflow chamada ${name} do tipo connection ` +
+        `com connection_type=${connectionType} (required=true). ` +
+        `Use "{{vars.${name}}}" como connection_id em TODOS os nos sql_script ` +
+        `deste workflow. Se o workflow for um subfluxo, inclua essa variavel ` +
+        `tambem em pending_set_io_schema.inputs. ` +
+        `Prossiga diretamente para montar o plano com ops — NAO faca novas ` +
+        `perguntas de conexao, NAO selecione nem modifique conexoes do ` +
+        `catalogo, NAO repita a clarificacao.`
+      )
+    }
+    if (isExtra) {
+      // Fallback raro (extra_option sem form). Mantemos o anchor antigo.
+      return (
+        "Use uma variavel de workflow do tipo connection para o connection_id. " +
+        "Vou informar o nome e o connection_type a seguir. " +
+        "Nao modifique nem selecione conexoes do catalogo."
       )
     }
     return (
       `Use a conexao existente "${option.label}" (connection_id: ${option.value}) ` +
-      "em todos os nos que precisam de conexao."
+      "em todos os nos que precisam de conexao. Prossiga direto para as ops."
     )
   }
   if (field === "trigger_type") {
-    return `O trigger deste workflow e: ${option.label} (${option.value}).`
+    return `O trigger deste workflow e: ${option.label} (${option.value}). Prossiga direto para as ops.`
   }
   if (field === "workflow_id") {
     return `Workflow alvo: ${option.label} (${option.value}).`
@@ -580,10 +603,22 @@ export function useAIStream(): UseAIStreamResult {
     // para que o planner mantenha o contexto por multiplos turnos.
     const finalMessage = buildClarificationMessage(selection)
     // Label exibido no balao do usuario: se foi chip, mostramos o label
-    // curto; se foi texto, mostramos o proprio texto.
-    const displayLabel = selection.kind === "option"
-      ? selection.option.label
-      : selection.text
+    // curto; se foi texto, mostramos o proprio texto. Para a variavel de
+    // conexao com form, sumarizamos a escolha (name + tipo) em vez so do
+    // label generico "Criar variavel de conexao".
+    const displayLabel = (() => {
+      if (selection.kind === "text") return selection.text
+      if (
+        selection.kind === "option" &&
+        selection.isExtra &&
+        selection.field === "connection_id" &&
+        selection.connectionVariable
+      ) {
+        const { name, connectionType } = selection.connectionVariable
+        return `Criar variavel de conexao: ${name} (${connectionType})`
+      }
+      return selection.option.label
+    })()
 
     dispatch({ type: "ANSWER_CLARIFICATION", payload: { answer: displayLabel } })
 

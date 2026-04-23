@@ -100,6 +100,19 @@ class Settings(BaseSettings):
     # Intervalo do job de expiracao de aprovacoes pendentes (minutos).
     AGENT_EXPIRATION_JOB_INTERVAL_MINUTES: int = 5
 
+    # --- Observabilidade: LangSmith ---
+    # Quando LANGSMITH_TRACING=true, o backend:
+    #   1) propaga LANGSMITH_* para os.environ, o que ativa o tracer nativo
+    #      do LangGraph (astream_events, node spans, state diffs);
+    #   2) registra "langsmith" como success/failure_callback do LiteLLM,
+    #      o que envia cada chamada ao LLM (prompt, resposta, latencia,
+    #      tokens) para o mesmo projeto como um span independente.
+    # Gere a API key em https://smith.langchain.com → Settings → API Keys.
+    LANGSMITH_TRACING: bool = False
+    LANGSMITH_API_KEY: str = ""
+    LANGSMITH_PROJECT: str = "shift-platform-agent"
+    LANGSMITH_ENDPOINT: str = "https://api.smith.langchain.com"
+
     @property
     def DATABASE_URL_SYNC(self) -> str:
         """URL sincrona (psycopg2) para uso com Alembic."""

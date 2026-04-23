@@ -222,6 +222,48 @@ async def _get_graph():
     return build_graph(checkpointer=checkpointer)
 
 
+def _build_run_config(
+    *,
+    thread: AgentThread,
+    user: User,
+    resuming: bool,
+) -> dict[str, Any]:
+    """Config passado ao graph.astream_events.
+
+    `configurable.thread_id` e obrigatorio para o checkpointer Postgres
+    localizar o estado da thread entre turnos. `metadata` e `tags` sao
+    lidos pelo tracer do LangSmith (quando LANGSMITH_TRACING=true) — o
+    dashboard agrupa os runs por tag e permite filtrar por metadata,
+    entao colocar thread_id/user_id/workspace_id aqui e o que torna
+    possivel pular direto para a trace relevante ao debugar uma conversa.
+    """
+    project_id = str(thread.project_id) if thread.project_id else None
+    tags = [
+        "platform-agent",
+        f"thread:{thread.id}",
+        f"user:{user.id}",
+        f"workspace:{thread.workspace_id}",
+    ]
+    if project_id:
+        tags.append(f"project:{project_id}")
+    if resuming:
+        tags.append("resume")
+
+    return {
+        "configurable": {"thread_id": str(thread.id)},
+        "metadata": {
+            "thread_id": str(thread.id),
+            "user_id": str(user.id),
+            "workspace_id": str(thread.workspace_id),
+            "project_id": project_id,
+            "model": settings.AGENT_LLM_MODEL,
+            "resuming": resuming,
+        },
+        "tags": tags,
+        "run_name": f"thread {thread.id}",
+    }
+
+
 def _extract_execute_details(output: dict[str, Any]) -> list[dict[str, Any]]:
     """Extrai executed_actions do output do no execute."""
     return output.get("executed_actions") or []
@@ -324,7 +366,11 @@ class AgentChatService:
         if screen_context:
             initial_state["user_context"]["screen_context"] = screen_context
 
-        config = {"configurable": {"thread_id": str(thread.id)}}
+        # metadata/tags sao lidos pelo tracer do LangSmith (ativado via
+        # env vars em graph/llm.py). Permite filtrar no dashboard por
+        # thread/workspace/project e identificar rapidamente o run
+        # correspondente a uma conversa especifica.
+        config = _build_run_config(thread=thread, user=user, resuming=False)
 
         try:
             graph = await _get_graph()
@@ -375,7 +421,7 @@ class AgentChatService:
             "rejection_reason": reason,
         }
         command = Command(resume=resume_payload)
-        config = {"configurable": {"thread_id": str(thread.id)}}
+        config = _build_run_config(thread=thread, user=user, resuming=True)
 
         try:
             graph = await _get_graph()
