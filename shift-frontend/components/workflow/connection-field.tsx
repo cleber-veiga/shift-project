@@ -4,8 +4,13 @@ import { useState } from "react"
 import { SlidersHorizontal } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useWorkflowVariablesContext } from "@/lib/workflow/workflow-variables-context"
-import { migrateLegacySqlParameter } from "@/lib/workflow/parameter-value"
-import { ValueInput } from "@/components/workflow/value-input/ValueInput"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 
 // ─── ConnectionField ───────────────────────────────────────────────────────────
 //
@@ -82,17 +87,24 @@ export function ConnectionField({
       </div>
 
       {varMode ? (
-        <ValueInput
-          value={migrateLegacySqlParameter(value)}
-          onChange={(pv) =>
-            onChange(pv.mode === "fixed" ? pv.value : pv.template)
-          }
-          upstreamFields={[]}
-          allowTransforms={false}
-          allowVariables={true}
-          placeholder="{{vars.conexao}}"
-          size="sm"
-        />
+        <Select
+          value={value}
+          onValueChange={onChange}
+        >
+          <SelectTrigger className="h-8 w-full text-xs">
+            <SelectValue placeholder="Selecione uma variável..." />
+          </SelectTrigger>
+          <SelectContent>
+            {connVars.map((v) => (
+              <SelectItem key={v.name} value={`{{vars.${v.name}}}`} className="text-xs">
+                <span className="font-mono text-violet-600 dark:text-violet-400">{`{{vars.${v.name}}}`}</span>
+                {v.description && (
+                  <span className="ml-2 text-muted-foreground">{v.description}</span>
+                )}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       ) : (
         children
       )}

@@ -1,14 +1,13 @@
 "use client"
 
-import { Fragment, memo, useCallback, useEffect, useRef, useState } from "react"
-import { Handle, Position, useReactFlow, type NodeProps } from "@xyflow/react"
+import { Fragment, memo, useCallback, useState } from "react"
+import { Handle, NodeToolbar, Position, useReactFlow, type NodeProps } from "@xyflow/react"
 import {
   AlertTriangle,
   Bot,
   CheckCircle2,
   Copy,
   Loader2,
-  MoreHorizontal,
   PencilLine,
   Play,
   Power,
@@ -178,7 +177,7 @@ function getNodeSummaryRows(type: string, data: Record<string, unknown>): Summar
 }
 
 const sourceHandleBaseClass =
-  "!size-3 !-right-2 !rounded-full !border-2 !border-background !transition-transform hover:!scale-125"
+  "!size-2.5 !right-0 !rounded-full !border-[1.5px] !border-slate-400 dark:!border-slate-500 !bg-background !shadow-none !transition-all !duration-200 !opacity-0 group-hover/node:!opacity-100 hover:!scale-125 hover:!border-primary"
 
 function BranchSourceHandle({
   id,
@@ -194,21 +193,14 @@ function BranchSourceHandle({
   labelClass: string
 }) {
   return (
-    <>
-      <Handle
-        type="source"
-        position={Position.Right}
-        id={id}
-        style={{ top }}
-        className={cn(sourceHandleBaseClass, colorClass)}
-      />
-      <span
-        className={cn("pointer-events-none absolute text-[8px] font-bold", labelClass)}
-        style={{ right: 10, top, transform: "translateY(-50%)" }}
-      >
-        {label}
-      </span>
-    </>
+    <Handle
+      type="source"
+      position={Position.Right}
+      id={id}
+      style={{ top }}
+      className={cn(sourceHandleBaseClass, colorClass)}
+      title={label}
+    />
   )
 }
 
@@ -228,20 +220,7 @@ function LegacySourceHandle() {
 function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
   const { deleteElements, setNodes, getNode } = useReactFlow()
   const { onExecuteNode } = useNodeActions()
-  const [menuOpen, setMenuOpen] = useState(false)
-  const menuRef = useRef<HTMLDivElement>(null)
-
-  // Close menu when clicking outside (capture phase — works inside React Flow canvas)
-  useEffect(() => {
-    if (!menuOpen) return
-    const onDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setMenuOpen(false)
-      }
-    }
-    document.addEventListener("mousedown", onDown, true)
-    return () => document.removeEventListener("mousedown", onDown, true)
-  }, [menuOpen])
+  const [hovered, setHovered] = useState(false)
 
   const definition  = getNodeDefinition(type ?? "")
   const nodeData    = data as Record<string, unknown>
@@ -287,7 +266,7 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
 
   // ── Inline label edit ────────────────────────────────────────────────────
   const handleLabelChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
+    (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       setNodes((nds) =>
         nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, label: e.target.value } } : n)),
       )
@@ -300,17 +279,14 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
     setNodes((nds) =>
       nds.map((n) => (n.id === id ? { ...n, data: { ...n.data, enabled: !enabled } } : n)),
     )
-    setMenuOpen(false)
   }, [id, enabled, setNodes])
 
   const handleExecute = useCallback(() => {
-    setMenuOpen(false)
     onExecuteNode(id)
   }, [id, onExecuteNode])
 
   const handleDelete = useCallback(() => {
     deleteElements({ nodes: [{ id }] })
-    setMenuOpen(false)
   }, [id, deleteElements])
 
   const handleDuplicate = useCallback(() => {
@@ -326,13 +302,13 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
         position: { x: node.position.x + 40, y: node.position.y + 40 },
       },
     ])
-    setMenuOpen(false)
   }, [id, getNode, setNodes])
 
   return (
     <div
       className={cn(
-        "group/node relative w-[240px] rounded-2xl border bg-card shadow-md transition-all duration-200",
+        "group/node relative min-w-[96px] rounded-2xl border bg-card shadow-md transition-all duration-200",
+        hovered && "shadow-xl shadow-black/10 dark:shadow-black/40",
         isPending
           ? "border-dashed border-2 border-violet-400 dark:border-violet-500 opacity-60"
           : theme.border,
@@ -340,274 +316,270 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
         selected && `ring-2 ring-offset-2 ring-offset-background ${isPending ? "ring-violet-400/60" : theme.ring}`,
         !enabled && "opacity-50",
       )}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
-      {/* Ghost badge */}
-      {isPending && (
-        <span className="absolute -top-2 -right-2 z-10 flex items-center gap-0.5 rounded-full bg-violet-500 px-1.5 py-0.5 text-[9px] font-bold text-white shadow-sm">
-          <Bot className="size-2.5" />
-          IA
-        </span>
-      )}
-      {/* ── Target handle (left) ── */}
-      {definition?.category !== "trigger" && (
-        <Handle
-          type="target"
-          position={Position.Left}
-          className={cn(
-            "!size-3.5 !-left-2 !rounded-full !border-2 !border-background !transition-transform hover:!scale-125",
-            theme.handleColor,
-          )}
-        />
-      )}
-
-      {/* ── Header ── */}
-      <div className="flex items-center gap-2.5 p-3">
-        {/* Icon with execution badge */}
-        <div className="relative shrink-0">
-          <div
-            className={cn(
-              "flex size-9 items-center justify-center rounded-xl transition-all",
-              !customColor && theme.iconBg,
-              execState?.status === "running" && "animate-pulse",
-            )}
-            style={
-              customColor
-                ? { backgroundColor: `${customColor}20`, color: customColor }
-                : undefined
-            }
-          >
-            <Icon className={cn("size-4", !customColor && theme.iconColor)} />
-          </div>
-
-          {execState?.status === "running" && (
-            <span className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full border-2 border-background bg-amber-400">
-              <Loader2 className="size-2.5 animate-spin text-white" />
-            </span>
-          )}
-          {execState?.status === "success" && (
-            <span className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full border-2 border-background bg-emerald-500">
-              <CheckCircle2 className="size-2.5 text-white" />
-            </span>
-          )}
-          {execState?.status === "handled_error" && (
-            <span className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full border-2 border-background bg-rose-500">
-              <AlertTriangle className="size-2.5 text-white" />
-            </span>
-          )}
-          {execState?.status === "error" && (
-            <span className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full border-2 border-background bg-red-500">
-              <XCircle className="size-2.5 text-white" />
-            </span>
-          )}
-        </div>
-
-        {/* Inline-editable label + subtitle */}
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1">
-            <input
-              value={label ?? definition?.label ?? type ?? ""}
-              onChange={handleLabelChange}
-              onClick={(e) => e.stopPropagation()}
-              className="nodrag nopan min-w-0 flex-1 truncate bg-transparent text-[13px] font-bold leading-tight text-foreground outline-none placeholder:text-muted-foreground"
-              placeholder="Nome do nó"
-            />
-            <PencilLine
-              className="size-2.5 shrink-0 text-muted-foreground/40 opacity-0 transition-opacity group-hover/node:opacity-100"
-            />
-            {retryActive && (
-              <span
-                className="flex shrink-0 items-center gap-0.5 rounded bg-sky-500/10 px-1 py-0.5 text-[9px] font-medium text-sky-600 dark:text-sky-400"
-                title={`Retry: ${retryPolicy?.max_attempts} tentativas (${retryPolicy?.backoff_strategy ?? "none"})`}
-              >
-                <RefreshCw className="size-2.5" />
-                {retryPolicy?.max_attempts}x
-              </span>
-            )}
-            {varRefCount > 0 && (
-              <span
-                className="flex shrink-0 items-center gap-0.5 rounded bg-violet-500/10 px-1 py-0.5 text-[9px] font-medium text-violet-600 dark:text-violet-400"
-                title={`${varRefCount} referência${varRefCount > 1 ? "s" : ""} a variável`}
-              >
-                {"{}"}
-                {varRefCount}
-              </span>
-            )}
-          </div>
-          <p className="mt-0.5 truncate text-[11px] leading-tight text-muted-foreground">
-            {!enabled
-              ? "desativado"
-              : execState?.status === "running"
-              ? "executando…"
-              : execState?.status === "success" &&
-                typeof execState.output?.row_count === "number"
-              ? `${execState.output.row_count} linhas · ${execState.duration_ms}ms`
-              : execState?.status === "error"
-              ? "erro na execução"
-              : definition?.description ?? "Nó customizado"}
-          </p>
-        </div>
-
-        {/* ── "..." context menu ── */}
-        <div ref={menuRef} className="relative shrink-0">
+      {/* ── Floating action toolbar ── */}
+      <NodeToolbar isVisible={hovered || selected} position={Position.Top} offset={6}>
+        <div className="flex items-center gap-0.5 rounded-lg border border-border bg-card px-1.5 py-1 shadow-lg">
           <button
             type="button"
-            onClick={(e) => {
-              e.stopPropagation()
-              setMenuOpen((v) => !v)
-            }}
-            className={cn(
-              "rounded p-1 text-muted-foreground transition-all",
-              menuOpen
-                ? "bg-muted text-foreground"
-                : "opacity-0 hover:bg-muted group-hover/node:opacity-60 hover:!opacity-100",
-            )}
-            aria-label="Opções do nó"
+            onClick={handleExecute}
+            title="Executar"
+            className="rounded p-1 text-primary transition-colors hover:bg-muted"
           >
-            <MoreHorizontal className="size-3.5" />
+            <Play className="size-3" />
           </button>
-
-          {menuOpen && (
-            <div className="absolute right-0 top-full z-40 mt-1 w-48 overflow-hidden rounded-xl border border-border bg-card py-1 shadow-xl">
-              {/* Execute */}
-              <button
-                type="button"
-                onClick={handleExecute}
-                className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-foreground transition-colors hover:bg-muted"
-              >
-                <Play className="size-3.5 text-primary" />
-                Executar este nó
-              </button>
-
-              <div className="my-1 h-px bg-border" />
-
-              {/* Duplicate */}
-              <button
-                type="button"
-                onClick={handleDuplicate}
-                className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-foreground transition-colors hover:bg-muted"
-              >
-                <Copy className="size-3.5 text-muted-foreground" />
-                Duplicar nó
-              </button>
-
-              {/* Enable / Disable */}
-              <button
-                type="button"
-                onClick={handleToggleEnabled}
-                className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-foreground transition-colors hover:bg-muted"
-              >
-                <Power className="size-3.5 text-muted-foreground" />
-                {enabled ? "Desativar nó" : "Ativar nó"}
-              </button>
-
-              <div className="my-1 h-px bg-border" />
-
-              {/* Delete */}
-              <button
-                type="button"
-                onClick={handleDelete}
-                className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-xs font-medium text-destructive transition-colors hover:bg-red-50 dark:hover:bg-red-950/30"
-              >
-                <Trash2 className="size-3.5" />
-                Excluir nó
-              </button>
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={handleToggleEnabled}
+            title={enabled ? "Desativar" : "Ativar"}
+            className="rounded p-1 transition-colors hover:bg-muted"
+          >
+            <Power className={cn("size-3", enabled ? "text-muted-foreground" : "text-amber-500")} />
+          </button>
+          <button
+            type="button"
+            onClick={handleDuplicate}
+            title="Duplicar"
+            className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted"
+          >
+            <Copy className="size-3" />
+          </button>
+          <div className="mx-0.5 h-3 w-px bg-border" />
+          <button
+            type="button"
+            onClick={handleDelete}
+            title="Excluir"
+            className="rounded p-1 text-destructive transition-colors hover:bg-red-50 dark:hover:bg-red-950/30"
+          >
+            <Trash2 className="size-3" />
+          </button>
         </div>
-      </div>
+      </NodeToolbar>
 
-      {/* ── Config summary rows ── */}
-      {summaryRows.length > 0 && (
-        <div className="mx-3 mb-2 rounded-lg border border-border/50 bg-muted/30 px-2.5 py-2">
-          <div className="grid grid-cols-[68px_1fr] items-center gap-y-1.5">
-            {summaryRows.map((row) => (
-              <Fragment key={row.label}>
-                <span className="text-[10px] font-medium text-muted-foreground">{row.label}</span>
-                <div className="flex justify-end">
-                  {row.badge ? (
-                    <span className="inline-flex items-center rounded border border-border/60 bg-background px-1.5 py-0.5 font-mono text-[10px] font-semibold text-foreground">
-                      {row.value}
+      {/* Ghost badge */}
+      {isPending && (
+          <span className="absolute -top-2 -right-2 z-10 flex items-center gap-0.5 rounded-full bg-violet-500 px-1.5 py-0.5 text-[9px] font-bold text-white shadow-sm">
+            <Bot className="size-2.5" />
+            IA
+          </span>
+        )}
+
+        {/* Target handle */}
+        {definition?.category !== "trigger" && (
+          <Handle
+            type="target"
+            position={Position.Left}
+            className="!size-2.5 !left-0 !rounded-full !border-[1.5px] !border-slate-400 dark:!border-slate-500 !bg-background !shadow-none !transition-all !duration-200 !opacity-0 group-hover/node:!opacity-100 hover:!scale-125 hover:!border-primary"
+          />
+        )}
+
+        {/* ── Header: always compact, info only on hover ── */}
+        <div className="flex items-center gap-2.5 px-3 py-2.5">
+          <div className="relative shrink-0">
+            <div
+              className={cn(
+                "flex size-8 items-center justify-center rounded-xl transition-all",
+                !customColor && theme.iconBg,
+                execState?.status === "running" && "animate-pulse",
+              )}
+              style={customColor ? { backgroundColor: `${customColor}20`, color: customColor } : undefined}
+            >
+              <Icon className={cn("size-4", !customColor && theme.iconColor)} />
+            </div>
+            {execState?.status === "running" && (
+              <span className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full border-2 border-background bg-amber-400">
+                <Loader2 className="size-2.5 animate-spin text-white" />
+              </span>
+            )}
+            {execState?.status === "success" && (
+              <span className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full border-2 border-background bg-emerald-500">
+                <CheckCircle2 className="size-2.5 text-white" />
+              </span>
+            )}
+            {execState?.status === "handled_error" && (
+              <span className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full border-2 border-background bg-rose-500">
+                <AlertTriangle className="size-2.5 text-white" />
+              </span>
+            )}
+            {execState?.status === "error" && (
+              <span className="absolute -bottom-1 -right-1 flex size-4 items-center justify-center rounded-full border-2 border-background bg-red-500">
+                <XCircle className="size-2.5 text-white" />
+              </span>
+            )}
+          </div>
+
+          {/* Exec status + badges — hover only, only when there's something to show */}
+          {hovered && (!enabled || execState?.status || retryActive || varRefCount > 0) && (
+            <div className="min-w-0 flex-1">
+              {(!enabled || execState?.status) && (
+                <p className="truncate text-[11px] leading-tight text-muted-foreground">
+                  {!enabled
+                    ? "desativado"
+                    : execState?.status === "running"
+                    ? "executando…"
+                    : execState?.status === "success" &&
+                      typeof execState.output?.row_count === "number"
+                    ? `${execState.output.row_count} linhas · ${execState.duration_ms}ms`
+                    : execState?.status === "error"
+                    ? "erro na execução"
+                    : null}
+                </p>
+              )}
+              {(retryActive || varRefCount > 0) && (
+                <div className="mt-0.5 flex items-center gap-1">
+                  {retryActive && (
+                    <span
+                      className="flex items-center gap-0.5 rounded bg-sky-500/10 px-1 py-0.5 text-[9px] font-medium text-sky-600 dark:text-sky-400"
+                      title={`Retry: ${retryPolicy?.max_attempts} tentativas (${retryPolicy?.backoff_strategy ?? "none"})`}
+                    >
+                      <RefreshCw className="size-2.5" />
+                      {retryPolicy?.max_attempts}x
                     </span>
-                  ) : (
-                    <span className="max-w-[130px] truncate text-right text-[10px] text-foreground">
-                      {row.value}
+                  )}
+                  {varRefCount > 0 && (
+                    <span
+                      className="flex items-center gap-0.5 rounded bg-violet-500/10 px-1 py-0.5 text-[9px] font-medium text-violet-600 dark:text-violet-400"
+                      title={`${varRefCount} referência${varRefCount > 1 ? "s" : ""} a variável`}
+                    >
+                      {"{}"}
+                      {varRefCount}
                     </span>
                   )}
                 </div>
-              </Fragment>
-            ))}
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Config summary rows (hover only) ── */}
+        <div
+          className={cn(
+            "overflow-hidden transition-all duration-200",
+            hovered && summaryRows.length > 0 ? "w-[180px] max-h-48" : "max-h-0",
+          )}
+        >
+          <div className="mx-3 mb-2 rounded-lg border border-border/50 bg-muted/30 px-2.5 py-2">
+            <div className="grid grid-cols-[52px_1fr] items-center gap-y-1.5">
+              {summaryRows.map((row) => (
+                <Fragment key={row.label}>
+                  <span className="text-[10px] font-medium text-muted-foreground">{row.label}</span>
+                  <div className="flex justify-end">
+                    {row.badge ? (
+                      <span className="inline-flex items-center rounded border border-border/60 bg-background px-1.5 py-0.5 font-mono text-[10px] font-semibold text-foreground">
+                        {row.value}
+                      </span>
+                    ) : (
+                      <span className="max-w-[88px] truncate text-right text-[10px] text-foreground">
+                        {row.value}
+                      </span>
+                    )}
+                  </div>
+                </Fragment>
+              ))}
+            </div>
           </div>
         </div>
-      )}
 
-      {/* ── Code / SQL dark block ── */}
-      {codeContent && (
-        <div className="mx-3 mb-3 overflow-hidden rounded-lg bg-[#1a1b26] px-2.5 py-2">
-          <p className="font-mono text-[10px] leading-relaxed text-[#a5b4fc] break-all line-clamp-3">
-            {codeContent}
-          </p>
+        {/* ── Code / SQL dark block (hover only) ── */}
+        <div
+          className={cn(
+            "overflow-hidden transition-all duration-200",
+            hovered && codeContent ? "w-[180px] max-h-40" : "max-h-0",
+          )}
+        >
+          <div className="mx-3 mb-3 overflow-hidden rounded-lg bg-[#1a1b26] px-2.5 py-2">
+            <p className="break-all font-mono text-[10px] leading-relaxed text-[#a5b4fc] line-clamp-3">
+              {codeContent}
+            </p>
+          </div>
         </div>
-      )}
 
-      {/* ── Source handle(s) (right) ── */}
-      {(() => {
-        // IF node: true / false + on_error
-        if (definition?.type === "if_node") {
-          return (
-            <>
-              <BranchSourceHandle id="true" top="28%" colorClass="!bg-emerald-500" label="V" labelClass="text-emerald-500" />
-              <BranchSourceHandle id="false" top="50%" colorClass="!bg-orange-500" label="F" labelClass="text-orange-500" />
-              <BranchSourceHandle id="on_error" top="72%" colorClass="!bg-red-500" label="ERR" labelClass="text-red-500" />
-            </>
-          )
-        }
-
-        // Switch node: dynamic handles from cases + default + on_error
-        if (definition?.type === "switch_node") {
-          const cases: { label: string }[] = Array.isArray(nodeData.cases) ? (nodeData.cases as { label: string }[]) : []
-          const handleIds = [...cases.map((c) => c.label).filter(Boolean), "default"]
-          const count = handleIds.length || 1
+        {/* ── Source handles ── */}
+        {(() => {
+          if (definition?.type === "if_node") {
+            return (
+              <>
+                <BranchSourceHandle id="true" top="38%" colorClass="!border-emerald-500 hover:!border-emerald-600" label="V" labelClass="text-emerald-500" />
+                <BranchSourceHandle id="false" top="62%" colorClass="!border-orange-500 hover:!border-orange-600" label="F" labelClass="text-orange-500" />
+              </>
+            )
+          }
+          if (definition?.type === "switch_node") {
+            const cases: { label: string }[] = Array.isArray(nodeData.cases) ? (nodeData.cases as { label: string }[]) : []
+            const handleIds = [...cases.map((c) => c.label).filter(Boolean), "default"]
+            const count = handleIds.length || 1
+            return (
+              <>
+                <LegacySourceHandle />
+                {handleIds.map((hId, idx) => {
+                  const pct = count === 1 ? 38 : 18 + (idx * 44) / Math.max(count - 1, 1)
+                  return (
+                    <Fragment key={hId}>
+                      <Handle
+                        type="source"
+                        position={Position.Right}
+                        id={hId}
+                        style={{ top: `${pct}%` }}
+                        className={sourceHandleBaseClass}
+                      />
+                      <span
+                        className="pointer-events-none absolute text-[8px] font-semibold text-muted-foreground"
+                        style={{ right: 10, top: `${pct}%`, transform: "translateY(-50%)" }}
+                      >
+                        {hId.length > 6 ? hId.slice(0, 6) + "…" : hId}
+                      </span>
+                    </Fragment>
+                  )
+                })}
+              </>
+            )
+          }
           return (
             <>
               <LegacySourceHandle />
-              {handleIds.map((hId, idx) => {
-                const pct = count === 1 ? 38 : 18 + (idx * 44) / Math.max(count - 1, 1)
-                return (
-                  <Fragment key={hId}>
-                    <Handle
-                      type="source"
-                      position={Position.Right}
-                      id={hId}
-                      style={{ top: `${pct}%` }}
-                      className={cn(
-                        sourceHandleBaseClass,
-                        hId === "default" ? "!bg-gray-400" : theme.handleColor,
-                      )}
-                    />
-                    <span
-                      className="pointer-events-none absolute text-[8px] font-semibold text-muted-foreground"
-                      style={{ right: 10, top: `${pct}%`, transform: "translateY(-50%)" }}
-                    >
-                      {hId.length > 6 ? hId.slice(0, 6) + "…" : hId}
-                    </span>
-                  </Fragment>
-                )
-              })}
-              <BranchSourceHandle id="on_error" top="82%" colorClass="!bg-red-500" label="ERR" labelClass="text-red-500" />
+              <BranchSourceHandle
+                id="success"
+                top={definition?.errorHandle ? "36%" : "50%"}
+                colorClass={definition?.errorHandle ? "!border-emerald-500 hover:!border-emerald-600" : ""}
+                label="OK"
+                labelClass="text-emerald-500"
+              />
+              {definition?.errorHandle && (
+                <BranchSourceHandle id="on_error" top="64%" colorClass="!border-red-500 hover:!border-red-600" label="ERR" labelClass="text-red-500" />
+              )}
             </>
           )
-        }
+        })()}
 
-        // Default nodes: success + on_error, plus a hidden legacy handle so
-        // edges antigos sem ``sourceHandle`` continuam visiveis.
-        return (
-          <>
-            <LegacySourceHandle />
-            <BranchSourceHandle id="success" top="36%" colorClass="!bg-emerald-500" label="OK" labelClass="text-emerald-500" />
-            <BranchSourceHandle id="on_error" top="70%" colorClass="!bg-red-500" label="ERR" labelClass="text-red-500" />
-          </>
-        )
-      })()}
+      {/* ── External label + description (absolute, excluded from bbox) ── */}
+      <div className="absolute left-1/2 top-full mt-1.5 flex w-[180px] -translate-x-1/2 flex-col items-center gap-0.5 px-1">
+        <div className="flex w-full items-start justify-center gap-1">
+          <textarea
+            value={label ?? definition?.label ?? type ?? ""}
+            onChange={(e) => {
+              handleLabelChange(e)
+              e.currentTarget.style.height = "auto"
+              e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`
+            }}
+            onInput={(e) => {
+              e.currentTarget.style.height = "auto"
+              e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`
+            }}
+            onClick={(e) => e.stopPropagation()}
+            rows={1}
+            className="nodrag nopan min-w-0 flex-1 resize-none overflow-hidden break-words bg-transparent text-center text-[12px] font-semibold leading-tight text-foreground outline-none placeholder:text-muted-foreground"
+            placeholder="Nome do nó"
+          />
+          <PencilLine className="mt-0.5 size-2.5 shrink-0 text-muted-foreground/40 opacity-0 transition-opacity group-hover/node:opacity-100" />
+        </div>
+        {definition?.description && (
+          <p className="w-full break-words text-center text-[10px] text-muted-foreground">
+            {definition.description}
+          </p>
+        )}
+      </div>
     </div>
   )
 }

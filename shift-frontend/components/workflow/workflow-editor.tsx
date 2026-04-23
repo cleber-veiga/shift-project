@@ -23,6 +23,8 @@ import "@xyflow/react/dist/style.css"
 
 import { WorkflowNode } from "@/components/workflow/workflow-node"
 import { WorkflowEdge } from "@/components/workflow/workflow-edge"
+import { HelperLines } from "@/components/workflow/helper-lines"
+import { getHelperLines, type GuideLine } from "@/lib/workflow/helper-lines"
 import { WorkflowToolbar } from "@/components/workflow/workflow-toolbar"
 import { NodeLibrary } from "@/components/workflow/node-library"
 import { NodeConfigModal, type UpstreamOutput } from "@/components/workflow/node-config-modal"
@@ -384,15 +386,32 @@ function WorkflowEditorInner({
     }
   }, [workflowWorkspaceId, selectedWorkspace?.id])
 
+  // ── Alignment helper lines (Figma-style smart guides during drag) ───────
+  const [helperLines, setHelperLines] = useState<{
+    horizontal?: GuideLine
+    vertical?: GuideLine
+  }>({})
+
   // ── Node/edge change wrappers that mark dirty for user-initiated changes ──
   const onNodesChangeDirty = useCallback(
     (changes: NodeChange[]) => {
+      // Smart guides: only when a single node is being actively dragged
+      const dragChange = changes.length === 1 && changes[0].type === "position" ? changes[0] : null
+      if (dragChange && dragChange.dragging && dragChange.position) {
+        const result = getHelperLines(dragChange, nodes)
+        if (result.snapPosition.x != null) dragChange.position.x = result.snapPosition.x
+        if (result.snapPosition.y != null) dragChange.position.y = result.snapPosition.y
+        setHelperLines({ horizontal: result.horizontal, vertical: result.vertical })
+      } else if (helperLines.horizontal || helperLines.vertical) {
+        setHelperLines({})
+      }
+
       onNodesChange(changes)
       if (changes.some((c) => c.type === "position" || c.type === "remove")) {
         setDirty(true)
       }
     },
-    [onNodesChange],
+    [onNodesChange, nodes, helperLines.horizontal, helperLines.vertical],
   )
 
   const onEdgesChangeDirty = useCallback(
@@ -1079,8 +1098,7 @@ function WorkflowEditorInner({
               className={`workflow-canvas workflow-canvas--${canvasMode}`}
               proOptions={{ hideAttribution: true }}
               defaultEdgeOptions={{
-                style: { strokeWidth: 2 },
-                animated: true,
+                animated: false,
               }}
             >
               <Background
@@ -1089,6 +1107,7 @@ function WorkflowEditorInner({
                 size={1}
                 className="!bg-background"
               />
+              <HelperLines horizontal={helperLines.horizontal} vertical={helperLines.vertical} />
             </ReactFlow>
           </div>
 

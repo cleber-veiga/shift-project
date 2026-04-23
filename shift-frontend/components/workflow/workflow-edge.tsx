@@ -2,7 +2,6 @@
 
 import { useCallback, useRef, useState } from "react"
 import {
-  BaseEdge,
   EdgeLabelRenderer,
   getBezierPath,
   useReactFlow,
@@ -10,10 +9,6 @@ import {
 } from "@xyflow/react"
 import { X } from "lucide-react"
 
-/**
- * Edge customizado com botão de deletar ao passar o mouse.
- * Registrado como "default" para sobrescrever o edge padrão do React Flow.
- */
 export function WorkflowEdge({
   id,
   sourceX,
@@ -38,16 +33,11 @@ export function WorkflowEdge({
     targetX,
     targetY,
     targetPosition,
+    curvature: 0.15,
   })
 
-  // Pequeno delay evita que o hover seja perdido ao mover para o botão X
-  const onEnter = () => {
-    clearTimeout(timerRef.current)
-    setHovered(true)
-  }
-  const onLeave = () => {
-    timerRef.current = setTimeout(() => setHovered(false), 80)
-  }
+  const onEnter = () => { clearTimeout(timerRef.current); setHovered(true) }
+  const onLeave = () => { timerRef.current = setTimeout(() => setHovered(false), 80) }
 
   const onDelete = useCallback(
     (e: React.MouseEvent) => {
@@ -59,22 +49,58 @@ export function WorkflowEdge({
 
   const isActive = hovered || selected
   const isErrorEdge = sourceHandleId === "on_error"
-  const baseStroke = isErrorEdge ? "#ef4444" : style?.stroke
-  const activeStroke = isErrorEdge ? "#dc2626" : "hsl(var(--primary))"
+  const gradId = `ef-grad-${id}`
 
   return (
     <>
-      <BaseEdge
-        path={edgePath}
+      {/* Gradient definition — recomputed when source/target positions change */}
+      {!isErrorEdge && (
+        <defs>
+          <linearGradient
+            id={gradId}
+            gradientUnits="userSpaceOnUse"
+            x1={sourceX}
+            y1={sourceY}
+            x2={targetX}
+            y2={targetY}
+          >
+            <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity="0.45" />
+            <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity="0.9" />
+          </linearGradient>
+        </defs>
+      )}
+
+      {/* Wide invisible hit area for easy interaction */}
+      <path
+        d={edgePath}
+        fill="none"
+        strokeWidth={20}
+        stroke="transparent"
+        onMouseEnter={onEnter}
+        onMouseLeave={onLeave}
+      />
+
+      {/* Visible path */}
+      <path
+        d={edgePath}
+        fill="none"
         markerEnd={markerEnd}
+        strokeLinecap="round"
+        strokeWidth={isActive ? 1.5 : 1}
+        stroke={
+          isErrorEdge
+            ? (isActive ? "#dc2626" : "#ef4444")
+            : isActive
+            ? `url(#${gradId})`
+            : "#94a3b8"
+        }
+        strokeDasharray={isErrorEdge ? "6 4" : undefined}
         style={{
-          ...style,
-          stroke: isActive ? activeStroke : baseStroke,
-          strokeWidth: isActive ? 2.5 : ((style?.strokeWidth as number) ?? 2),
-          strokeDasharray: isErrorEdge ? "6 4" : style?.strokeDasharray,
-          transition: "stroke 0.15s, stroke-width 0.15s",
+          transition: "stroke 0.2s ease, stroke-width 0.2s ease, stroke-opacity 0.2s ease",
+          filter: isActive && !isErrorEdge
+            ? "drop-shadow(0 0 3px hsl(var(--primary) / 0.35))"
+            : undefined,
         }}
-        interactionWidth={20}
         onMouseEnter={onEnter}
         onMouseLeave={onLeave}
       />

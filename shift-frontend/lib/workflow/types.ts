@@ -44,6 +44,7 @@ export interface NodeDefinition {
   icon: string // lucide icon name
   color: string // tailwind color token
   defaultData: Record<string, unknown>
+  errorHandle?: boolean
 }
 
 /**
@@ -107,6 +108,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     category: "trigger",
     icon: "RefreshCw",
     color: "amber",
+    errorHandle: true,
     defaultData: { type: "polling", connection_id: "", query: "" },
   },
 
@@ -118,6 +120,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     category: "input",
     icon: "Database",
     color: "blue",
+    errorHandle: true,
     defaultData: { type: "sql_database", connection_id: "", query: "", chunk_size: 1000 },
   },
   {
@@ -127,6 +130,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     category: "input",
     icon: "FileSpreadsheet",
     color: "blue",
+    errorHandle: true,
     defaultData: { type: "csv_input", url: "", delimiter: ",", has_header: true, encoding: "utf-8" },
   },
   {
@@ -136,6 +140,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     category: "input",
     icon: "Sheet",
     color: "blue",
+    errorHandle: true,
     defaultData: { type: "excel_input", url: "", sheet_name: null, header_row: 0 },
   },
   {
@@ -145,6 +150,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     category: "input",
     icon: "Globe",
     color: "blue",
+    errorHandle: true,
     defaultData: { type: "api_input", url: "", method: "GET", data_path: "$", pagination_type: "none" },
   },
   {
@@ -154,6 +160,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     category: "input",
     icon: "Send",
     color: "blue",
+    errorHandle: true,
     defaultData: { type: "http_request", method: "GET", url: "", timeout_seconds: 30 },
   },
   {
@@ -224,6 +231,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     category: "transform",
     icon: "Code",
     color: "violet",
+    errorHandle: true,
     defaultData: { type: "code", code: "", result_variable: "result" },
   },
   {
@@ -233,6 +241,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     category: "transform",
     icon: "Terminal",
     color: "slate",
+    errorHandle: true,
     defaultData: {
       type: "sql_script",
       connection_id: "",
@@ -251,6 +260,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     category: "transform",
     icon: "Repeat",
     color: "violet",
+    errorHandle: true,
     defaultData: {
       type: "loop",
       source_field: "",
@@ -306,6 +316,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     category: "output",
     icon: "Boxes",
     color: "emerald",
+    errorHandle: true,
     defaultData: {
       type: "composite_insert",
       definition_id: null,
@@ -322,6 +333,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     category: "output",
     icon: "Eraser",
     color: "emerald",
+    errorHandle: true,
     defaultData: { type: "truncate_table", connection_id: "", target_table: "", mode: "truncate" },
   },
   {
@@ -331,6 +343,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     category: "output",
     icon: "Upload",
     color: "emerald",
+    errorHandle: true,
     defaultData: { type: "bulk_insert", connection_id: "", target_table: "", column_mapping: [], batch_size: 1000 },
   },
   {
@@ -340,6 +353,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     category: "output",
     icon: "DatabaseZap",
     color: "emerald",
+    errorHandle: true,
     defaultData: { type: "loadNode", connection_id: "", target_table: "", write_disposition: "append" },
   },
   {
@@ -359,7 +373,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     description: "Ponto de entrada quando este workflow é invocado como sub-workflow",
     category: "trigger",
     icon: "LogIn",
-    color: "emerald",
+    color: "amber",
     defaultData: { type: "workflow_input", output_field: "data" },
   },
   {
@@ -378,6 +392,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     category: "transform",
     icon: "Workflow",
     color: "indigo",
+    errorHandle: true,
     defaultData: {
       type: "call_workflow",
       workflow_id: "",
@@ -396,6 +411,7 @@ export const NODE_REGISTRY: NodeDefinition[] = [
     category: "ai",
     icon: "Sparkles",
     color: "pink",
+    errorHandle: true,
     defaultData: { type: "aiNode", prompt_template: "", model_name: "gpt-4", temperature: 0.7 },
   },
 ]

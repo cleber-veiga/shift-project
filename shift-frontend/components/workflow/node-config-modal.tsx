@@ -308,9 +308,9 @@ export function NodeConfigModal({
               })
             }
             placeholder="Nome do nó..."
-            className="h-8 min-w-0 max-w-[300px] rounded-md border border-transparent bg-transparent px-2 text-sm font-semibold text-foreground outline-none transition-colors placeholder:text-muted-foreground hover:border-input focus:border-input focus:ring-1 focus:ring-primary"
+            className="h-8 min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-2 text-sm font-semibold text-foreground outline-none transition-colors placeholder:text-muted-foreground hover:border-input focus:border-input focus:ring-1 focus:ring-primary"
           />
-          <div className="ml-auto">
+          <div>
             <button
               type="button"
               onClick={onClose}
@@ -472,7 +472,7 @@ function UpstreamAccordion({ upstream }: { upstream: UpstreamOutput }) {
           ? <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
           : <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />}
         <NodeIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="flex-1 truncate text-[12px] font-medium text-foreground">
+        <span className="flex-1 break-words text-[12px] font-medium text-foreground">
           {upstream.label}
         </span>
         {hasData && upstream.output?.rows && Array.isArray(upstream.output.rows) ? (
