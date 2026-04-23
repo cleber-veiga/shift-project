@@ -220,6 +220,7 @@ class LoopProcessor(BaseNodeProcessor):
             input_data=context.get("input_data") or {},
             upstream_results=context.get("upstream_results") or {},
             vars=context.get("vars") or {},
+            all_results=context.get("_all_results") or {},
         )
         pv = migrate_legacy_loop_source(source_field)
         try:

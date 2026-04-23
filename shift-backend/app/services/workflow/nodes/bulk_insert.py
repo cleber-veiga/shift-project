@@ -101,6 +101,7 @@ def _resolve_rows_pv(
             input_data={**ctx.input_data, **row},
             upstream_results=ctx.upstream_results,
             vars=ctx.vars,
+            all_results=ctx.all_results,
         )
         resolved_row: dict[str, Any] = {}
         for target, compiled, source in compiled_maps:
@@ -178,6 +179,7 @@ class BulkInsertProcessor(BaseNodeProcessor):
             input_data=context.get("input_data") or {},
             upstream_results=context.get("upstream_results") or {},
             vars=context.get("vars") or {},
+            all_results=context.get("_all_results") or {},
         )
 
         input_reference = get_primary_input_reference(context, node_id)

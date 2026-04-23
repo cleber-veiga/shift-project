@@ -15,15 +15,9 @@ import {
   Rocket,
   Save,
   SlidersHorizontal,
-  Undo2,
-  Redo2,
   Upload,
-  ZoomIn,
-  ZoomOut,
-  Maximize2,
   Check,
 } from "lucide-react"
-import { useReactFlow } from "@xyflow/react"
 import { cn } from "@/lib/utils"
 import type { WorkflowScheduleStatus } from "@/lib/auth"
 
@@ -49,10 +43,6 @@ interface WorkflowToolbarProps {
   scheduleStatus?: WorkflowScheduleStatus | null
   isSaving?: boolean
   isExecuting?: boolean
-  canUndo?: boolean
-  canRedo?: boolean
-  onUndo?: () => void
-  onRedo?: () => void
 }
 
 export function WorkflowToolbar({
@@ -77,13 +67,8 @@ export function WorkflowToolbar({
   scheduleStatus,
   isSaving = false,
   isExecuting = false,
-  canUndo = false,
-  canRedo = false,
-  onUndo,
-  onRedo,
 }: WorkflowToolbarProps) {
   const router = useRouter()
-  const { zoomIn, zoomOut, fitView } = useReactFlow()
   const [editingName, setEditingName] = useState(false)
   const [editingDesc, setEditingDesc] = useState(false)
 
@@ -151,26 +136,6 @@ export function WorkflowToolbar({
         </div>
       </div>
 
-      {/* ── CENTER: zoom + undo/redo ──────────────────────────────────────── */}
-      <div className="flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-background p-0.5">
-        <ToolbarIconButton onClick={onUndo} disabled={!canUndo} label="Desfazer">
-          <Undo2 className="size-3.5" />
-        </ToolbarIconButton>
-        <ToolbarIconButton onClick={onRedo} disabled={!canRedo} label="Refazer">
-          <Redo2 className="size-3.5" />
-        </ToolbarIconButton>
-        <div className="mx-0.5 h-4 w-px bg-border" />
-        <ToolbarIconButton onClick={() => zoomOut()} label="Diminuir zoom">
-          <ZoomOut className="size-3.5" />
-        </ToolbarIconButton>
-        <ToolbarIconButton onClick={() => zoomIn()} label="Aumentar zoom">
-          <ZoomIn className="size-3.5" />
-        </ToolbarIconButton>
-        <ToolbarIconButton onClick={() => fitView({ padding: 0.2 })} label="Ajustar ao canvas">
-          <Maximize2 className="size-3.5" />
-        </ToolbarIconButton>
-      </div>
-
       {/* ── RIGHT: status + variables + more + save + execute ─────────────── */}
       <div className="flex shrink-0 items-center gap-2">
         <StatusChip
@@ -236,31 +201,6 @@ export function WorkflowToolbar({
 }
 
 // ── Subcomponents ──────────────────────────────────────────────────────────
-
-function ToolbarIconButton({
-  children,
-  onClick,
-  disabled,
-  label,
-}: {
-  children: React.ReactNode
-  onClick?: () => void
-  disabled?: boolean
-  label: string
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-label={label}
-      title={label}
-      className="flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-30"
-    >
-      {children}
-    </button>
-  )
-}
 
 function useClickOutside(ref: React.RefObject<HTMLElement | null>, onOutside: () => void, active: boolean) {
   useEffect(() => {

@@ -326,8 +326,6 @@ export function ExecuteWorkflowDialog({
   const [loadError, setLoadError] = useState<string | null>(null)
   const [formValues, setFormValues] = useState<Record<string, unknown>>({})
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
-  const [executing, setExecuting] = useState(false)
-  const [execError, setExecError] = useState<string | null>(null)
   const [uploadingVars, setUploadingVars] = useState<Set<string>>(new Set())
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({})
 
@@ -404,21 +402,17 @@ export function ExecuteWorkflowDialog({
     return Object.keys(errs).length === 0
   }
 
-  async function handleSubmit() {
+  function handleSubmit() {
     if (!validate()) return
     if (previewOnly) {
       onClose()
       return
     }
-    setExecuting(true)
-    setExecError(null)
-    try {
-      await onExecuteWithVars(formValues)
-      onClose()
-    } catch (e: unknown) {
-      setExecError(e instanceof Error ? e.message : "Erro ao executar")
-      setExecuting(false)
-    }
+    // Dispara a execução sem aguardar: o stream dura todo o workflow e o
+    // usuário precisa acompanhar os logs no canvas. Erros de execução sao
+    // reportados pela tela principal via ``statusMessage``.
+    void onExecuteWithVars(formValues)
+    onClose()
   }
 
   async function handleFileUpload(varName: string, file: File) {
@@ -567,9 +561,6 @@ export function ExecuteWorkflowDialog({
 
         {/* Footer */}
         <footer className="flex shrink-0 flex-col gap-2 border-t border-border px-4 py-3">
-          {execError && (
-            <p className="text-[11px] text-destructive">{execError}</p>
-          )}
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -580,13 +571,11 @@ export function ExecuteWorkflowDialog({
             </button>
             <button
               type="button"
-              onClick={() => void handleSubmit()}
-              disabled={executing || uploadingVars.size > 0}
+              onClick={handleSubmit}
+              disabled={uploadingVars.size > 0}
               className="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md bg-emerald-600 text-xs font-semibold text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
             >
-              {executing ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : previewOnly ? (
+              {previewOnly ? (
                 <Eye className="size-3.5" />
               ) : (
                 <Play className="size-3.5" />

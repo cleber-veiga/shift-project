@@ -75,6 +75,11 @@ class ResolutionContext:
         input_data:       campos do input direto do nó { campo: valor }
         upstream_results: resultados indexados por node_id { node_id: { campo: valor } }
         vars:             variáveis globais do workflow { nome: valor }
+        all_results:      todos os resultados executados até agora (não apenas os pais
+                          diretos). Usado como fallback quando um token referencia um
+                          ancestral não-direto — por exemplo, um ``workflow_input``
+                          cujo resultado foi ocultado por um ``sync``/``Aguardar Todos``
+                          intermediário.
     """
 
     def __init__(
@@ -82,10 +87,12 @@ class ResolutionContext:
         input_data: dict[str, Any] | None = None,
         upstream_results: dict[str, dict[str, Any]] | None = None,
         vars: dict[str, Any] | None = None,
+        all_results: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.input_data: dict[str, Any] = input_data or {}
         self.upstream_results: dict[str, dict[str, Any]] = upstream_results or {}
         self.vars: dict[str, Any] = vars or {}
+        self.all_results: dict[str, dict[str, Any]] = all_results or {}
 
 
 # ---------------------------------------------------------------------------
@@ -124,11 +131,17 @@ def _resolve_token(token: str, ctx: ResolutionContext) -> Any:
     if "." in token:
         parts = token.split(".")
         node_id = parts[0]
-        if node_id not in ctx.upstream_results:
+        if node_id in ctx.upstream_results:
+            current: Any = ctx.upstream_results[node_id]
+        elif node_id in ctx.all_results:
+            # Ancestral não-direto: o runner expõe o histórico completo em
+            # ``all_results``. Fallback necessário para grafos com nós de
+            # convergência (sync) que isolam o downstream dos pais originais.
+            current = ctx.all_results[node_id]
+        else:
             raise KeyError(
                 f"Nó '{node_id}' não encontrado em upstream_results"
             )
-        current: Any = ctx.upstream_results[node_id]
         for part in parts[1:]:
             if not isinstance(current, dict) or part not in current:
                 raise KeyError(

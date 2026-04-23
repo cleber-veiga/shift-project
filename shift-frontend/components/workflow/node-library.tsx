@@ -1,254 +1,528 @@
 "use client"
 
-import { useMemo, useState } from "react"
-import { ChevronDown, ChevronRight, GripVertical, Search, X } from "lucide-react"
-import { NODE_CATEGORIES, NODE_REGISTRY, type NodeCategory, type NodeDefinition } from "@/lib/workflow/types"
+import { useEffect, useMemo, useRef, useState } from "react"
+import {
+  Hand,
+  LayoutGrid,
+  List,
+  MousePointer2,
+  Plus,
+  RotateCcw,
+  Search,
+  SearchX,
+  X,
+} from "lucide-react"
+import {
+  NODE_REGISTRY,
+  type NodeDefinition,
+} from "@/lib/workflow/types"
 import { getNodeIcon } from "@/lib/workflow/node-icons"
 import { useCustomNodes } from "@/lib/workflow/custom-nodes-context"
 import type { CustomNodeDefinition } from "@/lib/auth"
-import { cn } from "@/lib/utils"
 
 interface NodeLibraryProps {
+  open: boolean
   onClose: () => void
 }
 
-const categoryColorMap: Record<string, string> = {
-  trigger: "text-amber-500",
-  input: "text-blue-500",
-  transform: "text-violet-500",
-  output: "text-emerald-500",
-  decision: "text-orange-500",
-  ai: "text-pink-500",
+type Tone = "purple" | "emerald" | "orange" | "cyan" | "slate" | "pink"
+
+interface ToneDef {
+  name: string
 }
 
-const categoryBgMap: Record<string, string> = {
-  trigger: "bg-amber-500/10",
-  input: "bg-blue-500/10",
-  transform: "bg-violet-500/10",
-  output: "bg-emerald-500/10",
-  decision: "bg-orange-500/10",
-  ai: "bg-pink-500/10",
+const TONES: Record<Tone, ToneDef> = {
+  purple: { name: "Gatilhos" },
+  emerald: { name: "Ações" },
+  orange: { name: "Lógica" },
+  cyan: { name: "Transformação" },
+  slate: { name: "Armazenamento" },
+  pink: { name: "IA" },
 }
 
-function DraggableNode({ definition }: { definition: NodeDefinition }) {
-  const Icon = getNodeIcon(definition.icon)
+const TONE_ORDER: Tone[] = ["purple", "emerald", "cyan", "orange", "slate", "pink"]
 
-  function onDragStart(event: React.DragEvent) {
-    event.dataTransfer.setData("application/reactflow-type", definition.type)
-    event.dataTransfer.effectAllowed = "move"
-  }
+const COLOR_TO_TONE: Record<string, Tone> = {
+  amber: "purple",
+  blue: "emerald",
+  violet: "cyan",
+  emerald: "emerald",
+  orange: "orange",
+  pink: "pink",
+  slate: "slate",
+  red: "orange",
+  indigo: "cyan",
+}
 
-  return (
-    <div
-      draggable
-      onDragStart={onDragStart}
-      className="group flex cursor-grab items-center gap-2.5 rounded-md border border-transparent px-2 py-2 transition-colors hover:border-border hover:bg-muted/50 active:cursor-grabbing"
+function toneOf(color: string): Tone {
+  return COLOR_TO_TONE[color] ?? "slate"
+}
+
+// ─── Mini-preview bodies per node type ──────────────────────────────
+function MiniBody({ node }: { node: NodeDefinition }) {
+  const d = (node.defaultData ?? {}) as Record<string, unknown>
+
+  const chip = (bg: string, color: string, label: string) => (
+    <span
+      className="mono rounded px-1 py-[1px] text-[8.5px] font-semibold"
+      style={{ background: bg, color }}
     >
-      <GripVertical className="size-3 shrink-0 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground" />
-      <div className={cn("flex size-7 shrink-0 items-center justify-center rounded-md", categoryBgMap[definition.category])}>
-        <Icon className={cn("size-3.5", categoryColorMap[definition.category])} />
-      </div>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-xs font-medium text-foreground">{definition.label}</p>
-        <p className="truncate text-[10px] text-muted-foreground">{definition.description}</p>
-      </div>
-    </div>
+      {label}
+    </span>
+  )
+
+  switch (node.type) {
+    case "cron":
+      return <span className="mono truncate text-[10px]">{String(d.cron_expression ?? "*/5 * * * *")}</span>
+    case "webhook":
+      return (
+        <div className="flex items-center gap-1.5">
+          {chip("rgb(220 252 231)", "rgb(22 101 52)", "POST")}
+          <span className="mono truncate text-[10px] opacity-80">/webhook</span>
+        </div>
+      )
+    case "polling":
+      return <span className="mono truncate text-[10px]">poll · SQL</span>
+    case "manual":
+      return <span className="truncate text-[10px] italic">Execução manual</span>
+    case "workflow_input":
+      return <span className="truncate text-[10px]">Entrada de sub-workflow</span>
+    case "sql_database":
+      return (
+        <div className="mono rounded bg-slate-900 px-1.5 py-1 text-[9px] leading-tight">
+          <span className="text-pink-400">SELECT</span> <span className="text-slate-300">*</span>
+        </div>
+      )
+    case "sql_script":
+      return (
+        <div className="mono rounded bg-slate-900 px-1.5 py-1 text-[9px] leading-tight">
+          <span className="text-purple-400">EXEC</span> <span className="text-slate-300">script</span>
+        </div>
+      )
+    case "csv_input":
+      return <div className="flex items-center gap-1">{chip("rgb(219 234 254)", "rgb(30 64 175)", "CSV")}<span className="truncate text-[10px]">arquivo.csv</span></div>
+    case "excel_input":
+      return <div className="flex items-center gap-1">{chip("rgb(220 252 231)", "rgb(22 101 52)", "XLSX")}<span className="truncate text-[10px]">planilha</span></div>
+    case "api_input":
+    case "http_request":
+      return (
+        <div className="flex items-center gap-1.5">
+          {chip("rgb(219 234 254)", "rgb(30 64 175)", String(d.method ?? "GET"))}
+          <span className="mono truncate text-[10px] opacity-80">api/…</span>
+        </div>
+      )
+    case "inline_data":
+      return <span className="mono truncate text-[10px]">[ {'{}'} , ... ]</span>
+    case "mapper":
+      return <span className="mono truncate text-[10px]">a → b</span>
+    case "filter":
+      return <span className="mono truncate text-[10px]">where {"{…}"}</span>
+    case "aggregator":
+      return <span className="mono truncate text-[10px]">group by</span>
+    case "deduplication":
+      return <span className="mono truncate text-[10px]">distinct keys</span>
+    case "math":
+      return <span className="mono truncate text-[10px]">x = a + b</span>
+    case "code":
+      return (
+        <div className="mono rounded bg-slate-900 px-1.5 py-1 text-[9px] leading-tight">
+          <span className="text-purple-400">def</span> <span className="text-cyan-300">run</span>
+        </div>
+      )
+    case "loop":
+      return <span className="mono truncate text-[10px]">∀ items</span>
+    case "sync":
+      return <span className="truncate text-[10px]">aguarda ramos</span>
+    case "if_node":
+      return <span className="mono truncate text-[10px]">if · true / false</span>
+    case "switch_node":
+      return (
+        <div className="flex gap-0.5">
+          {["A", "B", "C"].map((r) => (
+            <span key={r} className="mono rounded bg-orange-100 px-1 text-[8px] text-orange-700">
+              {r}
+            </span>
+          ))}
+        </div>
+      )
+    case "composite_insert":
+      return <span className="truncate text-[10px]">Nó composto</span>
+    case "truncate_table":
+      return <span className="mono truncate text-[10px]">TRUNCATE</span>
+    case "bulk_insert":
+      return <span className="mono truncate text-[10px]">INSERT INTO</span>
+    case "loadNode":
+      return <span className="mono truncate text-[10px]">→ tabela</span>
+    case "dead_letter":
+      return <span className="truncate text-[10px]">linhas com erro</span>
+    case "workflow_output":
+      return <span className="truncate text-[10px]">Saída de sub-workflow</span>
+    case "call_workflow":
+      return <span className="mono truncate text-[10px]">exec workflow</span>
+    case "aiNode":
+      return (
+        <div className="flex items-center gap-1.5">
+          {chip("rgb(252 231 243)", "rgb(157 23 77)", "LLM")}
+          <span className="truncate text-[10px] italic opacity-80">prompt…</span>
+        </div>
+      )
+    default:
+      return <span className="truncate text-[10px] opacity-60">—</span>
+  }
+}
+
+// ─── Unified library item (node registry + custom) ─────────────────
+type LibItem =
+  | { kind: "node"; def: NodeDefinition; tone: Tone }
+  | { kind: "custom"; custom: CustomNodeDefinition; tone: Tone }
+
+function itemKey(item: LibItem): string {
+  return item.kind === "node" ? `n:${item.def.type}` : `c:${item.custom.id}`
+}
+
+function itemLabel(item: LibItem): string {
+  return item.kind === "node" ? item.def.label : item.custom.name
+}
+
+function itemDesc(item: LibItem): string {
+  if (item.kind === "node") return item.def.description
+  return (
+    item.custom.description ??
+    `${item.custom.blueprint?.tables?.length ?? 0} tabela(s) · v${item.custom.version}`
   )
 }
 
-function DraggableCustomNode({ custom }: { custom: CustomNodeDefinition }) {
-  const Icon = getNodeIcon(custom.icon ?? "Boxes")
-  const customColor =
-    typeof custom.color === "string" && custom.color.trim() !== "" ? custom.color : null
-  const hasCustomColor = customColor !== null
+function itemTypeId(item: LibItem): string {
+  return item.kind === "node" ? item.def.type : "composite_insert"
+}
 
-  function onDragStart(event: React.DragEvent) {
+function itemIcon(item: LibItem): string {
+  if (item.kind === "node") return item.def.icon
+  return item.custom.icon ?? "Boxes"
+}
+
+function onDragStartForItem(event: React.DragEvent, item: LibItem) {
+  event.dataTransfer.effectAllowed = "move"
+  if (item.kind === "node") {
+    event.dataTransfer.setData("application/reactflow-type", item.def.type)
+  } else {
     event.dataTransfer.setData("application/reactflow-type", "composite_insert")
-    event.dataTransfer.setData("application/reactflow-definition-id", custom.id)
-    event.dataTransfer.effectAllowed = "move"
+    event.dataTransfer.setData("application/reactflow-definition-id", item.custom.id)
   }
+}
 
+// ─── Card (grid view) ─────────────────────────────────────────────
+function LibCard({ item }: { item: LibItem }) {
+  const Icon = getNodeIcon(itemIcon(item))
   return (
     <div
       draggable
-      onDragStart={onDragStart}
-      className="group flex cursor-grab items-center gap-2.5 rounded-md border border-transparent px-2 py-2 transition-colors hover:border-border hover:bg-muted/50 active:cursor-grabbing"
+      onDragStart={(e) => onDragStartForItem(e, item)}
+      className={`lib-card lib-tone`}
+      data-tone={item.tone}
+      title={`${itemLabel(item)} — arraste para o canvas`}
     >
-      <GripVertical className="size-3 shrink-0 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground" />
-      <div
-        className={cn(
-          "flex size-7 shrink-0 items-center justify-center rounded-md",
-          !hasCustomColor && "bg-emerald-500/10",
-        )}
-        style={
-          customColor
-            ? { backgroundColor: `${customColor}20`, color: customColor }
-            : undefined
-        }
-      >
-        <Icon className={cn("size-3.5", !hasCustomColor && "text-emerald-500")} />
+      <div className="lib-card-accent" />
+      <div className="lib-card-header">
+        <div className="lib-icon-tile">
+          <Icon className="size-3.5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="lib-card-title">{itemLabel(item)}</div>
+          <div className="lib-card-subtitle">{itemTypeId(item)}</div>
+        </div>
       </div>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-xs font-medium text-foreground">{custom.name}</p>
-        <p className="truncate text-[10px] text-muted-foreground">
-          {custom.description ?? `${custom.blueprint?.tables?.length ?? 0} tabela(s) · v${custom.version}`}
-        </p>
+      <div className="lib-card-body">
+        {item.kind === "node" ? (
+          <MiniBody node={item.def} />
+        ) : (
+          <span className="truncate text-[10px]">{itemDesc(item)}</span>
+        )}
       </div>
     </div>
   )
 }
 
-export function NodeLibrary({ onClose }: NodeLibraryProps) {
-  const [search, setSearch] = useState("")
-  const [expanded, setExpanded] = useState<Set<NodeCategory>>(new Set(NODE_CATEGORIES.map((c) => c.key)))
-  const [customExpanded, setCustomExpanded] = useState(true)
+// ─── Row (list view) ──────────────────────────────────────────────
+function LibRow({ item }: { item: LibItem }) {
+  const Icon = getNodeIcon(itemIcon(item))
+  return (
+    <div
+      draggable
+      onDragStart={(e) => onDragStartForItem(e, item)}
+      className="lib-list-row lib-tone"
+      data-tone={item.tone}
+      title={itemDesc(item)}
+    >
+      <div className="lib-icon-tile lib-icon-tile--sm">
+        <Icon className="size-3" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="lib-list-title">{itemLabel(item)}</div>
+        <div className="lib-list-sub">{itemDesc(item)}</div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Main drawer ──────────────────────────────────────────────────
+export function NodeLibrary({ open, onClose }: NodeLibraryProps) {
+  const [query, setQuery] = useState("")
+  const [layout, setLayout] = useState<"grid" | "list">("grid")
+  const [activeTones, setActiveTones] = useState<Set<Tone>>(
+    () => new Set(TONE_ORDER),
+  )
+  const inputRef = useRef<HTMLInputElement>(null)
 
   const customNodes = useCustomNodes()
 
-  // Hide the base "composite_insert" template from the palette — users drag
-  // specific custom definitions from the dedicated section below.
-  const registryNodes = useMemo(
-    () => NODE_REGISTRY.filter((n) => n.type !== "composite_insert"),
-    [],
-  )
+  // Focus search on open
+  useEffect(() => {
+    if (!open) return
+    const t = setTimeout(() => inputRef.current?.focus(), 50)
+    return () => clearTimeout(t)
+  }, [open])
 
-  const filteredNodes = search.trim()
-    ? registryNodes.filter(
-        (n) =>
-          n.label.toLowerCase().includes(search.toLowerCase()) ||
-          n.description.toLowerCase().includes(search.toLowerCase())
-      )
-    : registryNodes
+  // ESC closes (only while open)
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose()
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [open, onClose])
 
-  const filteredCustomNodes = search.trim()
-    ? customNodes.filter(
-        (c) =>
-          c.name.toLowerCase().includes(search.toLowerCase()) ||
-          (c.description?.toLowerCase().includes(search.toLowerCase()) ?? false)
-      )
-    : customNodes
+  const items: LibItem[] = useMemo(() => {
+    const baseNodes: LibItem[] = NODE_REGISTRY.filter(
+      (n) => n.type !== "composite_insert",
+    ).map((def) => ({ kind: "node" as const, def, tone: toneOf(def.color) }))
 
-  function toggleCategory(cat: NodeCategory) {
-    setExpanded((prev) => {
+    const custom: LibItem[] = customNodes.map((c) => ({
+      kind: "custom" as const,
+      custom: c,
+      tone: "emerald" as Tone,
+    }))
+
+    return [...baseNodes, ...custom]
+  }, [customNodes])
+
+  const filtered = useMemo(() => {
+    const q = query.toLowerCase().trim()
+    return items.filter((item) => {
+      if (!activeTones.has(item.tone)) return false
+      if (!q) return true
+      const hay = [itemLabel(item), itemTypeId(item), itemDesc(item)]
+        .join(" ")
+        .toLowerCase()
+      return hay.includes(q)
+    })
+  }, [items, query, activeTones])
+
+  const grouped = useMemo(() => {
+    const out: Record<Tone, LibItem[]> = {
+      purple: [],
+      emerald: [],
+      orange: [],
+      cyan: [],
+      slate: [],
+      pink: [],
+    }
+    filtered.forEach((it) => out[it.tone].push(it))
+    return out
+  }, [filtered])
+
+  const toneCount = useMemo(() => {
+    const out: Record<Tone, number> = {
+      purple: 0,
+      emerald: 0,
+      orange: 0,
+      cyan: 0,
+      slate: 0,
+      pink: 0,
+    }
+    items.forEach((it) => (out[it.tone] += 1))
+    return out
+  }, [items])
+
+  const totalCount = items.length
+  const shownCount = filtered.length
+
+  const toggleTone = (t: Tone) => {
+    setActiveTones((prev) => {
       const next = new Set(prev)
-      if (next.has(cat)) next.delete(cat)
-      else next.add(cat)
+      // If all tones are active, start fresh with just the clicked one
+      if (next.size === TONE_ORDER.length) {
+        return new Set([t])
+      }
+      if (next.has(t)) next.delete(t)
+      else next.add(t)
+      if (next.size === 0) return new Set(TONE_ORDER)
       return next
     })
   }
+  const resetTones = () => setActiveTones(new Set(TONE_ORDER))
 
   return (
-    <div className="flex h-full w-64 flex-col rounded-lg border border-border bg-card shadow-lg">
+    <div className={`lib-drawer${open ? " lib-drawer--open" : ""}`} aria-hidden={!open}>
       {/* Header */}
-      <div className="flex h-10 shrink-0 items-center justify-between border-b border-border px-3">
-        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Nós</span>
-        <button
-          type="button"
-          onClick={onClose}
-          className="flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        >
+      <div className="lib-header">
+        <div className="lib-header-badge">
+          <LayoutGrid className="size-3.5" />
+        </div>
+        <div className="min-w-0">
+          <div className="lib-header-title">Biblioteca de Nós</div>
+          <div className="lib-header-sub">
+            {shownCount} de {totalCount}
+          </div>
+        </div>
+        <div className="flex-1" />
+        <div className="lib-layout-toggle">
+          <button
+            type="button"
+            onClick={() => setLayout("grid")}
+            className={layout === "grid" ? "active" : ""}
+            title="Visualizar em grade"
+          >
+            <LayoutGrid className="size-3" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setLayout("list")}
+            className={layout === "list" ? "active" : ""}
+            title="Visualizar em lista"
+          >
+            <List className="size-3" />
+          </button>
+        </div>
+        <button type="button" onClick={onClose} className="lib-close" title="Fechar">
           <X className="size-3.5" />
         </button>
       </div>
 
       {/* Search */}
-      <div className="border-b border-border px-3 py-2">
-        <label className="flex h-8 items-center gap-2 rounded-md border border-input bg-background px-2.5">
-          <Search className="size-3.5 shrink-0 text-muted-foreground" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar nós..."
-            className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
-          />
-        </label>
-      </div>
-
-      {/* Node list */}
-      <div className="flex-1 overflow-y-auto px-2 py-2">
-        {search.trim() ? (
-          // Flat filtered list
-          <div className="space-y-0.5">
-            {filteredNodes.length === 0 && filteredCustomNodes.length === 0 && (
-              <p className="px-2 py-4 text-center text-xs text-muted-foreground">Nenhum nó encontrado</p>
-            )}
-            {filteredNodes.map((node) => (
-              <DraggableNode key={node.type} definition={node} />
-            ))}
-            {filteredCustomNodes.map((c) => (
-              <DraggableCustomNode key={c.id} custom={c} />
-            ))}
-          </div>
-        ) : (
-          // Categorized list
-          <div className="space-y-1">
-            {filteredCustomNodes.length > 0 && (
-              <div>
-                <button
-                  type="button"
-                  onClick={() => setCustomExpanded((v) => !v)}
-                  className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted/50"
-                >
-                  {customExpanded ? (
-                    <ChevronDown className="size-3 text-muted-foreground" />
-                  ) : (
-                    <ChevronRight className="size-3 text-muted-foreground" />
-                  )}
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-500">
-                    Nós Personalizados
-                  </span>
-                  <span className="ml-auto text-[10px] text-muted-foreground">{filteredCustomNodes.length}</span>
-                </button>
-                {customExpanded && (
-                  <div className="ml-1 space-y-0.5">
-                    {filteredCustomNodes.map((c) => (
-                      <DraggableCustomNode key={c.id} custom={c} />
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-            {NODE_CATEGORIES.map((cat) => {
-              const nodes = filteredNodes.filter((n) => n.category === cat.key)
-              if (nodes.length === 0) return null
-              const isExpanded = expanded.has(cat.key)
-
-              return (
-                <div key={cat.key}>
-                  <button
-                    type="button"
-                    onClick={() => toggleCategory(cat.key)}
-                    className="flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted/50"
-                  >
-                    {isExpanded ? (
-                      <ChevronDown className="size-3 text-muted-foreground" />
-                    ) : (
-                      <ChevronRight className="size-3 text-muted-foreground" />
-                    )}
-                    <span className={cn("text-[11px] font-semibold uppercase tracking-wider", cat.color)}>
-                      {cat.label}
-                    </span>
-                    <span className="ml-auto text-[10px] text-muted-foreground">{nodes.length}</span>
-                  </button>
-
-                  {isExpanded && (
-                    <div className="ml-1 space-y-0.5">
-                      {nodes.map((node) => (
-                        <DraggableNode key={node.type} definition={node} />
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-          </div>
+      <div className="lib-search">
+        <Search className="size-3.5 shrink-0 text-muted-foreground" />
+        <input
+          ref={inputRef}
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Buscar por nome, tipo, descrição…"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => setQuery("")}
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="Limpar busca"
+          >
+            <X className="size-3" />
+          </button>
         )}
       </div>
 
-      {/* Footer hint */}
-      <div className="shrink-0 border-t border-border px-3 py-2">
-        <p className="text-[10px] text-muted-foreground">Arraste um nó para o canvas para adicioná-lo ao fluxo</p>
+      {/* Group filter chips */}
+      <div className="lib-groups">
+        {TONE_ORDER.map((t) => {
+          const active = activeTones.has(t)
+          const count = toneCount[t]
+          if (count === 0) return null
+          return (
+            <button
+              key={t}
+              type="button"
+              onClick={() => toggleTone(t)}
+              className={`lib-group-chip lib-tone${active ? " lib-group-chip--active" : ""}`}
+              data-tone={t}
+              style={
+                active
+                  ? {
+                      background: `var(--tone-tile)`,
+                      color: `var(--tone-ink)`,
+                      borderColor: `var(--tone-tile-ring)`,
+                    }
+                  : undefined
+              }
+            >
+              <span
+                className="inline-block size-1.5 rounded-full"
+                style={{ background: `var(--tone-dot)` }}
+              />
+              {TONES[t].name}
+              <span className="lib-group-count">{count}</span>
+            </button>
+          )
+        })}
+        {activeTones.size < TONE_ORDER.length && (
+          <button
+            type="button"
+            onClick={resetTones}
+            className="lib-group-chip lib-group-chip--reset"
+          >
+            <RotateCcw className="size-2.5" />
+            Limpar
+          </button>
+        )}
+      </div>
+
+      {/* Body */}
+      <div className="lib-body">
+        {shownCount === 0 && (
+          <div className="lib-empty">
+            <div className="lib-empty-icon">
+              <SearchX className="size-4" />
+            </div>
+            <div className="lib-empty-title">Nenhum nó encontrado</div>
+            <div className="lib-empty-sub">Tente outra busca ou reative grupos</div>
+          </div>
+        )}
+
+        {TONE_ORDER.map((tone) => {
+          const list = grouped[tone]
+          if (!list || list.length === 0) return null
+          return (
+            <div key={tone} className="lib-group-block lib-tone" data-tone={tone}>
+              <div className="lib-group-header">
+                <span
+                  className="inline-block size-2 rounded-full"
+                  style={{ background: `var(--tone-dot)` }}
+                />
+                <span className="lib-group-header-label">{TONES[tone].name}</span>
+                <span className="lib-group-header-count">{list.length}</span>
+                <div className="lib-group-header-divider" />
+              </div>
+              {layout === "grid" ? (
+                <div className="lib-grid">
+                  {list.map((item) => (
+                    <LibCard key={itemKey(item)} item={item} />
+                  ))}
+                </div>
+              ) : (
+                <div className="lib-list">
+                  {list.map((item) => (
+                    <LibRow key={itemKey(item)} item={item} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Footer */}
+      <div className="lib-footer">
+        <div className="flex items-center gap-1.5">
+          <Hand className="size-3 opacity-70" />
+          <span>Arraste pro canvas</span>
+        </div>
+        <span className="lib-footer-dot">·</span>
+        <div className="flex items-center gap-1.5">
+          <MousePointer2 className="size-3 opacity-70" />
+          <span>Clique fora para fechar</span>
+        </div>
+        <div className="flex-1" />
+        <kbd>Esc</kbd>
       </div>
     </div>
   )

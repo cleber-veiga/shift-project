@@ -520,6 +520,44 @@ class TestResolveTokenMultiSegment:
                 ResolutionContext(upstream_results={"node_X": {"outro": {}}}),
             )
 
+    def test_all_results_fallback_when_not_direct_upstream(self):
+        """Ancestral não-direto (ex: workflow_input atrás de um sync) resolve via all_results."""
+        pv = DynamicValue(template="{{node_ancestor.data.ESTAB}}")
+        result = resolve_parameter(
+            pv,
+            ResolutionContext(
+                upstream_results={"node_sync": {"status": "completed"}},
+                all_results={
+                    "node_sync": {"status": "completed"},
+                    "node_ancestor": {"data": {"ESTAB": "42"}},
+                },
+            ),
+        )
+        assert result == "42"
+
+    def test_upstream_results_takes_precedence_over_all_results(self):
+        """Pai direto sempre vence — garante que o valor roteado (partições) não é sobrescrito."""
+        pv = DynamicValue(template="{{node_X.CAMPO}}")
+        result = resolve_parameter(
+            pv,
+            ResolutionContext(
+                upstream_results={"node_X": {"CAMPO": "upstream"}},
+                all_results={"node_X": {"CAMPO": "global"}},
+            ),
+        )
+        assert result == "upstream"
+
+    def test_unknown_node_still_raises_when_absent_from_both(self):
+        pv = DynamicValue(template="{{node_fantasma.CAMPO}}")
+        with pytest.raises(KeyError, match="node_fantasma"):
+            resolve_parameter(
+                pv,
+                ResolutionContext(
+                    upstream_results={"node_X": {"CAMPO": "v"}},
+                    all_results={"node_Y": {"CAMPO": "v"}},
+                ),
+            )
+
 
 # ---------------------------------------------------------------------------
 # extract_field_reference

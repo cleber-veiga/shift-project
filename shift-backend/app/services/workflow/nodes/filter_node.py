@@ -120,6 +120,7 @@ class FilterNodeProcessor(BaseNodeProcessor):
             input_data=context.get("input_data") or {},
             upstream_results=context.get("upstream_results") or {},
             vars=context.get("vars") or {},
+            all_results=context.get("_all_results") or {},
         )
         conditions = [_normalize_condition(c, ctx) for c in raw_conditions]
 

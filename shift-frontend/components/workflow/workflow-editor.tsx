@@ -7,6 +7,7 @@ import {
   addEdge,
   useNodesState,
   useEdgesState,
+  useReactFlow,
   type Connection,
   type Node,
   type Edge,
@@ -41,7 +42,7 @@ import { getNodeDefinition, NODE_REGISTRY, type WorkflowVariable } from "@/lib/w
 import { NodeExecutionContext, type NodeExecState } from "@/lib/workflow/execution-context"
 import { NodeActionsContext } from "@/lib/workflow/node-actions-context"
 import { WorkflowVariablesContext } from "@/lib/workflow/workflow-variables-context"
-import { Hand, History, Loader2, MousePointer2, Plus, Workflow as WorkflowIcon, X } from "lucide-react"
+import { Copy, Hand, History, LayoutGrid, Loader2, Maximize2, MousePointer2, Power, PowerOff, Trash2, Workflow as WorkflowIcon, X, ZoomIn, ZoomOut } from "lucide-react"
 import { cn } from "@/lib/utils"
 import {
   getWorkflow,
@@ -103,12 +104,6 @@ function WorkflowEditorInner({
 }: WorkflowEditorProps) {
   const nodeTypes = useMemo(() => buildNodeTypes(), [])
   const reactFlowWrapper = useRef<HTMLDivElement>(null)
-  const libraryButtonRef = useRef<HTMLButtonElement>(null)
-  const [libraryPos, setLibraryPos] = useState<{ top: number; left: number; height: number }>({
-    top: 0,
-    left: 0,
-    height: 500,
-  })
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null)
 
   const { selectedWorkspace } = useDashboard()
@@ -448,6 +443,121 @@ function WorkflowEditorInner({
   const onPaneClick = useCallback(() => {
     setSelectedNode(null)
   }, [])
+
+  // ── Context menu (right-click em nó ou seleção) ─────────────────────────
+  const [contextMenu, setContextMenu] = useState<
+    | { x: number; y: number; nodeIds: string[] }
+    | null
+  >(null)
+
+  const openContextMenu = useCallback(
+    (event: React.MouseEvent, targetIds: string[]) => {
+      event.preventDefault()
+      if (isInBuildMode || targetIds.length === 0) return
+      setContextMenu({ x: event.clientX, y: event.clientY, nodeIds: targetIds })
+    },
+    [isInBuildMode],
+  )
+
+  const closeContextMenu = useCallback(() => setContextMenu(null), [])
+
+  const onNodeContextMenu = useCallback(
+    (event: React.MouseEvent, node: Node) => {
+      const selectedIds = nodes.filter((n) => n.selected).map((n) => n.id)
+      const targetIds =
+        selectedIds.includes(node.id) && selectedIds.length > 1
+          ? selectedIds
+          : [node.id]
+      // Se o nó não estava selecionado, marque-o como único selecionado
+      if (!selectedIds.includes(node.id)) {
+        setNodes((nds) =>
+          nds.map((n) => ({ ...n, selected: n.id === node.id })),
+        )
+      }
+      openContextMenu(event, targetIds)
+    },
+    [nodes, setNodes, openContextMenu],
+  )
+
+  const onSelectionContextMenu = useCallback(
+    (event: React.MouseEvent, selected: Node[]) => {
+      openContextMenu(
+        event,
+        selected.map((n) => n.id),
+      )
+    },
+    [openContextMenu],
+  )
+
+  const applyEnabled = useCallback(
+    (ids: string[], enabled: boolean) => {
+      const idSet = new Set(ids)
+      setNodes((nds) =>
+        nds.map((n) =>
+          idSet.has(n.id)
+            ? { ...n, data: { ...n.data, enabled } }
+            : n,
+        ),
+      )
+      setDirty(true)
+      closeContextMenu()
+    },
+    [setNodes, closeContextMenu],
+  )
+
+  const duplicateNodes = useCallback(
+    (ids: string[]) => {
+      const idSet = new Set(ids)
+      const originals = nodes.filter((n) => idSet.has(n.id))
+      if (originals.length === 0) {
+        closeContextMenu()
+        return
+      }
+      const idMap = new Map<string, string>()
+      const clones: Node[] = originals.map((n) => {
+        const newId = generateNodeId()
+        idMap.set(n.id, newId)
+        return {
+          ...n,
+          id: newId,
+          position: { x: n.position.x + 40, y: n.position.y + 40 },
+          selected: true,
+          data: { ...n.data },
+        }
+      })
+      // Duplica também as arestas internas à seleção
+      const edgeClones: Edge[] = edges
+        .filter((e) => idMap.has(e.source) && idMap.has(e.target))
+        .map((e) => ({
+          ...e,
+          id: `edge_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          source: idMap.get(e.source)!,
+          target: idMap.get(e.target)!,
+          selected: false,
+        }))
+      setNodes((nds) => [
+        ...nds.map((n) => ({ ...n, selected: false })),
+        ...clones,
+      ])
+      if (edgeClones.length > 0) setEdges((eds) => [...eds, ...edgeClones])
+      setDirty(true)
+      closeContextMenu()
+    },
+    [nodes, edges, setNodes, setEdges, closeContextMenu],
+  )
+
+  const removeNodes = useCallback(
+    (ids: string[]) => {
+      const idSet = new Set(ids)
+      setNodes((nds) => nds.filter((n) => !idSet.has(n.id)))
+      setEdges((eds) =>
+        eds.filter((e) => !idSet.has(e.source) && !idSet.has(e.target)),
+      )
+      setDirty(true)
+      closeContextMenu()
+    },
+    [setNodes, setEdges, closeContextMenu],
+  )
 
   // ── Drag & drop from library ─────────────────────────────────────────────
   const onDragOver = useCallback((event: React.DragEvent) => {
@@ -1003,27 +1113,8 @@ function WorkflowEditorInner({
         )}>
           {/* Canvas */}
           <div className="relative flex-1" ref={reactFlowWrapper}>
-            {/* + button to toggle node library */}
-            <button
-              ref={libraryButtonRef}
-              type="button"
-              onClick={() => {
-                if (!showLibrary && libraryButtonRef.current) {
-                  const rect = libraryButtonRef.current.getBoundingClientRect()
-                  const top = rect.bottom + 8
-                  const height = Math.min(560, window.innerHeight - top - 16)
-                  setLibraryPos({ top, left: rect.left, height })
-                }
-                setShowLibrary((v) => !v)
-              }}
-              className="absolute left-3 top-3 z-20 flex size-9 items-center justify-center rounded-md border border-border bg-card text-muted-foreground shadow-sm transition-colors hover:bg-muted hover:text-foreground"
-              aria-label={showLibrary ? "Fechar biblioteca de nós" : "Adicionar nó"}
-            >
-              <Plus className={`size-4 transition-transform duration-200 ${showLibrary ? "rotate-45" : ""}`} />
-            </button>
-
             {/* Canvas mode toggle — pan (hand) vs select (multi-selection) */}
-            <div className="absolute left-3 top-14 z-20 flex flex-col overflow-hidden rounded-md border border-border bg-card shadow-sm">
+            <div className="absolute left-3 top-3 z-20 flex flex-col overflow-hidden rounded-md border border-border bg-card shadow-sm">
               <button
                 type="button"
                 onClick={() => setCanvasMode("pan")}
@@ -1055,14 +1146,21 @@ function WorkflowEditorInner({
               </button>
             </div>
 
-            {/* Node library overlay — fixed so it floats above all overflow containers */}
-            {showLibrary && (
-              <div
-                className="fixed z-50"
-                style={{ top: libraryPos.top, left: libraryPos.left, height: libraryPos.height }}
+            {/* Node library — full-height sidebar */}
+            <NodeLibrary open={showLibrary} onClose={() => setShowLibrary(false)} />
+
+            {/* FAB to open library (hidden when open) */}
+            {!showLibrary && (
+              <button
+                type="button"
+                onClick={() => setShowLibrary(true)}
+                className="lib-fab absolute bottom-3 left-3 z-20"
+                aria-label="Abrir biblioteca de nós"
+                title="Abrir biblioteca de nós"
               >
-                <NodeLibrary onClose={() => setShowLibrary(false)} />
-              </div>
+                <LayoutGrid className="size-4" />
+                <span>Biblioteca</span>
+              </button>
             )}
 
             {/* Read-only overlay during build mode */}
@@ -1078,6 +1176,8 @@ function WorkflowEditorInner({
               onConnect={isInBuildMode ? undefined : onConnect}
               onNodeClick={onNodeClick}
               onNodeDoubleClick={isInBuildMode ? undefined : onNodeDoubleClick}
+              onNodeContextMenu={isInBuildMode ? undefined : onNodeContextMenu}
+              onSelectionContextMenu={isInBuildMode ? undefined : onSelectionContextMenu}
               onPaneClick={onPaneClick}
               onDragOver={isInBuildMode ? undefined : onDragOver}
               onDrop={isInBuildMode ? undefined : onDrop}
@@ -1085,6 +1185,8 @@ function WorkflowEditorInner({
               nodeTypes={nodeTypes}
               edgeTypes={EDGE_TYPES}
               fitView
+              minZoom={0.1}
+              maxZoom={3}
               deleteKeyCode={isInBuildMode ? null : ["Backspace", "Delete"]}
               nodesDraggable={!isInBuildMode}
               nodesConnectable={!isInBuildMode}
@@ -1109,6 +1211,9 @@ function WorkflowEditorInner({
               />
               <HelperLines horizontal={helperLines.horizontal} vertical={helperLines.vertical} />
             </ReactFlow>
+
+            {/* Floating zoom controls — bottom-left */}
+            <ZoomControls />
           </div>
 
         </div>
@@ -1214,6 +1319,21 @@ function WorkflowEditorInner({
           />
         )}
 
+        {/* Context menu (botão direito em nó / seleção) */}
+        {contextMenu && (
+          <NodeContextMenu
+            x={contextMenu.x}
+            y={contextMenu.y}
+            nodeIds={contextMenu.nodeIds}
+            nodes={nodes}
+            onEnable={(ids) => applyEnabled(ids, true)}
+            onDisable={(ids) => applyEnabled(ids, false)}
+            onDuplicate={duplicateNodes}
+            onRemove={removeNodes}
+            onClose={closeContextMenu}
+          />
+        )}
+
         {/* Execute / preview dialog */}
         {executeDialogMode !== null && workflowId !== "new" && (
           <ExecuteWorkflowDialog
@@ -1299,6 +1419,43 @@ function TabSwitch({
   )
 }
 
+function ZoomControls() {
+  const { zoomIn, zoomOut, fitView } = useReactFlow()
+  return (
+    <div className="absolute bottom-3 right-3 z-20 flex flex-col overflow-hidden rounded-md border border-border bg-card shadow-sm">
+      <button
+        type="button"
+        onClick={() => zoomIn()}
+        aria-label="Aumentar zoom"
+        title="Aumentar zoom"
+        className="flex size-9 items-center justify-center text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <ZoomIn className="size-4" />
+      </button>
+      <div className="h-px bg-border" />
+      <button
+        type="button"
+        onClick={() => zoomOut()}
+        aria-label="Diminuir zoom"
+        title="Diminuir zoom"
+        className="flex size-9 items-center justify-center text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <ZoomOut className="size-4" />
+      </button>
+      <div className="h-px bg-border" />
+      <button
+        type="button"
+        onClick={() => fitView({ padding: 0.2, duration: 300 })}
+        aria-label="Ajustar ao canvas"
+        title="Ajustar ao canvas"
+        className="flex size-9 items-center justify-center text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <Maximize2 className="size-4" />
+      </button>
+    </div>
+  )
+}
+
 export function WorkflowEditor(props: WorkflowEditorProps) {
   // BuildModeProvider subiu para o layout privado (app/(private)/layout.tsx)
   // para que o AIPanel possa consumir o mesmo state. Aqui nao re-instanciamos.
@@ -1306,5 +1463,125 @@ export function WorkflowEditor(props: WorkflowEditorProps) {
     <ReactFlowProvider>
       <WorkflowEditorInner {...props} />
     </ReactFlowProvider>
+  )
+}
+
+// ─── Context menu para nós selecionados ─────────────────────────────────────
+interface NodeContextMenuProps {
+  x: number
+  y: number
+  nodeIds: string[]
+  nodes: Node[]
+  onEnable: (ids: string[]) => void
+  onDisable: (ids: string[]) => void
+  onDuplicate: (ids: string[]) => void
+  onRemove: (ids: string[]) => void
+  onClose: () => void
+}
+
+function NodeContextMenu({
+  x,
+  y,
+  nodeIds,
+  nodes,
+  onEnable,
+  onDisable,
+  onDuplicate,
+  onRemove,
+  onClose,
+}: NodeContextMenuProps) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState({ x, y })
+
+  // Clamp: ajusta posição para não estourar a viewport
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const { innerWidth, innerHeight } = window
+    const rect = el.getBoundingClientRect()
+    let nx = x
+    let ny = y
+    if (x + rect.width > innerWidth - 8) nx = Math.max(8, innerWidth - rect.width - 8)
+    if (y + rect.height > innerHeight - 8) ny = Math.max(8, innerHeight - rect.height - 8)
+    setPos({ x: nx, y: ny })
+  }, [x, y])
+
+  useEffect(() => {
+    function onDown(e: MouseEvent) {
+      const target = e.target as globalThis.Node | null
+      if (ref.current && target && !ref.current.contains(target)) onClose()
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose()
+    }
+    document.addEventListener("mousedown", onDown)
+    document.addEventListener("keydown", onKey)
+    return () => {
+      document.removeEventListener("mousedown", onDown)
+      document.removeEventListener("keydown", onKey)
+    }
+  }, [onClose])
+
+  const count = nodeIds.length
+  const targets = nodes.filter((n) => nodeIds.includes(n.id))
+  const allEnabled = targets.every(
+    (n) => (n.data as Record<string, unknown>)?.enabled !== false,
+  )
+  const allDisabled = targets.every(
+    (n) => (n.data as Record<string, unknown>)?.enabled === false,
+  )
+
+  const label = count === 1 ? "1 nó" : `${count} nós`
+
+  return (
+    <div
+      ref={ref}
+      onContextMenu={(e) => e.preventDefault()}
+      className="fixed z-[60] min-w-[220px] overflow-hidden rounded-lg border border-border bg-card shadow-xl"
+      style={{ left: pos.x, top: pos.y }}
+    >
+      <div className="border-b border-border bg-muted/40 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {label} selecionado{count > 1 ? "s" : ""}
+      </div>
+      <div className="p-1">
+        {!allEnabled && (
+          <button
+            type="button"
+            onClick={() => onEnable(nodeIds)}
+            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-muted"
+          >
+            <Power className="size-3.5 text-emerald-600" />
+            Ativar {count > 1 ? "selecionados" : ""}
+          </button>
+        )}
+        {!allDisabled && (
+          <button
+            type="button"
+            onClick={() => onDisable(nodeIds)}
+            className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-muted"
+          >
+            <PowerOff className="size-3.5 text-muted-foreground" />
+            Desativar {count > 1 ? "selecionados" : ""}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => onDuplicate(nodeIds)}
+          className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs text-foreground transition-colors hover:bg-muted"
+        >
+          <Copy className="size-3.5 text-muted-foreground" />
+          Duplicar {count > 1 ? "selecionados" : ""}
+        </button>
+        <div className="my-1 h-px bg-border" />
+        <button
+          type="button"
+          onClick={() => onRemove(nodeIds)}
+          className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs text-destructive transition-colors hover:bg-destructive/10"
+        >
+          <Trash2 className="size-3.5" />
+          Remover {count > 1 ? "selecionados" : ""}
+        </button>
+      </div>
+    </div>
   )
 }

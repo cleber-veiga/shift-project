@@ -368,7 +368,29 @@
       "Bash(./venv/Scripts/python.exe -c ' *)",
       "Bash(./venv/Scripts/python.exe -c \"import langchain_openai; import langchain_anthropic; print\\('openai:', langchain_openai.__version__\\); print\\('anthropic:', langchain_anthropic.__version__\\)\")",
       "Bash(./venv/Scripts/python.exe -c \"from app.services.agent.graph.llm import llm_complete_with_usage, llm_complete, llm_complete_json_with_usage, llm_complete_json, llm_stream, LLMResponse; print\\('llm.py imports OK'\\)\")",
-      "Bash(./venv/Scripts/python.exe -c \"from app.services.agent.chat_service import agent_chat_service; print\\('chat_service imports OK'\\); from app.services.agent.graph.nodes.guardrails import guardrails_node; from app.services.agent.graph.nodes.understand_intent import understand_intent_node; from app.services.agent.graph.nodes.plan_actions import plan_actions_node; from app.services.agent.graph.nodes.report import report_node; print\\('all nodes import OK'\\)\")"
+      "Bash(./venv/Scripts/python.exe -c \"from app.services.agent.chat_service import agent_chat_service; print\\('chat_service imports OK'\\); from app.services.agent.graph.nodes.guardrails import guardrails_node; from app.services.agent.graph.nodes.understand_intent import understand_intent_node; from app.services.agent.graph.nodes.plan_actions import plan_actions_node; from app.services.agent.graph.nodes.report import report_node; print\\('all nodes import OK'\\)\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3000)",
+      "Bash(node -e ' *)",
+      "Bash(python -m pytest tests/services/workflow/test_parameter_value.py tests/test_sql_script_node.py tests/test_bulk_composite_parameter_value.py -x -q)",
+      "Bash(python -m pytest tests/services/workflow/test_parameter_value.py::TestResolveTokenMultiSegment -x -q)",
+      "Bash(python -m pytest tests/test_dynamic_runner.py tests/test_sub_workflow.py tests/test_loop_node.py tests/test_if_switch_gate_mode.py tests/test_truncate_bulk_status_flatten.py tests/test_composite_insert_node.py -x -q)",
+      "Bash(curl -s --max-time 3 http://localhost:3000/)",
+      "Bash(curl -s http://localhost:3000/_next/static/chunks/%5Broot-of-the-server%5D__28bc9c2a._.css)",
+      "Bash(curl -s http://localhost:3000/)",
+      "Bash(grep -oE '\\(Error|error\\)[^<\"]{0,200}')",
+      "Bash(python3)",
+      "Bash(/c/Users/cleber.veiga/AppData/Local/Programs/Python/Python312/python.exe scan_transcript.py)",
+      "Bash(/c/Users/cleber.veiga/AppData/Local/Programs/Python/Python312/python.exe replay_file.py)",
+      "Bash(/c/Users/cleber.veiga/AppData/Local/Programs/Python/Python312/python.exe scan_full.py workflow-nodes.css)",
+      "Bash(/c/Users/cleber.veiga/AppData/Local/Programs/Python/Python312/python.exe search_jsonl.py lib-drawer)",
+      "Bash(/c/Users/cleber.veiga/AppData/Local/Programs/Python/Python312/python.exe range_events.py 370 445)",
+      "Bash(/c/Users/cleber.veiga/AppData/Local/Programs/Python/Python312/python.exe replay_node_lib_css.py)",
+      "Bash(curl -s http://localhost:3000/_next/static/css/)",
+      "Bash(curl -sL http://localhost:3000/)",
+      "Bash(curl -s http://localhost:3000/login)",
+      "Bash(curl -v http://localhost:3000/)",
+      "Bash(curl -s \"http://localhost:3000/_next/static/chunks/%5Broot-of-the-server%5D__28bc9c2a._.css\")",
+      "Bash(grep -n \"lib-drawer\\\\|return \\(\\\\s*$\\\\|className={\" shift-frontend/components/workflow/node-library.tsx)"
     ]
   }
 }

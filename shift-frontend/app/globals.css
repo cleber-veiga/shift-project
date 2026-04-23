@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "../components/workflow/workflow-nodes.css";
 
 @custom-variant dark (&:is(.dark *));
 
