@@ -277,6 +277,19 @@ class CallWorkflowProcessor(BaseNodeProcessor):
             raise NodeProcessingError(
                 f"No call_workflow '{node_id}': input_mapping deve ser um dict."
             )
+        variable_values_raw = config.get("variable_values") or {}
+        if not isinstance(variable_values_raw, dict):
+            raise NodeProcessingError(
+                f"No call_workflow '{node_id}': variable_values deve ser um dict."
+            )
+
+        # Auto-forward: variaveis do pai sao propagadas automaticamente para
+        # o sub-workflow quando os nomes batem. Assim o usuario nao precisa
+        # mapear manualmente (ex.: ``ConstrushowDb`` no pai -> ``ConstrushowDb``
+        # no sub). ``variable_values_raw`` do config ainda tem precedencia.
+        parent_vars = context.get("vars")
+        if not isinstance(parent_vars, dict):
+            parent_vars = {}
 
         # Rehydratacao sob demanda: se algum template referencia
         # ``upstream_results.<id>.rows`` e esse upstream publicou apenas
@@ -297,6 +310,20 @@ class CallWorkflowProcessor(BaseNodeProcessor):
             else:
                 mapped_inputs[name] = raw_expr
 
+        # Resolve variable_values do sub-workflow. Templates do caller
+        # (ex: ``{{vars.X}}`` referenciando variaveis do workflow pai ja
+        # substituidas em definition_for_exec) entram como strings literais
+        # apos substituicao. Aqui tambem resolvemos placeholders dinamicos
+        # ``{{upstream_results.*}}`` contra o contexto atual.
+        mapped_vars: dict[str, Any] = {}
+        for name, raw_expr in variable_values_raw.items():
+            if isinstance(raw_expr, str):
+                mapped_vars[name] = self.resolve_template(
+                    raw_expr, resolve_context
+                )
+            else:
+                mapped_vars[name] = raw_expr
+
         call_stack = list(context.get("call_stack") or [])
 
         coro = _invoke_subworkflow(
@@ -304,6 +331,8 @@ class CallWorkflowProcessor(BaseNodeProcessor):
             target_workflow_id=target_workflow_id,
             version_spec=version_spec,
             mapped_inputs=mapped_inputs,
+            variable_values=mapped_vars,
+            parent_vars=dict(parent_vars),
             call_stack=call_stack,
             timeout_seconds=timeout_seconds,
         )
@@ -340,11 +369,65 @@ async def _invoke_subworkflow(
     mapped_inputs: dict[str, Any],
     call_stack: list[str],
     timeout_seconds: int,
+    variable_values: dict[str, Any] | None = None,
+    parent_vars: dict[str, Any] | None = None,
     in_loop: bool = False,
 ) -> dict[str, Any]:
     """Coreografia async: carrega versao, valida inputs, roda sub-workflow."""
+    # Import lazy para evitar ciclo.
+    from app.services.workflow_service import (  # noqa: WPS433
+        _substitute_vars_in_definition,
+        _validate_and_resolve_variables,
+        _collect_referenced_var_names,
+    )
+
     version = await _load_version(target_workflow_id, version_spec, node_id)
     _validate_inputs(node_id, version, mapped_inputs)
+
+    # Resolve variaveis globais do sub-workflow antes de qualquer coisa —
+    # garante que ``{{vars.X}}`` dentro da definition vire valor concreto
+    # (inclusive em connection_id, que a resolucao de conexao abaixo
+    # consulta literalmente).
+    sub_var_decls: list[dict[str, Any]] = (
+        version.definition.get("variables", []) if isinstance(version.definition, dict) else []
+    )
+    sub_referenced = _collect_referenced_var_names(version.definition)
+
+    # Merge: auto-forward do pai -> override via variable_values do config.
+    # Exemplo: pai resolveu ``ConstrushowDb = <uuid>``; sub tambem declara
+    # ``ConstrushowDb``. Sem config explicito, o UUID flui direto. Se o
+    # usuario tiver mapeado ``variable_values`` no no, esse valor vence.
+    merged_values: dict[str, Any] = {}
+    if parent_vars:
+        for decl in sub_var_decls:
+            if not isinstance(decl, dict):
+                continue
+            name = decl.get("name")
+            if isinstance(name, str) and name in parent_vars:
+                merged_values[name] = parent_vars[name]
+    if variable_values:
+        for k, v in variable_values.items():
+            # Trata "" como "nao fornecido" — evita que um placeholder do UI
+            # apague o auto-forward do pai.
+            if v is None or (isinstance(v, str) and v.strip() == ""):
+                continue
+            merged_values[k] = v
+
+    try:
+        resolved_sub_vars = await _validate_and_resolve_variables(
+            var_decls=sub_var_decls,
+            variable_values=merged_values,
+            referenced_names=sub_referenced,
+        )
+    except ValueError as exc:
+        # Propaga como erro de node — o usuario ve mensagem contextualizada.
+        raise NodeProcessingError(
+            f"No call_workflow '{node_id}': {exc}"
+        ) from exc
+
+    definition_for_exec = _substitute_vars_in_definition(
+        version.definition, resolved_sub_vars
+    )
 
     # Resolve connections do sub-workflow (seu proprio escopo — nao
     # herdamos nada do pai). Importamos aqui para evitar ciclo de import.
@@ -366,7 +449,7 @@ async def _invoke_subworkflow(
         project_id, workspace_id = scope
         resolved_connections = await connection_service.resolve_for_workflow(
             session,
-            version.definition,
+            definition_for_exec,
             project_id=project_id,
             workspace_id=workspace_id,
         )
@@ -380,7 +463,7 @@ async def _invoke_subworkflow(
     try:
         sub_result = await asyncio.wait_for(
             run_workflow(
-                workflow_payload=version.definition,
+                workflow_payload=definition_for_exec,
                 workflow_id=str(target_workflow_id),
                 triggered_by="subworkflow",
                 input_data=mapped_inputs,

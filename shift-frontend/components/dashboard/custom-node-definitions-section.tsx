@@ -188,21 +188,21 @@ export function CustomNodeDefinitionsSection({
 
   return (
     <section className="space-y-3">
-      <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="text-xs text-muted-foreground">
           Defina nós compostos reutilizáveis que aparecem na paleta do editor de
           fluxos.
         </div>
 
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <label className="flex h-9 w-full items-center gap-2 rounded-md border border-input bg-background px-3 sm:w-[220px]">
-            <Search className="size-4 text-muted-foreground" />
+        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center">
+          <label className="flex h-8 w-full items-center gap-1.5 rounded-md border border-input bg-background px-2.5 sm:w-[180px]">
+            <Search className="size-3 text-muted-foreground" />
             <input
               type="text"
               placeholder="Buscar..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+              className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
             />
           </label>
 
@@ -210,9 +210,9 @@ export function CustomNodeDefinitionsSection({
             <button
               type="button"
               onClick={handleOpenCreate}
-              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-foreground px-3.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
+              className="inline-flex h-8 items-center justify-center gap-1 rounded-md bg-foreground px-3 text-xs font-semibold text-background transition-opacity hover:opacity-90"
             >
-              <Plus className="size-4" />
+              <Plus className="size-3.5" />
               Novo Nó
             </button>
           ) : null}

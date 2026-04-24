@@ -59,6 +59,19 @@ export function NewWorkflowModal({ open, onOpenChange }: NewWorkflowModalProps) 
   const [selectedType, setSelectedType] = useState<WorkflowType>("data-migration")
   const [name, setName] = useState("")
   const [description, setDescription] = useState("")
+  const [tags, setTags] = useState<string[]>([])
+  const [tagDraft, setTagDraft] = useState("")
+
+  function addTag(raw: string) {
+    const t = raw.trim().toUpperCase().replace(/\s+/g, "_").slice(0, 50)
+    if (!t) return
+    setTags((prev) => (prev.includes(t) ? prev : [...prev, t]))
+    setTagDraft("")
+  }
+
+  function removeTag(t: string) {
+    setTags((prev) => prev.filter((x) => x !== t))
+  }
 
   // Players (sistemas)
   const [players, setPlayers] = useState<WorkspacePlayer[]>([])
@@ -80,6 +93,8 @@ export function NewWorkflowModal({ open, onOpenChange }: NewWorkflowModalProps) 
       setSelectedType("data-migration")
       setName("")
       setDescription("")
+      setTags([])
+      setTagDraft("")
       setSelectedPlayerId(null)
       setPlayers([])
     }
@@ -120,6 +135,7 @@ export function NewWorkflowModal({ open, onOpenChange }: NewWorkflowModalProps) 
         name: name.trim(),
         description: description.trim() || null,
         workspace_id: selectedWorkspace?.id ?? undefined,
+        tags,
         definition: {
           nodes: [],
           edges: [],
@@ -339,6 +355,57 @@ export function NewWorkflowModal({ open, onOpenChange }: NewWorkflowModalProps) 
               maxLength={1024}
               className="w-full resize-none rounded-lg border border-input bg-background px-3 py-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground/50 focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all"
             />
+          </div>
+
+          {/* Tags */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Tags{" "}
+              <span className="normal-case font-normal text-muted-foreground/60">
+                (opcional — Enter ou vírgula para adicionar)
+              </span>
+            </label>
+            <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-input bg-background px-2 py-1.5 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20 transition-all">
+              {tags.map((t) => (
+                <span
+                  key={t}
+                  className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-primary"
+                >
+                  {t}
+                  <button
+                    type="button"
+                    onClick={() => removeTag(t)}
+                    className="flex size-3.5 items-center justify-center rounded-sm hover:bg-primary/20"
+                    aria-label={`Remover tag ${t}`}
+                  >
+                    <X className="size-2.5" />
+                  </button>
+                </span>
+              ))}
+              <input
+                type="text"
+                value={tagDraft}
+                onChange={(e) => {
+                  const v = e.target.value
+                  if (v.endsWith(",") || v.endsWith(";")) {
+                    addTag(v.slice(0, -1))
+                  } else {
+                    setTagDraft(v.toUpperCase())
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault()
+                    if (tagDraft.trim()) addTag(tagDraft)
+                  } else if (e.key === "Backspace" && !tagDraft && tags.length > 0) {
+                    removeTag(tags[tags.length - 1])
+                  }
+                }}
+                onBlur={() => tagDraft.trim() && addTag(tagDraft)}
+                placeholder={tags.length === 0 ? "Ex: FISCAL, CLIENTES, SAP" : ""}
+                className="min-w-[120px] flex-1 bg-transparent py-0.5 text-sm uppercase text-foreground outline-none placeholder:text-muted-foreground/50 placeholder:normal-case"
+              />
+            </div>
           </div>
         </div>
 

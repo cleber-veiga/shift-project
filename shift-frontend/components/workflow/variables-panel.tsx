@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ChevronUp,
   Eye,
+  Link2,
   Loader2,
   Pencil,
   Plus,
@@ -12,6 +13,7 @@ import {
   X,
 } from "lucide-react"
 import type { WorkflowVariable, WorkflowVariableType } from "@/lib/workflow/types"
+import type { InheritedVariable } from "@/lib/api/workflow-variables"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -318,6 +320,7 @@ function VariableForm({ initial, existingNames, onSave, onCancel }: VariableForm
 interface VariablesPanelProps {
   workflowId: string
   variables: WorkflowVariable[]
+  inheritedVariables?: InheritedVariable[]
   isSaving: boolean
   error: string | null
   onClose: () => void
@@ -329,6 +332,7 @@ interface VariablesPanelProps {
 export function VariablesPanel({
   workflowId: _workflowId,
   variables,
+  inheritedVariables = [],
   isSaving,
   error,
   onClose,
@@ -512,6 +516,56 @@ export function VariablesPanel({
               </ul>
             )}
           </div>
+
+          {/* Inherited (read-only) from sub-workflows */}
+          {inheritedVariables.length > 0 && (
+            <div className="shrink-0 border-t border-border">
+              <div className="flex items-center gap-1.5 bg-muted/30 px-4 py-1.5">
+                <Link2 className="size-3 text-muted-foreground" />
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Herdadas de sub-fluxos
+                </span>
+                <span className="ml-auto text-[10px] text-muted-foreground">
+                  somente leitura
+                </span>
+              </div>
+              <ul className="divide-y divide-border">
+                {inheritedVariables.map((iv) => (
+                  <li
+                    key={`${iv.sub_workflow_id}::${iv.variable.name}`}
+                    className="flex items-center gap-2 px-4 py-2"
+                    title={`Vem de: ${iv.sub_workflow_name} (v${iv.sub_workflow_version})`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate text-sm font-medium text-muted-foreground">
+                          {iv.variable.name}
+                        </span>
+                        {iv.variable.required && (
+                          <span className="text-[10px] text-destructive">*</span>
+                        )}
+                        <span
+                          className={`inline-flex rounded px-1.5 py-0.5 text-[10px] font-medium ${TYPE_BADGE[iv.variable.type]}`}
+                        >
+                          {iv.variable.type}
+                        </span>
+                      </div>
+                      <p className="truncate text-[10px] text-muted-foreground">
+                        <span className="font-medium">{iv.sub_workflow_name}</span>
+                        <span className="ml-1 opacity-70">v{iv.sub_workflow_version}</span>
+                        {iv.variable.description && (
+                          <>
+                            <span className="mx-1">·</span>
+                            {iv.variable.description}
+                          </>
+                        )}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           {/* Add button */}
           <div className="shrink-0 border-t border-border px-4 py-2">

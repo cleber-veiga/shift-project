@@ -135,6 +135,125 @@ def _collect_referenced_var_names(definition: dict[str, Any] | None) -> set[str]
     return found
 
 
+def _extract_subworkflow_ref(
+    node: dict[str, Any],
+) -> tuple[UUID, Any] | None:
+    """Extrai ``(workflow_id, version_spec)`` de um no que invoca sub-workflow.
+
+    Cobre ``call_workflow`` e ``loop`` — ambos disparam um sub-fluxo via
+    ``_invoke_subworkflow``, entao as variaveis declaradas por esse sub-fluxo
+    tambem precisam aparecer como herdadas no pai.
+
+    - ``call_workflow``: ``data.workflow_id`` + ``data.version``
+    - ``loop``         : ``data.workflow_id`` + ``data.workflow_version``
+
+    Devolve ``None`` se o no esta desativado, nao tem workflow alvo, ou o UUID
+    nao e valido.
+    """
+    if not isinstance(node, dict):
+        return None
+    node_type = node.get("type")
+    if node_type not in ("call_workflow", "loop"):
+        return None
+    data = node.get("data") or {}
+    if not isinstance(data, dict) or data.get("enabled") is False:
+        return None
+    sub_wf_id_raw = data.get("workflow_id")
+    if not sub_wf_id_raw:
+        return None
+    try:
+        sub_wf_id = UUID(str(sub_wf_id_raw))
+    except (ValueError, TypeError):
+        return None
+    if node_type == "call_workflow":
+        version_spec = data.get("version", "latest")
+    else:  # loop
+        version_spec = data.get("workflow_version", "latest")
+    return sub_wf_id, version_spec
+
+
+async def _collect_inherited_var_decls(
+    db: AsyncSession,
+    definition: dict[str, Any] | None,
+    *,
+    parent_names: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], set[str]]:
+    """Coleta declaracoes de variaveis herdadas de sub-workflows referenciados.
+
+    Percorre nos que invocam sub-workflows (``call_workflow`` e ``loop``),
+    carrega a ``WorkflowVersion`` alvo (numero fixo ou mais recente publicada)
+    e devolve as variaveis referenciadas pelo sub-workflow. Colisoes com nomes
+    do pai sao descartadas porque o pai ja cuida do valor via auto-forward.
+    Devolve tambem o conjunto de nomes coletados — util para estender
+    ``referenced_names`` durante a resolucao.
+    """
+    if not definition:
+        return [], set()
+    from sqlalchemy import select as sa_select  # noqa: WPS433
+    from app.models.workflow import WorkflowVersion  # noqa: WPS433
+
+    parent_names = parent_names or set()
+    collected_decls: list[dict[str, Any]] = []
+    collected_names: set[str] = set()
+
+    seen_versions: dict[tuple[UUID, Any], WorkflowVersion | None] = {}
+
+    for node in definition.get("nodes") or []:
+        ref = _extract_subworkflow_ref(node)
+        if ref is None:
+            continue
+        sub_wf_id, version_spec = ref
+
+        cache_key = (sub_wf_id, version_spec)
+        if cache_key in seen_versions:
+            version_row = seen_versions[cache_key]
+        else:
+            if version_spec == "latest" or version_spec is None:
+                stmt = (
+                    sa_select(WorkflowVersion)
+                    .where(
+                        WorkflowVersion.workflow_id == sub_wf_id,
+                        WorkflowVersion.published.is_(True),
+                    )
+                    .order_by(WorkflowVersion.version.desc())
+                    .limit(1)
+                )
+            else:
+                try:
+                    version_num = int(version_spec)
+                except (TypeError, ValueError):
+                    seen_versions[cache_key] = None
+                    continue
+                stmt = sa_select(WorkflowVersion).where(
+                    WorkflowVersion.workflow_id == sub_wf_id,
+                    WorkflowVersion.version == version_num,
+                )
+            version_row = (await db.execute(stmt)).scalar_one_or_none()
+            seen_versions[cache_key] = version_row
+
+        if version_row is None:
+            continue
+
+        sub_def = version_row.definition if isinstance(version_row.definition, dict) else {}
+        sub_raw_vars = sub_def.get("variables") or []
+        sub_referenced = _collect_referenced_var_names(sub_def)
+
+        for raw in sub_raw_vars:
+            if not isinstance(raw, dict):
+                continue
+            name = raw.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            if name not in sub_referenced:
+                continue
+            if name in parent_names or name in collected_names:
+                continue
+            collected_decls.append(raw)
+            collected_names.add(name)
+
+    return collected_decls, collected_names
+
+
 async def _validate_and_resolve_variables(
     var_decls: list[dict[str, Any]],
     variable_values: dict[str, Any],
@@ -248,10 +367,26 @@ class WorkflowExecutionService:
             variable_values_raw = input_data.get("variable_values") or {}
 
         referenced_names = _collect_referenced_var_names(workflow.definition)
+
+        # Agrega variaveis herdadas de sub-workflows (nos call_workflow).
+        # O valor submetido pelo usuario no formulario de execucao fica em
+        # ``variable_values_raw`` junto com as do pai; a resolucao trata
+        # ambos igualmente. Ja no runtime, quem entra no contexto via
+        # ``context['vars']`` serve de fonte para o auto-forward do
+        # ``CallWorkflowProcessor`` em cada sub-chamada.
+        parent_names = {
+            d.get("name") for d in var_decls if isinstance(d, dict) and d.get("name")
+        }
+        inherited_decls, inherited_names = await _collect_inherited_var_decls(
+            db, workflow.definition, parent_names=parent_names
+        )
+        full_var_decls = list(var_decls) + list(inherited_decls)
+        full_referenced = referenced_names | inherited_names
+
         resolved_vars = await _validate_and_resolve_variables(
-            var_decls=var_decls,
+            var_decls=full_var_decls,
             variable_values=variable_values_raw,
-            referenced_names=referenced_names,
+            referenced_names=full_referenced,
         )
 
         # Substitui {{vars.X}} na definicao antes de resolver conexoes e de

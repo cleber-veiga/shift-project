@@ -51,9 +51,10 @@ def _collect_referenced_vars(definition: dict[str, Any] | None) -> set[str]:
 from app.api.dependencies import get_current_user, get_db
 from app.core.security import authorization_service, require_permission
 from app.models import Project, User
-from app.models.workflow import Workflow
+from app.models.workflow import Workflow, WorkflowVersion
 from app.schemas.workflow import (
     ConnectionOptionResponse,
+    InheritedVariable,
     VariablesSchemaResponse,
     WorkflowCloneRequest,
     WorkflowCreate,
@@ -402,10 +403,105 @@ async def get_workflow_variables_schema(
     referenced = _collect_referenced_vars(workflow.definition)
     variables = [v for v in all_variables if v.name in referenced]
 
-    # Identifica variaveis do tipo connection
-    conn_vars = [v for v in variables if v.type == "connection"]
-    if not conn_vars:
-        return VariablesSchemaResponse(variables=variables)
+    # ── Variaveis herdadas de sub-workflows ─────────────────────────────
+    # Tanto ``call_workflow`` quanto ``loop`` invocam sub-fluxos via
+    # ``_invoke_subworkflow``; em ambos os casos as variaveis do sub-fluxo
+    # precisam aparecer como herdadas no pai. ``_extract_subworkflow_ref``
+    # normaliza a diferenca de campos (``version`` vs ``workflow_version``).
+    # Nomes que colidem com variaveis do pai sao ignorados (o pai ja pede
+    # o valor e o runtime faz auto-forward).
+    from app.services.workflow_service import _extract_subworkflow_ref  # noqa: WPS433
+
+    inherited_variables: list[InheritedVariable] = []
+    parent_var_names = {v.name for v in all_variables}
+    seen_inherited: set[tuple[UUID, str]] = set()
+
+    for node in (workflow.definition.get("nodes") if workflow.definition else []) or []:
+        ref = _extract_subworkflow_ref(node)
+        if ref is None:
+            continue
+        sub_wf_id, version_spec = ref
+
+        # Busca versao alvo — numero fixo ou a mais recente publicada.
+        if version_spec == "latest" or version_spec is None:
+            version_stmt = (
+                sa_select(WorkflowVersion)
+                .where(
+                    WorkflowVersion.workflow_id == sub_wf_id,
+                    WorkflowVersion.published.is_(True),
+                )
+                .order_by(WorkflowVersion.version.desc())
+                .limit(1)
+            )
+        else:
+            try:
+                version_num = int(version_spec)
+            except (TypeError, ValueError):
+                continue
+            version_stmt = sa_select(WorkflowVersion).where(
+                WorkflowVersion.workflow_id == sub_wf_id,
+                WorkflowVersion.version == version_num,
+            )
+
+        version_row = (await db.execute(version_stmt)).scalar_one_or_none()
+        if version_row is None:
+            continue
+
+        sub_def = version_row.definition if isinstance(version_row.definition, dict) else {}
+        sub_raw_vars = sub_def.get("variables") or []
+        sub_referenced = _collect_referenced_vars(sub_def)
+
+        # Nome do sub-workflow para exibicao (agrupamento no dialog / panel).
+        sub_name_row = await db.execute(
+            sa_select(Workflow.name).where(Workflow.id == sub_wf_id)
+        )
+        sub_name = sub_name_row.scalar_one_or_none() or str(sub_wf_id)
+
+        for raw in sub_raw_vars:
+            try:
+                param = WorkflowParam.model_validate(raw)
+            except Exception:  # noqa: BLE001
+                continue
+            if param.name not in sub_referenced:
+                continue
+            if param.name in parent_var_names:
+                continue  # o pai ja declara — auto-forward no runtime
+            key = (sub_wf_id, param.name)
+            if key in seen_inherited:
+                continue
+            seen_inherited.add(key)
+
+            # ui_group permite que o ExecuteWorkflowDialog agrupe no formulario.
+            group_label = f"Herdadas de: {sub_name}"
+            grouped = param.model_copy(update={"ui_group": group_label})
+            inherited_variables.append(
+                InheritedVariable(
+                    variable=grouped,
+                    sub_workflow_id=sub_wf_id,
+                    sub_workflow_name=sub_name,
+                    sub_workflow_version=version_row.version,
+                )
+            )
+
+    # ── Resolucao de conectores (tanto para vars do pai quanto herdadas) ──
+    conn_var_names: list[str] = []
+    conn_types_by_var: dict[str, str | None] = {}
+    for v in variables:
+        if v.type == "connection":
+            conn_var_names.append(v.name)
+            conn_types_by_var[v.name] = v.connection_type
+    for inh in inherited_variables:
+        if inh.variable.type == "connection":
+            # Sobrescreve se colidir — inherited sempre vem com ui_group, nao
+            # colide com parent porque filtramos acima.
+            conn_var_names.append(inh.variable.name)
+            conn_types_by_var[inh.variable.name] = inh.variable.connection_type
+
+    if not conn_var_names:
+        return VariablesSchemaResponse(
+            variables=variables,
+            inherited_variables=inherited_variables,
+        )
 
     # Resolve workspace_id efetivo (proprio ou via projeto)
     workspace_id = workflow.workspace_id
@@ -438,7 +534,10 @@ async def get_workflow_variables_schema(
     elif workflow.project_id is not None:
         filters.append(Connection.project_id == workflow.project_id)
     else:
-        return VariablesSchemaResponse(variables=variables)
+        return VariablesSchemaResponse(
+            variables=variables,
+            inherited_variables=inherited_variables,
+        )
 
     conn_result = await db.execute(
         sa_select(Connection.id, Connection.name, Connection.type)
@@ -457,14 +556,19 @@ async def get_workflow_variables_schema(
     ]
 
     connection_options: dict[str, list[ConnectionOptionResponse]] = {}
-    for var in conn_vars:
-        db_type = _TYPE_MAP.get(var.connection_type or "", "") if var.connection_type else None
+    for var_name in conn_var_names:
+        ctype = conn_types_by_var.get(var_name)
+        db_type = _TYPE_MAP.get(ctype or "", "") if ctype else None
         if db_type:
-            connection_options[var.name] = [c for c in all_connections if c.type == db_type]
+            connection_options[var_name] = [c for c in all_connections if c.type == db_type]
         else:
-            connection_options[var.name] = list(all_connections)
+            connection_options[var_name] = list(all_connections)
 
-    return VariablesSchemaResponse(variables=variables, connection_options=connection_options)
+    return VariablesSchemaResponse(
+        variables=variables,
+        connection_options=connection_options,
+        inherited_variables=inherited_variables,
+    )
 
 
 @router.put(

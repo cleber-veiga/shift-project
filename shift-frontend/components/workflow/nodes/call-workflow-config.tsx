@@ -43,7 +43,11 @@ export function CallWorkflowConfig({ data, onUpdate, currentWorkflowId }: CallWo
 
   // ── Versions for selected workflow ─────────────────────────────────────
   const [versionsList, setVersionsList] = useState<
-    Array<{ version: number; input_schema: WorkflowParam[] }>
+    Array<{
+      version: number
+      input_schema: WorkflowParam[]
+      variables: WorkflowParam[]
+    }>
   >([])
   const [versionsLoading, setVersionsLoading] = useState(false)
   const [versionsError, setVersionsError] = useState<string | null>(null)
@@ -92,6 +96,7 @@ export function CallWorkflowConfig({ data, onUpdate, currentWorkflowId }: CallWo
           rows.map((r) => ({
             version: r.version,
             input_schema: r.input_schema ?? [],
+            variables: r.variables ?? [],
           })),
         )
       })
@@ -127,6 +132,15 @@ export function CallWorkflowConfig({ data, onUpdate, currentWorkflowId }: CallWo
     if (resolvedVersion == null) return []
     const v = versionsList.find((vv) => vv.version === resolvedVersion)
     return v?.input_schema ?? []
+  }, [versionsList, resolvedVersion])
+
+  const resolvedVariables = useMemo<WorkflowParam[]>(() => {
+    if (resolvedVersion == null) return []
+    const v = versionsList.find((vv) => vv.version === resolvedVersion)
+    const list = v?.variables ?? []
+    return [...list].sort(
+      (a, b) => (a.ui_order ?? 0) - (b.ui_order ?? 0) || a.name.localeCompare(b.name),
+    )
   }, [versionsList, resolvedVersion])
 
   // Warnings
@@ -482,6 +496,38 @@ export function CallWorkflowConfig({ data, onUpdate, currentWorkflowId }: CallWo
               {requiredInputsMissing.map((p) => p.name).join(", ")}
             </p>
           )}
+        </div>
+      )}
+
+      {/* ── Sub-workflow variables (read-only notice) ── */}
+      {workflowId && resolvedVersion != null && resolvedVariables.length > 0 && (
+        <div className="space-y-1.5 rounded-md border border-dashed border-border bg-muted/20 p-3">
+          <div className="flex items-center gap-1.5">
+            <Info className="size-3 text-muted-foreground" />
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Variáveis herdadas deste sub-fluxo
+            </span>
+          </div>
+          <p className="text-[10px] leading-relaxed text-muted-foreground">
+            As variáveis abaixo aparecem automaticamente no painel &ldquo;Variáveis do Workflow&rdquo;
+            do fluxo atual e no formulário de execução, para você informar o valor uma única vez.
+          </p>
+          <ul className="mt-1 flex flex-wrap gap-1.5">
+            {resolvedVariables.map((param) => (
+              <li
+                key={param.name}
+                className="inline-flex items-center gap-1 rounded bg-muted px-1.5 py-0.5 text-[10px]"
+              >
+                <code className="font-mono font-semibold text-foreground">
+                  {param.name}
+                </code>
+                <span className="text-muted-foreground">
+                  {param.type}
+                  {param.connection_type ? `:${param.connection_type}` : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 

@@ -1,6 +1,6 @@
 "use client"
 
-import { Grid2X2, List, Loader2, Plus, Search, Workflow, FolderOpen, Play, Trash2, Copy, LayoutTemplate } from "lucide-react"
+import { Grid2X2, List, Loader2, Plus, Search, Workflow, FolderOpen, Play, Trash2, Copy, LayoutTemplate, Tag as TagIcon, Check, X } from "lucide-react"
 import Link from "next/link"
 import { useRouter, usePathname } from "next/navigation"
 import { useCallback, useEffect, useMemo, useState } from "react"
@@ -137,6 +137,8 @@ function FlowsSection({
   const [showNewModal, setShowNewModal] = useState(false)
   const [searchTerm, setSearchTerm] = useState("")
   const [statusFilter, setStatusFilter] = useState("todos")
+  const [selectedTags, setSelectedTags] = useState<string[]>([])
+  const [tagMenuOpen, setTagMenuOpen] = useState(false)
 
   // Real data
   const [workflows, setWorkflows] = useState<WorkflowType[]>([])
@@ -219,12 +221,28 @@ function FlowsSection({
     return players.find((p) => p.id === playerId)?.name ?? "—"
   }
 
+  const availableTags = useMemo(() => {
+    const set = new Set<string>()
+    for (const w of workflows) for (const t of w.tags ?? []) set.add(t)
+    return Array.from(set).sort()
+  }, [workflows])
+
   const filtered = workflows.filter((w) => {
     if (statusFilter === "rascunho" && w.is_published) return false
     if (statusFilter === "ativo" && !w.is_published) return false
     if (searchTerm && !w.name.toLowerCase().includes(searchTerm.toLowerCase())) return false
+    if (selectedTags.length > 0) {
+      const wTags = new Set(w.tags ?? [])
+      if (!selectedTags.some((t) => wTags.has(t))) return false
+    }
     return true
   })
+
+  function toggleTag(t: string) {
+    setSelectedTags((prev) =>
+      prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]
+    )
+  }
 
   return (
     <>
@@ -243,33 +261,33 @@ function FlowsSection({
       onConfirm={handleDelete}
     />
     <section className="space-y-3">
-      <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="inline-flex w-fit items-center rounded-md border border-border bg-background p-1">
+      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="inline-flex w-fit items-center rounded border border-border bg-background p-0.5">
           <button
             type="button"
             onClick={() => setView("list")}
-            className={`inline-flex h-7 items-center gap-1.5 rounded px-2.5 text-xs font-medium transition-colors ${
+            className={`inline-flex h-6 items-center gap-1 rounded px-2 text-[11px] font-medium transition-colors ${
               view === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"
             }`}
           >
-            <List className="size-3.5" />
+            <List className="size-3" />
             Lista
           </button>
           <button
             type="button"
             onClick={() => setView("card")}
-            className={`inline-flex h-7 items-center gap-1.5 rounded px-2.5 text-xs font-medium transition-colors ${
+            className={`inline-flex h-6 items-center gap-1 rounded px-2 text-[11px] font-medium transition-colors ${
               view === "card" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"
             }`}
           >
-            <Grid2X2 className="size-3.5" />
+            <Grid2X2 className="size-3" />
             Card
           </button>
         </div>
 
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center">
           <Select defaultValue="todos" onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-full min-w-40 bg-background sm:w-[160px]">
+            <SelectTrigger size="sm" className="w-full min-w-36 bg-background text-xs sm:w-[140px]">
               <SelectValue placeholder="Todos os Status" />
             </SelectTrigger>
             <SelectContent>
@@ -279,14 +297,82 @@ function FlowsSection({
             </SelectContent>
           </Select>
 
-          <label className="flex h-9 w-full items-center gap-2 rounded-md border border-input bg-background px-3 sm:w-[220px]">
-            <Search className="size-4 text-muted-foreground" />
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setTagMenuOpen((v) => !v)}
+              className="flex h-8 w-full items-center gap-1.5 rounded-md border border-input bg-background px-2.5 text-xs text-foreground transition-colors hover:bg-muted sm:w-[150px]"
+            >
+              <TagIcon className="size-3 text-muted-foreground" />
+              <span className="flex-1 text-left truncate">
+                {selectedTags.length === 0
+                  ? "Filtrar por tag"
+                  : `${selectedTags.length} tag${selectedTags.length > 1 ? "s" : ""}`}
+              </span>
+              {selectedTags.length > 0 && (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setSelectedTags([])
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      setSelectedTags([])
+                    }
+                  }}
+                  className="flex size-3.5 items-center justify-center rounded hover:bg-muted"
+                  aria-label="Limpar tags"
+                >
+                  <X className="size-2.5" />
+                </span>
+              )}
+            </button>
+            {tagMenuOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={() => setTagMenuOpen(false)}
+                />
+                <div className="absolute right-0 z-50 mt-1 max-h-64 w-52 overflow-auto rounded-md border border-border bg-card p-1 shadow-lg">
+                  {availableTags.length === 0 ? (
+                    <p className="px-2 py-1 text-[11px] text-muted-foreground">
+                      Nenhuma tag cadastrada
+                    </p>
+                  ) : (
+                    availableTags.map((t) => {
+                      const checked = selectedTags.includes(t)
+                      return (
+                        <button
+                          key={t}
+                          type="button"
+                          onClick={() => toggleTag(t)}
+                          className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[11px] font-semibold uppercase tracking-wide text-foreground hover:bg-muted"
+                        >
+                          <span className={`flex size-3 items-center justify-center rounded border ${checked ? "border-primary bg-primary text-primary-foreground" : "border-border"}`}>
+                            {checked && <Check className="size-2" />}
+                          </span>
+                          {t}
+                        </button>
+                      )
+                    })
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+
+          <label className="flex h-8 w-full items-center gap-1.5 rounded-md border border-input bg-background px-2.5 sm:w-[180px]">
+            <Search className="size-3 text-muted-foreground" />
             <input
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Buscar..."
-              className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+              className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
             />
           </label>
 
@@ -294,9 +380,9 @@ function FlowsSection({
             <button
               type="button"
               onClick={() => setShowNewModal(true)}
-              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-foreground px-3.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
+              className="inline-flex h-8 items-center justify-center gap-1 rounded-md bg-foreground px-3 text-xs font-semibold text-background transition-opacity hover:opacity-90"
             >
-              <Plus className="size-4" />
+              <Plus className="size-3.5" />
               Novo Fluxo
             </button>
           ) : null}
@@ -315,9 +401,10 @@ function FlowsSection({
         </div>
       ) : view === "list" ? (
         <div className="overflow-auto rounded-xl border border-border bg-card shadow-sm">
-          <div className="grid min-w-[860px] grid-cols-[1fr_180px_140px_120px_120px] items-center border-b border-border px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+          <div className="grid min-w-[960px] grid-cols-[1fr_140px_200px_110px_110px_110px] items-center border-b border-border px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
             <span>Fluxo</span>
             <span className="text-left">Sistema</span>
+            <span className="text-left">Tags</span>
             <span className="text-left">Status</span>
             <span className="text-left">Atualizado</span>
             <span className="text-right">Ações</span>
@@ -327,7 +414,7 @@ function FlowsSection({
             {filtered.map((flow) => (
               <div
                 key={flow.id}
-                className="grid min-w-[860px] grid-cols-[1fr_180px_140px_120px_120px] items-center px-4 py-4 transition-colors hover:bg-muted/10"
+                className="grid min-w-[960px] grid-cols-[1fr_140px_200px_110px_110px_110px] items-center px-4 py-4 transition-colors hover:bg-muted/10"
               >
                 <div className="flex items-center gap-3">
                   <div className="flex size-8 items-center justify-center rounded-md bg-primary/10 text-primary">
@@ -335,7 +422,7 @@ function FlowsSection({
                   </div>
                   <div className="min-w-0">
                     <p className="truncate text-[13px] font-semibold text-foreground">{flow.name}</p>
-                    <p className="text-[11px] text-muted-foreground">{flow.description || scopeName}</p>
+                    <p className="truncate text-[11px] text-muted-foreground">{flow.description || scopeName}</p>
                   </div>
                 </div>
 
@@ -344,6 +431,21 @@ function FlowsSection({
                     <span className="inline-flex rounded bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
                       {getPlayerName(flow)}
                     </span>
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground">—</span>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap gap-1">
+                  {flow.tags && flow.tags.length > 0 ? (
+                    flow.tags.map((t) => (
+                      <span
+                        key={t}
+                        className="inline-flex rounded bg-muted px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground"
+                      >
+                        {t}
+                      </span>
+                    ))
                   ) : (
                     <span className="text-[11px] text-muted-foreground">—</span>
                   )}
@@ -420,6 +522,19 @@ function FlowsSection({
                   <span className="inline-flex rounded bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
                     {getPlayerName(flow)}
                   </span>
+                </div>
+              )}
+
+              {flow.tags && flow.tags.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {flow.tags.map((t) => (
+                    <span
+                      key={t}
+                      className="inline-flex rounded bg-muted px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground"
+                    >
+                      {t}
+                    </span>
+                  ))}
                 </div>
               )}
 

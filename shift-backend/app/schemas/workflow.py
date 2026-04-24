@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal, Union
 from uuid import UUID
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 # ---------------------------------------------------------------------------
 # Tipo de referencia que aceita UUID real OU template {{vars.NOME}}
@@ -833,6 +833,22 @@ class ConnectionOptionResponse(BaseModel):
     type: str
 
 
+class InheritedVariable(BaseModel):
+    """Variavel herdada de um sub-workflow referenciado por um no call_workflow.
+
+    O frontend usa estas entradas para:
+    1) exibir a lista como categoria "read-only" no painel de variaveis,
+       transmitindo ao usuario que estes campos sao requeridos pelo sub-fluxo;
+    2) incluir no formulario de execucao para capturar valores que serao
+       auto-encaminhados pelo backend quando os nomes baterem.
+    """
+
+    variable: WorkflowParam
+    sub_workflow_id: UUID
+    sub_workflow_name: str
+    sub_workflow_version: int
+
+
 class VariablesSchemaResponse(BaseModel):
     """Declaracoes de variaveis + opcoes de conexao por variavel do tipo 'connection'."""
 
@@ -840,6 +856,10 @@ class VariablesSchemaResponse(BaseModel):
     connection_options: dict[str, list[ConnectionOptionResponse]] = Field(
         default_factory=dict,
         description="Chaves = nomes de variaveis com type='connection'; valores = lista de conectores compativeis.",
+    )
+    inherited_variables: list[InheritedVariable] = Field(
+        default_factory=list,
+        description="Variaveis declaradas por sub-workflows referenciados, com metadados da origem.",
     )
 
 
@@ -929,6 +949,30 @@ class ExecutionListResponse(BaseModel):
 
 # --- Schemas de CRUD de Workflow ---
 
+
+def _normalize_tags(value: Any) -> list[str]:
+    """Normaliza lista de tags: strip + UPPER + remove vazias + dedup preservando ordem."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("tags deve ser uma lista de strings")
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in value:
+        if not isinstance(raw, str):
+            raise ValueError("cada tag deve ser string")
+        tag = raw.strip().upper()
+        if not tag:
+            continue
+        if len(tag) > 50:
+            raise ValueError(f"tag '{tag[:20]}...' excede 50 caracteres")
+        if tag in seen:
+            continue
+        seen.add(tag)
+        out.append(tag)
+    return out
+
+
 class WorkflowCreate(BaseModel):
     """Payload para criacao de um workflow ou template."""
 
@@ -938,6 +982,12 @@ class WorkflowCreate(BaseModel):
     workspace_id: UUID | None = None
     is_template: bool = False
     definition: dict[str, Any] = Field(default_factory=dict)
+    tags: list[str] = Field(default_factory=list)
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_tags(cls, v: Any) -> list[str]:
+        return _normalize_tags(v)
 
     @model_validator(mode="after")
     def _validate_definition_variables(self) -> "WorkflowCreate":
@@ -961,6 +1011,14 @@ class WorkflowUpdate(BaseModel):
         default=None,
         description="Status do workflow: 'draft' ou 'published'.",
     )
+    tags: list[str] | None = None
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_tags(cls, v: Any) -> list[str] | None:
+        if v is None:
+            return None
+        return _normalize_tags(v)
 
     @model_validator(mode="after")
     def _validate_definition_variables(self) -> "WorkflowUpdate":
@@ -986,6 +1044,7 @@ class WorkflowResponse(BaseModel):
     is_published: bool
     status: str = "draft"
     definition: dict[str, Any]
+    tags: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -1010,6 +1069,11 @@ class WorkflowVersionResponse(BaseModel):
     version: int
     input_schema: list[WorkflowParam]
     output_schema: list[WorkflowParam]
+    # Variaveis globais declaradas no corpo do sub-workflow. Permite ao caller
+    # (no ``call_workflow``) exibir e preencher esses valores. Extraido de
+    # ``definition.variables`` pelo endpoint — nao e persistido em coluna
+    # dedicada do banco.
+    variables: list[WorkflowParam] = Field(default_factory=list)
     published: bool
     created_at: datetime
 

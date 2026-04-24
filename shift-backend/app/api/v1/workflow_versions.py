@@ -144,12 +144,15 @@ async def list_callable_workflows(
 
 def _version_to_response(version: WorkflowVersion) -> WorkflowVersionResponse:
     """Converte o model para schema API — tolera input_schema/output_schema raw."""
+    definition = version.definition if isinstance(version.definition, dict) else {}
+    raw_variables = definition.get("variables") or []
     return WorkflowVersionResponse(
         id=version.id,
         workflow_id=version.workflow_id,
         version=version.version,
         input_schema=version.input_schema or [],
         output_schema=version.output_schema or [],
+        variables=raw_variables,
         published=version.published,
         created_at=version.created_at,
     )

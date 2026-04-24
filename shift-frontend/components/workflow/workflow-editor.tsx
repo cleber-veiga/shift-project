@@ -37,7 +37,11 @@ import { VariablesPanel } from "@/components/workflow/variables-panel"
 import { ExecuteWorkflowDialog } from "@/components/workflow/execute-workflow-dialog"
 import type { WorkflowIOSchema } from "@/lib/api/workflow-versions"
 import { useWorkflowVariables } from "@/lib/workflow/use-workflow-variables"
-import { executeWorkflowWithVars } from "@/lib/api/workflow-variables"
+import {
+  executeWorkflowWithVars,
+  getVariablesSchema,
+  type InheritedVariable,
+} from "@/lib/api/workflow-variables"
 import { getNodeDefinition, NODE_REGISTRY, type WorkflowVariable } from "@/lib/workflow/types"
 import { NodeExecutionContext, type NodeExecState } from "@/lib/workflow/execution-context"
 import { NodeActionsContext } from "@/lib/workflow/node-actions-context"
@@ -113,6 +117,7 @@ function WorkflowEditorInner({
 
   const [name, setName] = useState(initialName || "Novo Fluxo")
   const [description, setDescription] = useState(initialDescription)
+  const [tags, setTags] = useState<string[]>([])
   const [status, setStatus] = useState<"draft" | "published">("draft")
   const [workflowUpdatedAt, setWorkflowUpdatedAt] = useState<string | null>(null)
   const [isTemplate, setIsTemplate] = useState(false)
@@ -120,7 +125,6 @@ function WorkflowEditorInner({
   const [isSaving, setIsSaving] = useState(false)
   const [isExecuting, setIsExecuting] = useState(false)
   const [isLoading, setIsLoading] = useState(workflowId !== "new")
-  const [statusMessage, setStatusMessage] = useState<string | null>(null)
 
   // Workflow workspace_id (needed for test endpoint auth scope)
   const [workflowWorkspaceId, setWorkflowWorkspaceId] = useState<string | undefined>(
@@ -167,6 +171,21 @@ function WorkflowEditorInner({
 
   // ── Schedule state (cron agendado no Prefect) ───────────────────────────
   const [scheduleStatus, setScheduleStatus] = useState<WorkflowScheduleStatus | null>(null)
+
+  // ── Variaveis herdadas de sub-workflows (call_workflow) — fetch sob demanda ──
+  // O backend calcula olhando os nos ``call_workflow`` na definition persistida,
+  // entao so faz sentido buscar apos salvar. Usado como visualizacao read-only
+  // no VariablesPanel e para inflar o formulario no ExecuteWorkflowDialog.
+  const [inheritedVariables, setInheritedVariables] = useState<InheritedVariable[]>([])
+  const refreshInheritedVariables = useCallback(async () => {
+    if (workflowId === "new") return
+    try {
+      const schema = await getVariablesSchema(workflowId)
+      setInheritedVariables(schema.inherited_variables ?? [])
+    } catch {
+      // Silencioso — a lista vira vazia e o painel esconde a secao.
+    }
+  }, [workflowId])
 
   // ── Build mode (ghost nodes from Platform Agent FASE 3) ─────────────────
   const {
@@ -312,6 +331,7 @@ function WorkflowEditorInner({
         if (cancelled) return
         setName(wf.name)
         setDescription(wf.description ?? "")
+        setTags(wf.tags ?? [])
         setStatus(wf.status ?? "draft")
         setIsTemplate(wf.is_template ?? false)
         setIsPublished(wf.is_published ?? false)
@@ -338,13 +358,15 @@ function WorkflowEditorInner({
         if (Object.keys(pinnedStates).length > 0) setNodeExecStates(pinnedStates)
       })
       .catch(() => {
-        if (!cancelled) setStatusMessage("Erro ao carregar workflow")
+        if (!cancelled) toast.error("Erro ao carregar workflow", "Tente recarregar a página.")
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false)
       })
     // Busca status atual do schedule (cron) — silencioso em caso de erro
     refreshScheduleStatus()
+    // Variaveis herdadas: busca inicial (sera re-buscada apos saves)
+    void refreshInheritedVariables()
     return () => {
       cancelled = true
     }
@@ -686,8 +708,7 @@ function WorkflowEditorInner({
     a.download = `workflow-${slug || "export"}.json`
     a.click()
     URL.revokeObjectURL(url)
-    setStatusMessage("Workflow exportado!")
-    setTimeout(() => setStatusMessage(null), 2500)
+    toast.success("Workflow exportado", "Arquivo JSON gerado com sucesso.")
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name, description, status, isTemplate, isPublished, nodes, edges, workflowMeta, variables, ioSchema])
 
@@ -704,8 +725,7 @@ function WorkflowEditorInner({
         const data = JSON.parse(text)
         const def = data.definition
         if (!def || !Array.isArray(def.nodes) || !Array.isArray(def.edges)) {
-          setStatusMessage("Arquivo JSON invalido: estrutura de workflow nao encontrada.")
-          setTimeout(() => setStatusMessage(null), 4000)
+          toast.error("Arquivo JSON inválido", "Estrutura de workflow não encontrada.")
           return
         }
         // Apply to canvas
@@ -730,11 +750,9 @@ function WorkflowEditorInner({
         // Clear execution states (imported flow hasn't been run)
         setNodeExecStates({})
         setDirty(true)
-        setStatusMessage("Workflow importado! Clique em Salvar para persistir.")
-        setTimeout(() => setStatusMessage(null), 4000)
+        toast.success("Workflow importado", "Clique em Salvar para persistir as alterações.")
       } catch {
-        setStatusMessage("Erro ao ler o arquivo JSON.")
-        setTimeout(() => setStatusMessage(null), 4000)
+        toast.error("Erro ao importar", "Não foi possível ler o arquivo JSON.")
       }
     }
     input.click()
@@ -744,25 +762,26 @@ function WorkflowEditorInner({
   const handleSave = useCallback(async () => {
     if (workflowId === "new") return
     setIsSaving(true)
-    setStatusMessage(null)
     try {
       await updateWorkflow(workflowId, {
         name,
         description: description || null,
+        tags,
         definition: buildDefinition(),
       })
       setDirty(false)
-      setStatusMessage("Salvo com sucesso!")
-      setTimeout(() => setStatusMessage(null), 2500)
+      toast.success("Fluxo salvo", "Todas as alterações foram persistidas.")
       // Reflete eventuais mudancas no agendamento (adicao/remocao de no cron)
       refreshScheduleStatus()
+      // Re-coleta variaveis herdadas — adicionar/remover call_workflow altera a lista.
+      void refreshInheritedVariables()
     } catch (err: unknown) {
-      setStatusMessage(err instanceof Error ? err.message : "Erro ao salvar")
+      toast.error("Erro ao salvar", err instanceof Error ? err.message : "Tente novamente.")
     } finally {
       setIsSaving(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workflowId, name, description, nodes, edges, workflowMeta, variables, ioSchema, refreshScheduleStatus])
+  }, [workflowId, name, description, tags, nodes, edges, workflowMeta, variables, ioSchema, refreshScheduleStatus, toast])
 
   // ── Settings changes (persist immediately) ───────────────────────────────
   const handleStatusChange = useCallback(async (newStatus: "draft" | "published") => {
@@ -773,7 +792,7 @@ function WorkflowEditorInner({
       // Mudanca de Teste <-> Producao ativa/desativa o schedule
       refreshScheduleStatus()
     } catch (err: unknown) {
-      setStatusMessage(err instanceof Error ? err.message : "Erro ao alterar status")
+      toast.error("Erro ao alterar status", err instanceof Error ? err.message : "Tente novamente.")
     }
   }, [workflowId, refreshScheduleStatus])
 
@@ -783,7 +802,7 @@ function WorkflowEditorInner({
     try {
       await updateWorkflow(workflowId, { is_template: value })
     } catch (err: unknown) {
-      setStatusMessage(err instanceof Error ? err.message : "Erro ao alterar template")
+      toast.error("Erro ao alterar template", err instanceof Error ? err.message : "Tente novamente.")
     }
   }, [workflowId])
 
@@ -793,9 +812,31 @@ function WorkflowEditorInner({
     try {
       await updateWorkflow(workflowId, { is_published: value })
     } catch (err: unknown) {
-      setStatusMessage(err instanceof Error ? err.message : "Erro ao alterar publicação")
+      toast.error("Erro ao alterar publicação", err instanceof Error ? err.message : "Tente novamente.")
     }
   }, [workflowId])
+
+  // ── Sweep: fecha nos presos em "running" quando a execucao termina ──────
+  // Chamado em todo ponto terminal (execution_complete, error, onError,
+  // onDone, abort). Defesa contra casos em que o backend encerra sem emitir
+  // node_complete/node_error para um no (ex.: crash do runner, SSE cortada
+  // no meio, irmao em paralelo que o runner nao drenou). Sem isso, a UI
+  // fica com spinner eterno no no.
+  const sweepRunningNodes = useCallback((reason: string) => {
+    setNodeExecStates((prev) => {
+      let changed = false
+      const next: Record<string, NodeExecState> = {}
+      for (const [id, st] of Object.entries(prev)) {
+        if (st?.status === "running") {
+          changed = true
+          next[id] = { status: "aborted", error: reason }
+        } else {
+          next[id] = st
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [])
 
   // ── Execute (SSE streaming test) ─────────────────────────────────────────
   const handleExecute = useCallback(async (
@@ -819,18 +860,21 @@ function WorkflowEditorInner({
     setExecEvents([])
     setShowExecPanel(true)
     setIsExecuting(true)
-    setStatusMessage(null)
 
     // Save first so the backend sees the latest definition
     try {
       await updateWorkflow(workflowId, {
         name,
         description: description || null,
+        tags,
         definition: buildDefinition(),
       })
     } catch (err: unknown) {
       setIsExecuting(false)
-      setStatusMessage(err instanceof Error ? err.message : "Erro ao salvar antes de executar")
+      toast.error(
+        "Erro ao salvar antes de executar",
+        err instanceof Error ? err.message : "Tente novamente.",
+      )
       return
     }
 
@@ -887,19 +931,43 @@ function WorkflowEditorInner({
                 error: event.error,
               },
             }))
+          } else if (event.type === "node_progress") {
+            // Atualiza o progresso sem sair do estado "running". Se o evento
+            // chegar depois do terminal (race), preservamos o status final.
+            setNodeExecStates((prev) => {
+              const current = prev[event.node_id]
+              if (current && current.status !== "running") return prev
+              return {
+                ...prev,
+                [event.node_id]: {
+                  ...(current ?? { status: "running" }),
+                  status: "running",
+                  progress: {
+                    current: event.current,
+                    total: event.total,
+                    succeeded: event.succeeded,
+                    failed: event.failed,
+                  },
+                },
+              }
+            })
           } else if (event.type === "execution_complete") {
             setIsExecuting(false)
+            sweepRunningNodes("Execução encerrada antes da conclusão deste nó.")
           } else if (event.type === "error") {
-            setStatusMessage(event.error)
+            toast.error("Erro na execução", event.error)
             setIsExecuting(false)
+            sweepRunningNodes("Execução encerrada antes da conclusão deste nó.")
           }
         },
         onError: (msg) => {
-          setStatusMessage(msg)
+          toast.error("Erro na execução", msg)
           setIsExecuting(false)
+          sweepRunningNodes("Execução encerrada antes da conclusão deste nó.")
         },
         onDone: () => {
           setIsExecuting(false)
+          sweepRunningNodes("Execução encerrada antes da conclusão deste nó.")
         },
       },
       controller.signal,
@@ -917,6 +985,7 @@ function WorkflowEditorInner({
       await updateWorkflow(workflowId, {
         name,
         description: description || null,
+        tags,
         definition: buildDefinition(),
       })
       await executeWorkflowWithVars(workflowId, variableValues)
@@ -926,9 +995,40 @@ function WorkflowEditorInner({
     [workflowId, name, description, nodes, edges, workflowMeta, variables, ioSchema],
   )
 
+  // ── Open execute dialog (saves first so schema endpoint sees fresh refs) ─
+  const openExecuteDialog = useCallback(
+    async (mode: { kind: "test"; targetNodeId?: string } | { kind: "preview" }) => {
+      if (workflowId === "new") return
+      if (dirty) {
+        try {
+          await updateWorkflow(workflowId, {
+            name,
+            description: description || null,
+            tags,
+            definition: buildDefinition(),
+          })
+          setDirty(false)
+          // Apos salvar, re-coleta herdadas para o dialog refletir mudancas
+          // (ex.: trocar workflow_id em um no call_workflow).
+          void refreshInheritedVariables()
+        } catch (err: unknown) {
+          toast.error(
+            "Erro ao salvar",
+            err instanceof Error ? err.message : "Tente novamente.",
+          )
+          return
+        }
+      }
+      setExecuteDialogMode(mode)
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [workflowId, dirty, name, description, tags, nodes, edges, workflowMeta, variables, ioSchema, toast, refreshInheritedVariables],
+  )
+
   const handleAbortExecution = useCallback(() => {
     abortControllerRef.current?.abort()
     setIsExecuting(false)
+    sweepRunningNodes("Execução cancelada pelo usuário.")
     setExecEvents((prev) => [
       ...prev,
       {
@@ -936,7 +1036,7 @@ function WorkflowEditorInner({
         error: "Execução cancelada pelo usuário.",
       },
     ])
-  }, [])
+  }, [sweepRunningNodes])
 
   // Keep selected node in sync with nodes state
   const currentSelectedNode = selectedNode
@@ -1010,16 +1110,18 @@ function WorkflowEditorInner({
         <WorkflowToolbar
           name={name}
           description={description}
+          tags={tags}
           status={status}
           isTemplate={isTemplate}
           isPublished={isPublished}
           onNameChange={setName}
           onDescriptionChange={setDescription}
+          onTagsChange={setTags}
           onStatusChange={handleStatusChange}
           onIsTemplateChange={handleIsTemplateChange}
           onIsPublishedChange={handleIsPublishedChange}
           onSave={handleSave}
-          onExecute={() => setExecuteDialogMode({ kind: "test" })}
+          onExecute={() => void openExecuteDialog({ kind: "test" })}
           onExport={handleExport}
           onImport={handleImport}
           onOpenIoSchema={workflowId !== "new" ? () => setShowIoSchemaEditor(true) : undefined}
@@ -1029,10 +1131,10 @@ function WorkflowEditorInner({
             workflowId !== "new"
               ? () => {
                   if (!isIoSchemaValid(ioSchema)) {
-                    setStatusMessage(
-                      "Schema de I/O inválido: corrija nomes duplicados ou com padrão inválido antes de publicar.",
+                    toast.error(
+                      "Schema de I/O inválido",
+                      "Corrija nomes duplicados ou com padrão inválido antes de publicar.",
                     )
-                    setTimeout(() => setStatusMessage(null), 4000)
                     setShowIoSchemaEditor(true)
                     return
                   }
@@ -1044,13 +1146,6 @@ function WorkflowEditorInner({
           isSaving={isSaving}
           isExecuting={isExecuting}
         />
-
-        {/* Status message bar */}
-        {statusMessage && (
-          <div className="flex h-7 shrink-0 items-center justify-center bg-muted/50 text-xs text-muted-foreground">
-            {statusMessage}
-          </div>
-        )}
 
         {/* Build mode bar foi movida para o chat (AIBuildConfirmationCard) para
             evitar duplicar o controle de confirmacao. O card no chat consome o
@@ -1069,41 +1164,22 @@ function WorkflowEditorInner({
           </div>
         )}
 
-        {/* Agent stream status indicator */}
-        {workflowId !== "new" && !isLoading && (
-          <div className="flex h-5 shrink-0 items-center gap-1.5 border-b border-border bg-muted/10 px-3">
-            <span
-              className={cn(
-                "size-1.5 rounded-full",
-                streamStatus === "connected" && "bg-green-500",
-                streamStatus === "connecting" && "bg-yellow-400 animate-pulse",
-                streamStatus === "reconnecting" && "bg-yellow-400 animate-pulse",
-                streamStatus === "error" && "bg-red-400",
-              )}
+        {/* Tabs: Editor (canvas) | Execuções (historico) — centered pill group */}
+        <div className="flex shrink-0 items-center justify-center border-b border-border bg-muted/10 py-2">
+          <div className="workflow-tab-pill-group">
+            <TabSwitch
+              active={activeTab === "editor"}
+              onClick={() => setActiveTab("editor")}
+              icon={<WorkflowIcon className="size-3.5" />}
+              label="Editor"
             />
-            <span className="text-[10px] text-muted-foreground">
-              {streamStatus === "connected" && "Agente conectado"}
-              {streamStatus === "connecting" && "Conectando ao agente..."}
-              {streamStatus === "reconnecting" && "Reconectando..."}
-              {streamStatus === "error" && "Agente desconectado"}
-            </span>
+            <TabSwitch
+              active={activeTab === "executions"}
+              onClick={() => setActiveTab("executions")}
+              icon={<History className="size-3.5" />}
+              label="Execuções"
+            />
           </div>
-        )}
-
-        {/* Tabs: Editor (canvas) | Executions (historico) */}
-        <div className="flex shrink-0 items-center gap-1 border-b border-border bg-muted/20 px-4">
-          <TabSwitch
-            active={activeTab === "editor"}
-            onClick={() => setActiveTab("editor")}
-            icon={<WorkflowIcon className="size-3.5" />}
-            label="Editor"
-          />
-          <TabSwitch
-            active={activeTab === "executions"}
-            onClick={() => setActiveTab("executions")}
-            icon={<History className="size-3.5" />}
-            label="Executions"
-          />
         </div>
 
         {/* Main area: canvas + config panel */}
@@ -1161,6 +1237,38 @@ function WorkflowEditorInner({
                 <LayoutGrid className="size-4" />
                 <span>Biblioteca</span>
               </button>
+            )}
+
+            {/* Agent stream status — floating discreet indicator */}
+            {workflowId !== "new" && !isLoading && (
+              <div
+                className="absolute bottom-3 right-14 z-20 flex h-[34px] items-center gap-1.5 rounded-[10px] border border-slate-900/10 bg-white/95 px-2.5 text-[11px] font-medium text-slate-600 shadow-[0_1px_0_rgba(255,255,255,0.9)_inset,0_6px_18px_-8px_rgba(15,23,42,0.25)] backdrop-blur dark:border-slate-400/20 dark:bg-slate-800/90 dark:text-slate-300"
+                title={
+                  streamStatus === "connected"
+                    ? "Agente conectado"
+                    : streamStatus === "connecting"
+                      ? "Conectando ao agente..."
+                      : streamStatus === "reconnecting"
+                        ? "Reconectando..."
+                        : "Agente desconectado"
+                }
+              >
+                <span
+                  className={cn(
+                    "size-1.5 rounded-full",
+                    streamStatus === "connected" && "bg-green-500",
+                    streamStatus === "connecting" && "bg-yellow-400 animate-pulse",
+                    streamStatus === "reconnecting" && "bg-yellow-400 animate-pulse",
+                    streamStatus === "error" && "bg-red-400",
+                  )}
+                />
+                <span>
+                  {streamStatus === "connected" && "Agente"}
+                  {streamStatus === "connecting" && "Conectando..."}
+                  {streamStatus === "reconnecting" && "Reconectando..."}
+                  {streamStatus === "error" && "Desconectado"}
+                </span>
+              </div>
             )}
 
             {/* Read-only overlay during build mode */}
@@ -1238,7 +1346,7 @@ function WorkflowEditorInner({
             onUpdate={onUpdateNodeData}
             onExecute={() => {
               if (variables.length > 0) {
-                setExecuteDialogMode({ kind: "test", targetNodeId: currentSelectedNode.id })
+                void openExecuteDialog({ kind: "test", targetNodeId: currentSelectedNode.id })
               } else {
                 void handleExecute(currentSelectedNode.id)
               }
@@ -1310,12 +1418,13 @@ function WorkflowEditorInner({
           <VariablesPanel
             workflowId={workflowId}
             variables={variables}
+            inheritedVariables={inheritedVariables}
             isSaving={isVariablesSaving}
             error={variablesError}
             onClose={() => setShowVariablesPanel(false)}
             onChange={setVariables}
             onSave={saveVariables}
-            onPreview={() => setExecuteDialogMode({ kind: "preview" })}
+            onPreview={() => void openExecuteDialog({ kind: "preview" })}
           />
         )}
 
@@ -1368,8 +1477,7 @@ function WorkflowEditorInner({
             onSaveBeforePublish={handleSave}
             onClose={() => setShowPublishModal(false)}
             onPublished={(v) => {
-              setStatusMessage(`Versão v${v.version} publicada com sucesso!`)
-              setTimeout(() => setStatusMessage(null), 4000)
+              toast.success(`Versão v${v.version} publicada`, "A nova versão já está disponível.")
             }}
           />
         )}
@@ -1407,10 +1515,8 @@ function TabSwitch({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex items-center gap-1.5 border-b-2 px-3 py-1.5 text-xs transition-colors",
-        active
-          ? "border-primary font-semibold text-foreground"
-          : "border-transparent text-muted-foreground hover:text-foreground",
+        "workflow-tab-pill",
+        active && "workflow-tab-pill--active",
       )}
     >
       {icon}

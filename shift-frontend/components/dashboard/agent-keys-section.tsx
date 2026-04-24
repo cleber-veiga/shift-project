@@ -187,7 +187,7 @@ export function AgentKeysSection() {
       />
 
       <section className="space-y-4">
-        <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2">
             <KeyRound className="size-4 text-muted-foreground" />
             <span className="text-sm font-medium text-foreground">
@@ -200,24 +200,24 @@ export function AgentKeysSection() {
             ) : null}
           </div>
 
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <label className="flex h-9 w-full items-center gap-2 rounded-md border border-input bg-background px-3 sm:w-[220px]">
-              <Search className="size-4 text-muted-foreground" />
+          <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center">
+            <label className="flex h-8 w-full items-center gap-1.5 rounded-md border border-input bg-background px-2.5 sm:w-[180px]">
+              <Search className="size-3 text-muted-foreground" />
               <input
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 placeholder="Buscar por nome ou prefixo..."
-                className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+                className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
               />
             </label>
             {canManage ? (
               <button
                 type="button"
                 onClick={() => setShowCreate(true)}
-                className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-foreground px-3.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
+                className="inline-flex h-8 items-center justify-center gap-1 rounded-md bg-foreground px-3 text-xs font-semibold text-background transition-opacity hover:opacity-90"
               >
-                <Plus className="size-4" />
+                <Plus className="size-3.5" />
                 Nova Chave
               </button>
             ) : null}

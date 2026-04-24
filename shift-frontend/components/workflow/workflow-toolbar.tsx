@@ -15,8 +15,10 @@ import {
   Rocket,
   Save,
   SlidersHorizontal,
+  Tag as TagIcon,
   Upload,
   Check,
+  X,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import type { WorkflowScheduleStatus } from "@/lib/auth"
@@ -24,11 +26,13 @@ import type { WorkflowScheduleStatus } from "@/lib/auth"
 interface WorkflowToolbarProps {
   name: string
   description: string
+  tags: string[]
   status: "draft" | "published"
   isTemplate: boolean
   isPublished: boolean
   onNameChange: (name: string) => void
   onDescriptionChange: (description: string) => void
+  onTagsChange: (tags: string[]) => void
   onStatusChange: (status: "draft" | "published") => void
   onIsTemplateChange: (value: boolean) => void
   onIsPublishedChange: (value: boolean) => void
@@ -48,11 +52,13 @@ interface WorkflowToolbarProps {
 export function WorkflowToolbar({
   name,
   description,
+  tags,
   status,
   isTemplate,
   isPublished,
   onNameChange,
   onDescriptionChange,
+  onTagsChange,
   onStatusChange,
   onIsTemplateChange,
   onIsPublishedChange,
@@ -166,6 +172,8 @@ export function WorkflowToolbar({
             )}
           </button>
         )}
+
+        <TagsChip tags={tags} onTagsChange={onTagsChange} />
 
         <MoreMenu
           onOpenIoSchema={onOpenIoSchema}
@@ -533,5 +541,100 @@ function MenuItem({
     >
       {children}
     </button>
+  )
+}
+
+function TagsChip({
+  tags,
+  onTagsChange,
+}: {
+  tags: string[]
+  onTagsChange: (tags: string[]) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState("")
+  const ref = useRef<HTMLDivElement>(null)
+  useClickOutside(ref, () => setOpen(false), open)
+
+  function addTag(raw: string) {
+    const t = raw.trim().toUpperCase().replace(/\s+/g, "_").slice(0, 50)
+    if (!t) return
+    if (!tags.includes(t)) onTagsChange([...tags, t])
+    setDraft("")
+  }
+
+  function removeTag(t: string) {
+    onTagsChange(tags.filter((x) => x !== t))
+  }
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+        title="Tags do workflow (salvas com o fluxo)"
+      >
+        <TagIcon className="size-3.5" />
+        Tags
+        {tags.length > 0 && (
+          <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground">
+            {tags.length}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-9 z-30 w-72 overflow-hidden rounded-lg border border-border bg-card p-3 shadow-lg">
+          <p className="pb-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Tags do workflow
+          </p>
+          <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-input bg-background px-2 py-1.5 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20">
+            {tags.map((t) => (
+              <span
+                key={t}
+                className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-primary"
+              >
+                {t}
+                <button
+                  type="button"
+                  onClick={() => removeTag(t)}
+                  className="flex size-3.5 items-center justify-center rounded-sm hover:bg-primary/20"
+                  aria-label={`Remover tag ${t}`}
+                >
+                  <X className="size-2.5" />
+                </button>
+              </span>
+            ))}
+            <input
+              type="text"
+              value={draft}
+              onChange={(e) => {
+                const v = e.target.value
+                if (v.endsWith(",") || v.endsWith(";")) {
+                  addTag(v.slice(0, -1))
+                } else {
+                  setDraft(v.toUpperCase())
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault()
+                  if (draft.trim()) addTag(draft)
+                } else if (e.key === "Backspace" && !draft && tags.length > 0) {
+                  removeTag(tags[tags.length - 1])
+                }
+              }}
+              onBlur={() => draft.trim() && addTag(draft)}
+              placeholder={tags.length === 0 ? "Ex: FISCAL, CLIENTES" : ""}
+              className="min-w-[100px] flex-1 bg-transparent py-0.5 text-xs uppercase text-foreground outline-none placeholder:text-muted-foreground/50 placeholder:normal-case"
+            />
+          </div>
+          <p className="mt-2 text-[10px] text-muted-foreground">
+            Enter ou vírgula para adicionar. Salve o fluxo para persistir.
+          </p>
+        </div>
+      )}
+    </div>
   )
 }

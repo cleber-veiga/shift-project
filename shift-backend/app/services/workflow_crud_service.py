@@ -42,6 +42,7 @@ class WorkflowCrudService:
             is_template=payload.is_template,
             is_published=False,
             definition=payload.definition,
+            tags=list(payload.tags),
         )
         db.add(workflow)
         await db.flush()
@@ -78,6 +79,8 @@ class WorkflowCrudService:
             if payload.status not in ("draft", "published"):
                 raise ValueError("Status deve ser 'draft' ou 'published'.")
             workflow.status = payload.status
+        if payload.tags is not None:
+            workflow.tags = list(payload.tags)
 
         await db.flush()
         await db.refresh(workflow)
@@ -196,6 +199,7 @@ class WorkflowCrudService:
             is_template=False,
             is_published=False,
             definition=new_definition,
+            tags=list(template.tags or []),
         )
         db.add(cloned)
         await db.flush()

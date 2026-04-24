@@ -717,6 +717,13 @@ async def run_workflow(
         # Acumulador populado pelos nos ``workflow_output`` — o pai que
         # chamou este run via ``call_workflow`` consome esse pacote.
         "workflow_output": {},
+        # Event sink disponivel para processadores que queiram emitir
+        # eventos intermediarios (ex.: ``loop`` publica ``node_progress``
+        # por iteracao). Processadores devem sempre usar ``_safe_emit``
+        # se precisarem emitir — o sink e None em cron/agendado e em
+        # qualquer run sem observador anexado.
+        "_event_sink": event_sink,
+        "_execution_id": execution_id,
     }
 
     nodes = resolved_payload.get("nodes", [])
@@ -1084,6 +1091,17 @@ async def run_workflow(
                     *(c for _, c in coros), return_exceptions=True
                 )
 
+                # Processa TODOS os outcomes do nivel antes de decidir parada.
+                # ``asyncio.gather`` ja esperou todos, mas o early-return antigo
+                # abortava a funcao no primeiro erro e nunca emitia os eventos
+                # terminais dos irmaos — a UI ficava com nos em "executando"
+                # para sempre. Acumulamos paradas (skipped / failed / reraise)
+                # e aplicamos no final, mas emitimos node_complete/node_error/
+                # node_skipped/node_error_handled para cada no.
+                level_skipped: list[tuple[str, NodeProcessingSkipped]] = []
+                level_failed: list[tuple[str, NodeProcessingError]] = []
+                level_unexpected: list[tuple[str, BaseException]] = []
+
                 for node_id, outcome in zip(node_ids, gathered):
                     timing = node_timing.get(node_id, {})
                     started_at = timing.get("started_at") or datetime.now(timezone.utc)
@@ -1126,20 +1144,16 @@ async def run_workflow(
                                 },
                                 logger,
                             )
-                            final_status = "aborted"
-                            return {
-                                "status": "aborted",
-                                "aborted_by": node_id,
-                                "reason": str(outcome),
-                                "node_results": results,
-                                "node_executions": node_executions,
-                            }
+                            level_skipped.append((node_id, outcome))
+                            continue
+
                         if isinstance(outcome, NodeProcessingError):
                             # Fase 5b: se o no tem aresta saindo do handle
                             # "on_error", convertemos a falha em resultado
                             # ``handled_error`` e rotamos pelo ramo de erro
                             # em vez de abortar o workflow. Caso contrario,
-                            # comportamento original (early-return failed).
+                            # o erro entra em ``level_failed`` e, apos emitir
+                            # eventos de todos os irmaos, o workflow aborta.
                             has_error_branch = any(
                                 edge_handle_map.get((node_id, target)) == "on_error"
                                 for target in adjacency.get(node_id, [])
@@ -1218,21 +1232,17 @@ async def run_workflow(
                                 },
                                 logger,
                             )
-                            final_status = "failed"
-                            return {
-                                "status": "failed",
-                                "failed_by": node_id,
-                                "error": str(outcome),
-                                "node_results": results,
-                                "node_executions": node_executions,
-                            }
+                            level_failed.append((node_id, outcome))
+                            continue
+
                         if isinstance(outcome, BaseException):
                             # Erros inesperados — registra evento antes de propagar
                             # para que _persist_final_state ainda tenha contexto
                             # minimo (via caller que captura node_executions do
                             # result parcial, se disponivel). O re-raise mantem o
                             # comportamento atual: a execucao e marcada como
-                            # FAILED/CANCELLED pelo workflow_service.
+                            # FAILED/CANCELLED pelo workflow_service. Acumula
+                            # para re-raise apos drenar eventos do nivel.
                             _record_event(
                                 node_id,
                                 node_for_event,
@@ -1256,8 +1266,8 @@ async def run_workflow(
                                 },
                                 logger,
                             )
-                            final_status = "failed"
-                            raise outcome
+                            level_unexpected.append((node_id, outcome))
+                            continue
 
                         result = _default_success_handle_if_needed(
                             node_id,
@@ -1327,6 +1337,39 @@ async def run_workflow(
                                         handle=edge_handle,
                                         active_handles=sorted(active_handles_set),
                                     )
+
+                # Com todos os eventos do nivel emitidos, decide se o workflow
+                # deve parar. Ordem de prioridade: unexpected (re-raise) >
+                # skipped (aborted gracefully) > failed (early-return).
+                if level_unexpected:
+                    first_id, first_exc = level_unexpected[0]
+                    final_status = "failed"
+                    logger.error(
+                        "workflow.aborted_by_unexpected",
+                        failed_by=first_id,
+                        extra_failures=len(level_unexpected) - 1,
+                    )
+                    raise first_exc
+                if level_skipped:
+                    first_id, first_exc = level_skipped[0]
+                    final_status = "aborted"
+                    return {
+                        "status": "aborted",
+                        "aborted_by": first_id,
+                        "reason": str(first_exc),
+                        "node_results": results,
+                        "node_executions": node_executions,
+                    }
+                if level_failed:
+                    first_id, first_exc = level_failed[0]
+                    final_status = "failed"
+                    return {
+                        "status": "failed",
+                        "failed_by": first_id,
+                        "error": str(first_exc),
+                        "node_results": results,
+                        "node_executions": node_executions,
+                    }
 
             logger.info("workflow.completed", node_count=len(results))
             final_status = "completed"

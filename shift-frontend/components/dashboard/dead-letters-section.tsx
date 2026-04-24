@@ -111,34 +111,34 @@ export function DeadLettersSection() {
 
   return (
     <section className="space-y-4">
-      <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
-        <label className="flex h-9 w-full items-center gap-2 rounded-md border border-input bg-background px-3 sm:w-[280px]">
-          <Search className="size-4 text-muted-foreground" />
+      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-2 sm:flex-row sm:items-center sm:justify-between">
+        <label className="flex h-8 w-full items-center gap-1.5 rounded-md border border-input bg-background px-2.5 sm:w-[240px]">
+          <Search className="size-3 text-muted-foreground" />
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Buscar por nó, erro ou execução…"
-            className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+            className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
           />
         </label>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           <label className="inline-flex items-center gap-2 text-xs font-medium text-muted-foreground">
             <input
               type="checkbox"
               checked={includeResolved}
               onChange={(e) => setIncludeResolved(e.target.checked)}
-              className="size-4 rounded border-input"
+              className="size-3.5 rounded border-input"
             />
             Mostrar resolvidos
           </label>
           <button
             type="button"
             onClick={() => void load()}
-            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground transition hover:bg-accent"
+            className="inline-flex h-8 items-center justify-center gap-1 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-foreground transition hover:bg-accent"
           >
-            <RefreshCw className="size-4" />
+            <RefreshCw className="size-3.5" />
             Atualizar
           </button>
         </div>

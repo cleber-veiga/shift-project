@@ -334,14 +334,22 @@ export function ExecuteWorkflowDialog({
     getVariablesSchema(workflowId)
       .then((s) => {
         if (cancelled) return
-        if (s.variables.length === 0) {
+        // Junta variaveis do pai + herdadas de sub-workflows antes de decidir
+        // se o dialog precisa aparecer. ``inherited_variables`` vem ja com
+        // ``ui_group`` rotulado com o nome do sub-workflow.
+        const inheritedVars = (s.inherited_variables ?? []).map(
+          (iv) => iv.variable,
+        )
+        const mergedVariables = [...s.variables, ...inheritedVars]
+        if (mergedVariables.length === 0) {
           onClose()
           if (!previewOnly) onDirectExecute()
           return
         }
-        setSchema(s)
+        // Propaga inherited connection_options (ja vem mesclado no backend).
+        setSchema({ ...s, variables: mergedVariables })
         const defaults: Record<string, unknown> = {}
-        for (const v of s.variables) {
+        for (const v of mergedVariables) {
           if (v.default !== undefined) defaults[v.name] = v.default
         }
         setFormValues(defaults)

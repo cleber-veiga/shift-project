@@ -248,35 +248,35 @@ export function ConnectionsSection({ scope }: ConnectionsSectionProps) {
   return (
     <section className="space-y-3">
       {/* Toolbar */}
-      <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-2 sm:flex-row sm:items-center sm:justify-between">
         {/* Toggle Lista / Card */}
-        <div className="inline-flex w-fit items-center rounded-md border border-border bg-background p-1">
+        <div className="inline-flex w-fit items-center rounded border border-border bg-background p-0.5">
           <button
             type="button"
             onClick={() => setView("list")}
-            className={`inline-flex h-7 items-center gap-1.5 rounded px-2.5 text-xs font-medium transition-colors ${
+            className={`inline-flex h-6 items-center gap-1 rounded px-2 text-[11px] font-medium transition-colors ${
               view === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"
             }`}
           >
-            <List className="size-3.5" />
+            <List className="size-3" />
             Lista
           </button>
           <button
             type="button"
             onClick={() => setView("card")}
-            className={`inline-flex h-7 items-center gap-1.5 rounded px-2.5 text-xs font-medium transition-colors ${
+            className={`inline-flex h-6 items-center gap-1 rounded px-2 text-[11px] font-medium transition-colors ${
               view === "card" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"
             }`}
           >
-            <Grid2X2 className="size-3.5" />
+            <Grid2X2 className="size-3" />
             Card
           </button>
         </div>
 
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center">
           {/* Filtro por tipo */}
           <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as "todos" | ConnectionType)}>
-            <SelectTrigger className="w-full min-w-40 bg-background sm:w-[160px]">
+            <SelectTrigger size="sm" className="w-full min-w-36 bg-background text-xs sm:w-[140px]">
               <SelectValue placeholder="Todos os Tipos" />
             </SelectTrigger>
             <SelectContent>
@@ -289,14 +289,14 @@ export function ConnectionsSection({ scope }: ConnectionsSectionProps) {
             </SelectContent>
           </Select>
 
-          <label className="flex h-9 w-full items-center gap-2 rounded-md border border-input bg-background px-3 sm:w-[220px]">
-            <Search className="size-4 text-muted-foreground" />
+          <label className="flex h-8 w-full items-center gap-1.5 rounded-md border border-input bg-background px-2.5 sm:w-[180px]">
+            <Search className="size-3 text-muted-foreground" />
             <input
               type="text"
               placeholder="Buscar..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+              className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
             />
           </label>
 
@@ -304,9 +304,9 @@ export function ConnectionsSection({ scope }: ConnectionsSectionProps) {
             <button
               type="button"
               onClick={handleOpenCreate}
-              className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-foreground px-3.5 text-sm font-semibold text-background transition-opacity hover:opacity-90"
+              className="inline-flex h-8 items-center justify-center gap-1 rounded-md bg-foreground px-3 text-xs font-semibold text-background transition-opacity hover:opacity-90"
             >
-              <Plus className="size-4" />
+              <Plus className="size-3.5" />
               Nova Conexão
             </button>
           ) : null}

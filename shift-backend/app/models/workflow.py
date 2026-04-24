@@ -61,6 +61,9 @@ class Workflow(Base):
         String(20), nullable=False, default="draft", server_default="draft"
     )
     definition: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    tags: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb"), default=list
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

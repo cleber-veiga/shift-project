@@ -1475,6 +1475,7 @@ export type Workflow = {
   is_published: boolean
   status: "draft" | "published"
   definition: Record<string, unknown>
+  tags: string[]
   created_at: string
   updated_at: string
 }
@@ -1486,6 +1487,7 @@ export type CreateWorkflowPayload = {
   workspace_id?: string | null
   is_template?: boolean
   definition?: Record<string, unknown>
+  tags?: string[]
 }
 
 export type UpdateWorkflowPayload = {
@@ -1495,6 +1497,7 @@ export type UpdateWorkflowPayload = {
   is_template?: boolean
   is_published?: boolean
   status?: "draft" | "published"
+  tags?: string[]
 }
 
 export type ExecutionResponse = {
@@ -1646,6 +1649,19 @@ export type WorkflowTestEvent =
   | { type: "node_start"; node_id: string; node_type: string; label: string; timestamp: string }
   | { type: "node_complete"; node_id: string; label: string; output: Record<string, unknown>; duration_ms: number; is_pinned?: boolean; timestamp: string }
   | { type: "node_error"; node_id: string; label: string; error: string; duration_ms: number; timestamp: string }
+  | {
+      // Emitido periodicamente por nos ``loop`` com estado das iteracoes.
+      // A UI usa para mostrar "253/500 - 2 falhas" enquanto o loop roda.
+      type: "node_progress"
+      node_id: string
+      node_type: string
+      current: number
+      total: number
+      succeeded: number
+      failed: number
+      execution_id?: string
+      timestamp: string
+    }
   | { type: "execution_complete"; execution_id: string; status: "SUCCESS" | "FAILED"; duration_ms: number; timestamp: string }
   | { type: "error"; error: string }
 

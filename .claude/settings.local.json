@@ -390,7 +390,11 @@
       "Bash(curl -s http://localhost:3000/login)",
       "Bash(curl -v http://localhost:3000/)",
       "Bash(curl -s \"http://localhost:3000/_next/static/chunks/%5Broot-of-the-server%5D__28bc9c2a._.css\")",
-      "Bash(grep -n \"lib-drawer\\\\|return \\(\\\\s*$\\\\|className={\" shift-frontend/components/workflow/node-library.tsx)"
+      "Bash(grep -n \"lib-drawer\\\\|return \\(\\\\s*$\\\\|className={\" shift-frontend/components/workflow/node-library.tsx)",
+      "Bash(find /d/Labs/shift-project/shift-frontend/app -path \"*private*\" -name \"page.tsx\" -exec grep -l \"workflow\\\\|fluxo\" {} \\\\;)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/orchestration/flows/dynamic_runner.py', encoding='utf-8'\\).read\\(\\)\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/workflow_service.py', encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('app/api/v1/workflows_crud.py', encoding='utf-8'\\).read\\(\\)\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/workflow/nodes/loop.py', encoding='utf-8'\\).read\\(\\)\\); ast.parse\\(open\\('app/orchestration/flows/dynamic_runner.py', encoding='utf-8'\\).read\\(\\)\\)\")"
     ]
   }
 }

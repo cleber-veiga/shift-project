@@ -52,6 +52,9 @@ quantidade total — datasets maiores sao rejeitados antes de comecar.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import time
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -68,6 +71,12 @@ from app.services.workflow.nodes.sub_workflow import _invoke_subworkflow
 
 
 _CHUNK_SIZE = 1000
+
+# Intervalo minimo entre eventos ``node_progress`` para evitar flood de SSE
+# quando iteracoes sao muito rapidas (ex.: delete em lote simples). O
+# primeiro e o ultimo eventos sempre sao emitidos, independentemente do
+# throttle.
+_PROGRESS_MIN_INTERVAL_SECONDS = 0.25
 
 
 @register_processor("loop")
@@ -119,13 +128,45 @@ class LoopProcessor(BaseNodeProcessor):
             context=context,
         )
 
+        # Mesmo deadline aplicado pelo ``dynamic_runner`` no nivel do no —
+        # replicado aqui para podermos cancelar a coroutine interna quando
+        # o timeout estoura. Sem isso, o ``asyncio.wait_for`` externo cancela
+        # apenas a task ``to_thread`` (que nao consegue matar a thread do
+        # worker), enquanto a coroutine ``_run_iterations`` — agendada via
+        # ``run_coroutine_threadsafe`` — e uma task independente no main
+        # loop e continua rodando por conta propria. Resultado visivel ao
+        # usuario: UI mostra "excedeu timeout" mas o backend segue
+        # processando iteracoes. Aplicar ``future.result(timeout=...)`` +
+        # ``future.cancel()`` fecha essa brecha propagando o cancel para a
+        # task real, que por sua vez cancela ``_invoke_subworkflow`` em voo.
+        raw_timeout = config.get("timeout_seconds")
+        if isinstance(raw_timeout, bool):
+            node_timeout = 300.0
+        elif isinstance(raw_timeout, (int, float)) and raw_timeout > 0:
+            node_timeout = float(raw_timeout)
+        else:
+            node_timeout = 300.0
+
         main_loop = context.get("_main_loop")
         if isinstance(main_loop, asyncio.AbstractEventLoop) and main_loop.is_running():
             # Dispatch para o loop principal — recursos async globais
             # (engine/asyncpg) estao ligados a ele. ``asyncio.run`` em
             # outro loop quebra com "Future attached to a different loop".
             future = asyncio.run_coroutine_threadsafe(coro, main_loop)
-            return future.result()
+            try:
+                return future.result(timeout=node_timeout)
+            except concurrent.futures.TimeoutError as exc:
+                future.cancel()  # cancela a Task no main_loop
+                raise NodeProcessingError(
+                    f"No loop '{node_id}' excedeu timeout de {int(node_timeout)}s "
+                    "— iteracoes em voo foram canceladas."
+                ) from exc
+            except BaseException:
+                # Qualquer outra falha (KeyboardInterrupt, cancelamento
+                # propagado): garantir que a task nao fique orfa no loop.
+                if not future.done():
+                    future.cancel()
+                raise
         return asyncio.run(coro)
 
     # ------------------------------------------------------------------
@@ -324,8 +365,48 @@ async def _run_iterations(
     first_error: Exception | None = None
     use_mapping = bool(cfg["input_mapping"])
 
+    # Progress emission: publica ``node_progress`` com current/total/
+    # succeeded/failed para a UI mostrar status ao vivo. Sink e None em
+    # cron/agendado — nesse caso as chamadas de emit viram noop.
+    event_sink = context.get("_event_sink") if isinstance(context, dict) else None
+    execution_id = context.get("_execution_id") if isinstance(context, dict) else None
+    total = len(items)
+    succeeded_count = 0
+    failed_count = 0
+    last_emit_mono = 0.0
+
+    async def _emit_progress(force: bool = False) -> None:
+        """Envia um evento ``node_progress`` respeitando o throttle.
+
+        Importante: ``force=True`` bypassa o throttle — usado no primeiro
+        evento (logo apos materializar o dataset) e no ultimo (apos a
+        ultima iteracao) para garantir que a UI nunca perca o inicio nem
+        o final.
+        """
+        nonlocal last_emit_mono
+        if event_sink is None:
+            return
+        now_mono = time.monotonic()
+        if not force and (now_mono - last_emit_mono) < _PROGRESS_MIN_INTERVAL_SECONDS:
+            return
+        last_emit_mono = now_mono
+        try:
+            await event_sink({
+                "type": "node_progress",
+                "execution_id": execution_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "node_id": node_id,
+                "node_type": "loop",
+                "current": succeeded_count + failed_count,
+                "total": total,
+                "succeeded": succeeded_count,
+                "failed": failed_count,
+            })
+        except Exception:  # noqa: BLE001 — progresso nunca deve quebrar o loop
+            pass
+
     async def _run_one(idx: int, item: dict[str, Any]) -> None:
-        nonlocal first_error
+        nonlocal first_error, succeeded_count, failed_count
         if first_error is not None and cfg["on_item_error"] == "fail_fast":
             return
         if use_mapping:
@@ -339,26 +420,36 @@ async def _run_iterations(
             if cfg["index_param_name"]:
                 inputs[cfg["index_param_name"]] = idx
         try:
+            parent_vars = context.get("vars") if isinstance(context, dict) else None
             sub = await _invoke_subworkflow(
                 node_id=node_id,
                 target_workflow_id=cfg["workflow_id"],
                 version_spec=cfg["workflow_version"],
                 mapped_inputs=inputs,
+                parent_vars=dict(parent_vars) if isinstance(parent_vars, dict) else None,
                 call_stack=call_stack,
                 timeout_seconds=cfg["timeout_seconds"],
                 in_loop=True,
             )
             results[idx] = sub["workflow_output"]
+            succeeded_count += 1
         except Exception as exc:  # noqa: BLE001 — propagado via politica
             if cfg["on_item_error"] == "fail_fast":
                 if first_error is None:
                     first_error = exc
+                failed_count += 1
+                await _emit_progress(force=True)  # ultima foto antes do abort
                 return
             failures.append({
                 "index": idx,
                 "item": item,
                 "error": str(exc),
             })
+            failed_count += 1
+        await _emit_progress()
+
+    # Evento inicial: avisa a UI que temos N itens, 0 processados.
+    await _emit_progress(force=True)
 
     if cfg["mode"] == "sequential":
         for idx, item in enumerate(items):
@@ -373,6 +464,10 @@ async def _run_iterations(
                 await _run_one(idx, item)
 
         await asyncio.gather(*[_guarded(i, it) for i, it in enumerate(items)])
+
+    # Evento final: garante que UI veja o estado consolidado mesmo se o
+    # throttle tiver suprimido o evento da ultima iteracao.
+    await _emit_progress(force=True)
 
     if first_error is not None:
         raise NodeProcessingError(

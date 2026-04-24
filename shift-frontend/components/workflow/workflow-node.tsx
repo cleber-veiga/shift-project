@@ -551,9 +551,26 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
           {(execState?.status || retryActive || varRefCount > 0) && (
             <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
               {execState?.status === "running" && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-sky-500/10 px-1.5 py-0.5 font-semibold text-sky-600 dark:text-sky-400">
+                <span
+                  className="inline-flex items-center gap-1 rounded-full bg-sky-500/10 px-1.5 py-0.5 font-semibold text-sky-600 dark:text-sky-400"
+                  title={
+                    execState.progress
+                      ? `${execState.progress.current} de ${execState.progress.total} · ${execState.progress.succeeded} ok${execState.progress.failed > 0 ? ` · ${execState.progress.failed} falhas` : ""}`
+                      : undefined
+                  }
+                >
                   <Loader2 className="size-2.5 animate-spin" />
                   executando
+                  {execState.progress && execState.progress.total > 0 && (
+                    <span className="opacity-80">
+                      · {execState.progress.current}/{execState.progress.total}
+                      {execState.progress.failed > 0 && (
+                        <span className="ml-1 text-rose-500">
+                          · {execState.progress.failed} falhas
+                        </span>
+                      )}
+                    </span>
+                  )}
                 </span>
               )}
               {execState?.status === "success" && (
@@ -577,6 +594,15 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
                 <span className="inline-flex items-center gap-1 rounded-full bg-rose-500/10 px-1.5 py-0.5 font-semibold text-rose-600">
                   <XCircle className="size-2.5" />
                   erro
+                </span>
+              )}
+              {execState?.status === "aborted" && (
+                <span
+                  className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 font-semibold text-amber-600 dark:text-amber-400"
+                  title={execState.error ?? "Execucao encerrada antes da conclusao"}
+                >
+                  <AlertTriangle className="size-2.5" />
+                  abortado
                 </span>
               )}
               {retryActive && (

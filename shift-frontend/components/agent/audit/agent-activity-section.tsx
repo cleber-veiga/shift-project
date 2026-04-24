@@ -240,21 +240,21 @@ export function AgentActivitySection({ scope }: AgentActivitySectionProps) {
         </div>
       ) : null}
 
-      <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3 sm:flex-row sm:items-center">
-        <label className="flex h-9 flex-1 items-center gap-2 rounded-md border border-input bg-background px-3">
-          <Search className="size-4 text-muted-foreground" />
+      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-2 sm:flex-row sm:items-center">
+        <label className="flex h-8 flex-1 items-center gap-1.5 rounded-md border border-input bg-background px-2.5">
+          <Search className="size-3 text-muted-foreground" />
           <input
             type="text"
             value={toolFilter}
             onChange={(e) => setToolFilter(e.target.value)}
             placeholder="Filtrar por tool (ex: execute_workflow)"
-            className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+            className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
           />
         </label>
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
-          className="h-9 rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none"
+          className="h-8 rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none"
         >
           <option value="all">Todos os status</option>
           <option value="success">Sucesso</option>

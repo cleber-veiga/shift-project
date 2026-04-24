@@ -7,9 +7,17 @@ export interface ConnectionOption {
   type: string
 }
 
+export interface InheritedVariable {
+  variable: WorkflowVariable
+  sub_workflow_id: string
+  sub_workflow_name: string
+  sub_workflow_version: number
+}
+
 export interface VariablesSchemaResponse {
   variables: WorkflowVariable[]
   connection_options: Record<string, ConnectionOption[]>
+  inherited_variables: InheritedVariable[]
 }
 
 export async function getWorkflowVariables(workflowId: string): Promise<WorkflowVariable[]> {

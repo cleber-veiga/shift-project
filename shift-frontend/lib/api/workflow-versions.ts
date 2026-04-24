@@ -11,6 +11,9 @@ export type WorkflowParamType =
   | "object"
   | "array"
   | "table_reference"
+  | "connection"
+  | "file_upload"
+  | "secret"
 
 export const WORKFLOW_PARAM_TYPES: WorkflowParamType[] = [
   "string",
@@ -28,6 +31,10 @@ export interface WorkflowParam {
   required?: boolean
   default?: unknown
   description?: string | null
+  connection_type?: "postgres" | "mysql" | "sqlserver" | "oracle" | "mongodb" | null
+  accepted_extensions?: string[] | null
+  ui_group?: string | null
+  ui_order?: number
 }
 
 export interface CallableWorkflowSummary {
@@ -49,6 +56,7 @@ export interface WorkflowVersionResponse {
   version: number
   input_schema: WorkflowParam[]
   output_schema: WorkflowParam[]
+  variables: WorkflowParam[]
   published: boolean
   created_at: string
 }

@@ -208,7 +208,7 @@ export function AccessMatrixSection() {
   return (
     <section className="space-y-4">
       {/* Toolbar */}
-      <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <ShieldCheck className="size-4 text-muted-foreground" />
           <span className="text-sm font-medium text-foreground">Controle de Acesso</span>
@@ -220,32 +220,32 @@ export function AccessMatrixSection() {
           ) : null}
         </div>
 
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <label className="flex h-9 w-full items-center gap-2 rounded-md border border-input bg-background px-3 sm:w-[220px]">
-            <Search className="size-4 text-muted-foreground" />
+        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center">
+          <label className="flex h-8 w-full items-center gap-1.5 rounded-md border border-input bg-background px-2.5 sm:w-[180px]">
+            <Search className="size-3 text-muted-foreground" />
             <input
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               placeholder="Buscar usuário..."
-              className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+              className="w-full bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground"
             />
           </label>
           <button
             type="button"
             onClick={() => setShowLegend((v) => !v)}
-            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-border bg-background px-3 text-sm text-muted-foreground transition-colors hover:text-foreground"
+            className="inline-flex h-8 items-center justify-center gap-1 rounded-md border border-border bg-background px-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
           >
-            <Info className="size-4" />
+            <Info className="size-3.5" />
             Legenda
           </button>
           <button
             type="button"
             onClick={loadMatrix}
             disabled={loading}
-            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-border bg-background px-3 text-sm text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+            className="inline-flex h-8 items-center justify-center gap-1 rounded-md border border-border bg-background px-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
           >
-            <RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} />
+            <RefreshCw className={`size-3.5 ${loading ? "animate-spin" : ""}`} />
           </button>
         </div>
       </div>
