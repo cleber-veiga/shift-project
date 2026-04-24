@@ -26,7 +26,7 @@ import {
   type Workspace,
 } from "@/lib/auth"
 import { useRouter } from "next/navigation"
-import { createContext, useContext, useEffect, useMemo, useState } from "react"
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react"
 
 type OrganizationWithRole = Organization & {
   role: OrganizationRole | "MEMBER"
@@ -99,116 +99,140 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     return availableProjects.find((project) => project.id === selectedProjectId) ?? null
   }, [availableProjects, selectedProjectId])
 
-  async function loadProjectsForWorkspace(workspaceId: string, preferredProjectId?: string | null) {
-    const projects = await listWorkspaceProjects(workspaceId)
-    setProjectsByWorkspace((current) => ({ ...current, [workspaceId]: projects }))
+  const loadProjectsForWorkspace = useCallback(
+    async (workspaceId: string, preferredProjectId?: string | null) => {
+      const projects = await listWorkspaceProjects(workspaceId)
+      setProjectsByWorkspace((current) => ({ ...current, [workspaceId]: projects }))
 
-    if (projects.length === 0) {
-      clearSelectedProjectId()
-      setSelectedProjectIdState(null)
-      return
-    }
+      if (projects.length === 0) {
+        clearSelectedProjectId()
+        setSelectedProjectIdState(null)
+        return
+      }
 
-    const storedProjectId = preferredProjectId ?? getSelectedProjectId()
-    const nextProjectId =
-      (storedProjectId && projects.some((project) => project.id === storedProjectId) && storedProjectId) ||
-      projects[0].id
+      const storedProjectId = preferredProjectId ?? getSelectedProjectId()
+      const nextProjectId =
+        (storedProjectId && projects.some((project) => project.id === storedProjectId) && storedProjectId) ||
+        projects[0].id
 
-    persistSelectedProjectId(nextProjectId)
-    setSelectedProjectIdState(nextProjectId)
-  }
+      persistSelectedProjectId(nextProjectId)
+      setSelectedProjectIdState(nextProjectId)
+    },
+    [],
+  )
 
-  async function loadWorkspacesForOrganization(organizationId: string, preferredWorkspaceId?: string | null) {
-    const workspaces = await listOrganizationWorkspaces(organizationId)
-    setWorkspacesByOrg((current) => ({ ...current, [organizationId]: workspaces }))
+  const loadWorkspacesForOrganization = useCallback(
+    async (organizationId: string, preferredWorkspaceId?: string | null) => {
+      const workspaces = await listOrganizationWorkspaces(organizationId)
+      setWorkspacesByOrg((current) => ({ ...current, [organizationId]: workspaces }))
 
-    if (workspaces.length === 0) {
-      clearSelectedWorkspaceId()
-      setSelectedWorkspaceIdState(null)
-      clearSelectedProjectId()
-      setSelectedProjectIdState(null)
-      return
-    }
+      if (workspaces.length === 0) {
+        clearSelectedWorkspaceId()
+        setSelectedWorkspaceIdState(null)
+        clearSelectedProjectId()
+        setSelectedProjectIdState(null)
+        return
+      }
 
-    const storedWorkspaceId = preferredWorkspaceId ?? getSelectedWorkspaceId()
-    const nextWorkspaceId =
-      (storedWorkspaceId && workspaces.some((ws) => ws.id === storedWorkspaceId) && storedWorkspaceId) ||
-      workspaces[0].id
+      const storedWorkspaceId = preferredWorkspaceId ?? getSelectedWorkspaceId()
+      const nextWorkspaceId =
+        (storedWorkspaceId && workspaces.some((ws) => ws.id === storedWorkspaceId) && storedWorkspaceId) ||
+        workspaces[0].id
 
-    persistSelectedWorkspaceId(nextWorkspaceId)
-    setSelectedWorkspaceIdState(nextWorkspaceId)
-    await loadProjectsForWorkspace(nextWorkspaceId)
-  }
+      persistSelectedWorkspaceId(nextWorkspaceId)
+      setSelectedWorkspaceIdState(nextWorkspaceId)
+      await loadProjectsForWorkspace(nextWorkspaceId)
+    },
+    [loadProjectsForWorkspace],
+  )
 
-  async function reloadOrganizations(preferredOrgId?: string | null) {
-    const orgs = await listOrganizations()
-    setOrganizations(orgs.map((org) => ({ ...org, role: (org.my_role ?? "MEMBER") as OrganizationRole | "MEMBER" })))
+  const reloadOrganizations = useCallback(
+    async (preferredOrgId?: string | null) => {
+      const orgs = await listOrganizations()
+      setOrganizations(
+        orgs.map((org) => ({ ...org, role: (org.my_role ?? "MEMBER") as OrganizationRole | "MEMBER" })),
+      )
 
-    if (orgs.length === 0) {
-      setSelectedOrgIdState(null)
-      clearSelectedWorkspaceId()
-      setSelectedWorkspaceIdState(null)
-      clearSelectedProjectId()
-      setSelectedProjectIdState(null)
-      return
-    }
+      if (orgs.length === 0) {
+        setSelectedOrgIdState(null)
+        clearSelectedWorkspaceId()
+        setSelectedWorkspaceIdState(null)
+        clearSelectedProjectId()
+        setSelectedProjectIdState(null)
+        return
+      }
 
-    const storedOrgId = getSelectedOrganizationId()
-    const currentOrgId = selectedOrgId
-    const nextOrgId =
-      (preferredOrgId && orgs.some((org) => org.id === preferredOrgId) && preferredOrgId) ||
-      (currentOrgId && orgs.some((org) => org.id === currentOrgId) && currentOrgId) ||
-      (storedOrgId && orgs.some((org) => org.id === storedOrgId) && storedOrgId) ||
-      orgs[0].id
+      const storedOrgId = getSelectedOrganizationId()
+      const currentOrgId = selectedOrgId
+      const nextOrgId =
+        (preferredOrgId && orgs.some((org) => org.id === preferredOrgId) && preferredOrgId) ||
+        (currentOrgId && orgs.some((org) => org.id === currentOrgId) && currentOrgId) ||
+        (storedOrgId && orgs.some((org) => org.id === storedOrgId) && storedOrgId) ||
+        orgs[0].id
 
-    setSelectedOrganizationId(nextOrgId)
-    setSelectedOrgIdState(nextOrgId)
-    await loadWorkspacesForOrganization(nextOrgId)
-  }
+      setSelectedOrganizationId(nextOrgId)
+      setSelectedOrgIdState(nextOrgId)
+      await loadWorkspacesForOrganization(nextOrgId)
+    },
+    [selectedOrgId, loadWorkspacesForOrganization],
+  )
 
-  async function createOrganizationAndSelect(payload: { name: string }) {
-    const created = await createOrganization({ name: payload.name })
-    await reloadOrganizations(created.id)
-    return {
-      ...created,
-      role: "OWNER",
-    } satisfies OrganizationWithRole
-  }
+  const createOrganizationAndSelect = useCallback(
+    async (payload: { name: string }) => {
+      const created = await createOrganization({ name: payload.name })
+      await reloadOrganizations(created.id)
+      return {
+        ...created,
+        role: "OWNER",
+      } satisfies OrganizationWithRole
+    },
+    [reloadOrganizations],
+  )
 
-  async function createWorkspaceAndSelect(payload: { organization_id: string; name: string; erp_id?: string | null }) {
-    const created = await createWorkspace({
-      organization_id: payload.organization_id,
-      name: payload.name,
-      erp_id: payload.erp_id ?? null,
-    })
-    await loadWorkspacesForOrganization(payload.organization_id, created.id)
-    return created
-  }
+  const createWorkspaceAndSelect = useCallback(
+    async (payload: { organization_id: string; name: string; erp_id?: string | null }) => {
+      const created = await createWorkspace({
+        organization_id: payload.organization_id,
+        name: payload.name,
+        erp_id: payload.erp_id ?? null,
+      })
+      await loadWorkspacesForOrganization(payload.organization_id, created.id)
+      return created
+    },
+    [loadWorkspacesForOrganization],
+  )
 
-  async function createProjectAndSelect(payload: { workspace_id: string } & CreateProjectPayload) {
-    const created = await createWorkspaceProject(payload.workspace_id, {
-      name: payload.name,
-      description: payload.description ?? null,
-    })
-    await loadProjectsForWorkspace(payload.workspace_id, created.id)
-    return created
-  }
+  const createProjectAndSelect = useCallback(
+    async (payload: { workspace_id: string } & CreateProjectPayload) => {
+      const created = await createWorkspaceProject(payload.workspace_id, {
+        name: payload.name,
+        description: payload.description ?? null,
+      })
+      await loadProjectsForWorkspace(payload.workspace_id, created.id)
+      return created
+    },
+    [loadProjectsForWorkspace],
+  )
 
-  async function updateProjectAndRefresh(
-    payload: { project_id: string; workspace_id: string } & CreateProjectPayload
-  ) {
-    const updated = await updateProject(payload.project_id, {
-      name: payload.name,
-      description: payload.description ?? null,
-    })
-    await loadProjectsForWorkspace(payload.workspace_id, updated.id)
-    return updated
-  }
+  const updateProjectAndRefresh = useCallback(
+    async (payload: { project_id: string; workspace_id: string } & CreateProjectPayload) => {
+      const updated = await updateProject(payload.project_id, {
+        name: payload.name,
+        description: payload.description ?? null,
+      })
+      await loadProjectsForWorkspace(payload.workspace_id, updated.id)
+      return updated
+    },
+    [loadProjectsForWorkspace],
+  )
 
-  async function deleteProjectAndRefresh(payload: { project_id: string; workspace_id: string }) {
-    await deleteProject(payload.project_id)
-    await loadProjectsForWorkspace(payload.workspace_id)
-  }
+  const deleteProjectAndRefresh = useCallback(
+    async (payload: { project_id: string; workspace_id: string }) => {
+      await deleteProject(payload.project_id)
+      await loadProjectsForWorkspace(payload.workspace_id)
+    },
+    [loadProjectsForWorkspace],
+  )
 
   useEffect(() => {
     async function init() {
@@ -219,12 +243,90 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
           return
         }
 
-        const user = await fetchMe(session.accessToken)
+        const storedOrgId = getSelectedOrganizationId()
+        const storedWorkspaceId = getSelectedWorkspaceId()
+        const storedProjectId = getSelectedProjectId()
+
+        // Dispara fetchMe + listOrganizations em paralelo. Se houver org/workspace
+        // em cache, especula listOrganizationWorkspaces/listWorkspaceProjects no
+        // mesmo round-trip para cortar latência do boot. Falhas nas especulativas
+        // não quebram o boot — refazemos a chamada após validar o ID.
+        const [user, orgs, speculativeWorkspaces, speculativeProjects] = await Promise.all([
+          fetchMe(session.accessToken),
+          listOrganizations(),
+          storedOrgId
+            ? listOrganizationWorkspaces(storedOrgId).catch(() => null)
+            : Promise.resolve(null),
+          storedWorkspaceId
+            ? listWorkspaceProjects(storedWorkspaceId).catch(() => null)
+            : Promise.resolve(null),
+        ])
+
         if (!user) {
           router.push("/login")
           return
         }
-        await reloadOrganizations()
+
+        setOrganizations(
+          orgs.map((org) => ({ ...org, role: (org.my_role ?? "MEMBER") as OrganizationRole | "MEMBER" })),
+        )
+
+        if (orgs.length === 0) {
+          setSelectedOrgIdState(null)
+          clearSelectedWorkspaceId()
+          setSelectedWorkspaceIdState(null)
+          clearSelectedProjectId()
+          setSelectedProjectIdState(null)
+          return
+        }
+
+        const nextOrgId =
+          (storedOrgId && orgs.some((org) => org.id === storedOrgId) && storedOrgId) || orgs[0].id
+
+        setSelectedOrganizationId(nextOrgId)
+        setSelectedOrgIdState(nextOrgId)
+
+        const workspaces =
+          nextOrgId === storedOrgId && speculativeWorkspaces
+            ? speculativeWorkspaces
+            : await listOrganizationWorkspaces(nextOrgId)
+
+        setWorkspacesByOrg((current) => ({ ...current, [nextOrgId]: workspaces }))
+
+        if (workspaces.length === 0) {
+          clearSelectedWorkspaceId()
+          setSelectedWorkspaceIdState(null)
+          clearSelectedProjectId()
+          setSelectedProjectIdState(null)
+          return
+        }
+
+        const nextWorkspaceId =
+          (storedWorkspaceId && workspaces.some((ws) => ws.id === storedWorkspaceId) && storedWorkspaceId) ||
+          workspaces[0].id
+
+        persistSelectedWorkspaceId(nextWorkspaceId)
+        setSelectedWorkspaceIdState(nextWorkspaceId)
+
+        const projects =
+          nextWorkspaceId === storedWorkspaceId && speculativeProjects
+            ? speculativeProjects
+            : await listWorkspaceProjects(nextWorkspaceId)
+
+        setProjectsByWorkspace((current) => ({ ...current, [nextWorkspaceId]: projects }))
+
+        if (projects.length === 0) {
+          clearSelectedProjectId()
+          setSelectedProjectIdState(null)
+          return
+        }
+
+        const nextProjectId =
+          (storedProjectId && projects.some((p) => p.id === storedProjectId) && storedProjectId) ||
+          projects[0].id
+
+        persistSelectedProjectId(nextProjectId)
+        setSelectedProjectIdState(nextProjectId)
       } catch (err) {
         setError(err instanceof Error ? err.message : "Falha ao inicializar dashboard.")
       } finally {
@@ -235,55 +337,85 @@ export function DashboardProvider({ children }: { children: React.ReactNode }) {
     init()
   }, [router])
 
-  const setSelectedOrgId = (id: string) => {
-    setSelectedOrganizationId(id)
-    setSelectedOrgIdState(id)
-    loadWorkspacesForOrganization(id)
-  }
+  const setSelectedOrgId = useCallback(
+    (id: string) => {
+      setSelectedOrganizationId(id)
+      setSelectedOrgIdState(id)
+      loadWorkspacesForOrganization(id)
+    },
+    [loadWorkspacesForOrganization],
+  )
 
-  const setSelectedWorkspaceId = (id: string) => {
-    persistSelectedWorkspaceId(id)
-    setSelectedWorkspaceIdState(id)
-    loadProjectsForWorkspace(id)
-  }
+  const setSelectedWorkspaceId = useCallback(
+    (id: string) => {
+      persistSelectedWorkspaceId(id)
+      setSelectedWorkspaceIdState(id)
+      loadProjectsForWorkspace(id)
+    },
+    [loadProjectsForWorkspace],
+  )
 
-  const setSelectedProjectId = (id: string) => {
+  const setSelectedProjectId = useCallback((id: string) => {
     persistSelectedProjectId(id)
     setSelectedProjectIdState(id)
-  }
+  }, [])
 
-  return (
-    <DashboardContext.Provider
-      value={{
-        organizations,
-        workspacesByOrg,
-        projectsByWorkspace,
-        selectedOrgId,
-        selectedWorkspaceId,
-        selectedProjectId,
-        isLoading,
-        error,
-        setSelectedOrgId,
-        setSelectedWorkspaceId,
-        setSelectedProjectId,
-        selectedOrganization,
-        availableWorkspaces,
-        selectedWorkspace,
-        availableProjects,
-        selectedProject,
-        loadWorkspacesForOrganization,
-        loadProjectsForWorkspace,
-        reloadOrganizations,
-        createOrganizationAndSelect,
-        createWorkspaceAndSelect,
-        createProjectAndSelect,
-        updateProjectAndRefresh,
-        deleteProjectAndRefresh,
-      }}
-    >
-      {children}
-    </DashboardContext.Provider>
+  const value = useMemo(
+    () => ({
+      organizations,
+      workspacesByOrg,
+      projectsByWorkspace,
+      selectedOrgId,
+      selectedWorkspaceId,
+      selectedProjectId,
+      isLoading,
+      error,
+      setSelectedOrgId,
+      setSelectedWorkspaceId,
+      setSelectedProjectId,
+      selectedOrganization,
+      availableWorkspaces,
+      selectedWorkspace,
+      availableProjects,
+      selectedProject,
+      loadWorkspacesForOrganization,
+      loadProjectsForWorkspace,
+      reloadOrganizations,
+      createOrganizationAndSelect,
+      createWorkspaceAndSelect,
+      createProjectAndSelect,
+      updateProjectAndRefresh,
+      deleteProjectAndRefresh,
+    }),
+    [
+      organizations,
+      workspacesByOrg,
+      projectsByWorkspace,
+      selectedOrgId,
+      selectedWorkspaceId,
+      selectedProjectId,
+      isLoading,
+      error,
+      setSelectedOrgId,
+      setSelectedWorkspaceId,
+      setSelectedProjectId,
+      selectedOrganization,
+      availableWorkspaces,
+      selectedWorkspace,
+      availableProjects,
+      selectedProject,
+      loadWorkspacesForOrganization,
+      loadProjectsForWorkspace,
+      reloadOrganizations,
+      createOrganizationAndSelect,
+      createWorkspaceAndSelect,
+      createProjectAndSelect,
+      updateProjectAndRefresh,
+      deleteProjectAndRefresh,
+    ],
   )
+
+  return <DashboardContext.Provider value={value}>{children}</DashboardContext.Provider>
 }
 
 export function useDashboard() {

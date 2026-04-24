@@ -22,6 +22,7 @@ from uuid import uuid4
 
 import duckdb
 
+from app.core.config import settings
 from app.data_pipelines.duckdb_storage import (
     DuckDbReference,
     build_input_database_path,
@@ -58,6 +59,13 @@ class CsvInputNodeProcessor(BaseNodeProcessor):
         encoding = str(resolved_config.get("encoding", "utf-8")).lower()
         null_padding = bool(resolved_config.get("null_padding", True))
         output_field = str(resolved_config.get("output_field", "data"))
+        preview_max_rows: int | None = context.get("_preview_max_rows")
+        configured_max_rows = resolved_config.get("max_rows")
+        max_rows: int | None = (
+            preview_max_rows
+            if preview_max_rows is not None
+            else (int(configured_max_rows) if configured_max_rows is not None else settings.EXTRACT_DEFAULT_MAX_ROWS)
+        )
 
         if not url:
             raise NodeProcessingError(
@@ -86,6 +94,8 @@ class CsvInputNodeProcessor(BaseNodeProcessor):
         header_sql = "true" if has_header else "false"
         null_padding_sql = "true" if null_padding else "false"
 
+        limit_clause = f"LIMIT {max_rows}" if max_rows is not None else ""
+
         conn = duckdb.connect(str(database_path))
         try:
             # Para URLs remotas, tenta carregar a extensao httpfs
@@ -101,6 +111,7 @@ class CsvInputNodeProcessor(BaseNodeProcessor):
                     encoding     = '{encoding_sql}',
                     null_padding = {null_padding_sql}
                 )
+                {limit_clause}
                 """,
                 [str(url)],
             )

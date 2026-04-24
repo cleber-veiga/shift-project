@@ -27,6 +27,7 @@ from uuid import uuid4
 
 import httpx
 
+from app.core.config import settings
 from app.data_pipelines.duckdb_storage import JsonlStreamer
 from app.services.workflow.nodes import BaseNodeProcessor, register_processor
 from app.services.workflow.nodes.exceptions import NodeProcessingError
@@ -53,6 +54,13 @@ class ExcelInputNodeProcessor(BaseNodeProcessor):
         header_row = int(resolved_config.get("header_row", 0))
         skip_empty = bool(resolved_config.get("skip_empty", True))
         output_field = str(resolved_config.get("output_field", "data"))
+        preview_max_rows: int | None = context.get("_preview_max_rows")
+        configured_max_rows = resolved_config.get("max_rows")
+        max_rows: int | None = (
+            preview_max_rows
+            if preview_max_rows is not None
+            else (int(configured_max_rows) if configured_max_rows is not None else settings.EXTRACT_DEFAULT_MAX_ROWS)
+        )
 
         if not url:
             raise NodeProcessingError(
@@ -77,6 +85,7 @@ class ExcelInputNodeProcessor(BaseNodeProcessor):
                 sheet_name=sheet_name,
                 header_row=header_row,
                 skip_empty=skip_empty,
+                max_rows=max_rows,
             )
         finally:
             if downloaded:
@@ -155,6 +164,7 @@ def _stream_excel_to_duckdb(
     sheet_name: Any,
     header_row: int,
     skip_empty: bool,
+    max_rows: int | None = None,
 ) -> dict[str, Any] | None:
     """
     Itera pela planilha linha a linha (read_only) e materializa via JsonlStreamer.
@@ -230,6 +240,9 @@ def _stream_excel_to_duckdb(
                     k: _serialize_cell(v) for k, v in row_dict.items()
                 }
                 streamer.write_row(row_serializable)
+
+                if max_rows is not None and streamer.row_count >= max_rows:
+                    break
     finally:
         wb.close()
 

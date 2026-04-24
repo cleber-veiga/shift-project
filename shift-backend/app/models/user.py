@@ -42,12 +42,15 @@ class User(Base):
     organization_memberships: Mapped[list["OrganizationMember"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
+        lazy="raise_on_sql",
     )
     workspace_memberships: Mapped[list["WorkspaceMember"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
+        lazy="raise_on_sql",
     )
     project_memberships: Mapped[list["ProjectMember"]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
+        lazy="raise_on_sql",
     )

@@ -10,7 +10,7 @@ import json
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Project, Workspace
@@ -109,6 +109,32 @@ class WorkflowCrudService:
         result = await db.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_for_project_paginated(
+        self,
+        db: AsyncSession,
+        project_id: UUID,
+        *,
+        page: int,
+        size: int,
+    ) -> tuple[list[Workflow], int]:
+        """Versao paginada: retorna (items, total)."""
+        filters = [
+            Workflow.project_id == project_id,
+            Workflow.is_template.is_(False),
+        ]
+        total = await db.scalar(
+            select(func.count()).select_from(Workflow).where(*filters)
+        )
+        stmt = (
+            select(Workflow)
+            .where(*filters)
+            .order_by(Workflow.created_at.desc(), Workflow.id.desc())
+            .offset((page - 1) * size)
+            .limit(size)
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all()), int(total or 0)
+
     async def list_for_workspace(
         self,
         db: AsyncSession,
@@ -122,6 +148,29 @@ class WorkflowCrudService:
         )
         result = await db.execute(stmt)
         return list(result.scalars().all())
+
+    async def list_for_workspace_paginated(
+        self,
+        db: AsyncSession,
+        workspace_id: UUID,
+        *,
+        page: int,
+        size: int,
+    ) -> tuple[list[Workflow], int]:
+        """Versao paginada: retorna (items, total)."""
+        filters = [Workflow.workspace_id == workspace_id]
+        total = await db.scalar(
+            select(func.count()).select_from(Workflow).where(*filters)
+        )
+        stmt = (
+            select(Workflow)
+            .where(*filters)
+            .order_by(Workflow.created_at.desc(), Workflow.id.desc())
+            .offset((page - 1) * size)
+            .limit(size)
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all()), int(total or 0)
 
     async def list_templates_for_workspace(
         self,
@@ -138,6 +187,33 @@ class WorkflowCrudService:
         )
         result = await db.execute(stmt)
         return list(result.scalars().all())
+
+    async def list_templates_for_workspace_paginated(
+        self,
+        db: AsyncSession,
+        workspace_id: UUID,
+        *,
+        page: int,
+        size: int,
+    ) -> tuple[list[Workflow], int]:
+        """Versao paginada: retorna (items, total)."""
+        filters = [
+            Workflow.workspace_id == workspace_id,
+            Workflow.is_template.is_(True),
+            Workflow.is_published.is_(True),
+        ]
+        total = await db.scalar(
+            select(func.count()).select_from(Workflow).where(*filters)
+        )
+        stmt = (
+            select(Workflow)
+            .where(*filters)
+            .order_by(Workflow.created_at.desc(), Workflow.id.desc())
+            .offset((page - 1) * size)
+            .limit(size)
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all()), int(total or 0)
 
     async def publish(self, db: AsyncSession, workflow_id: UUID) -> Workflow:
         """Publica um template (is_published=True)."""

@@ -15,6 +15,7 @@ from app.core.security import authorization_service, require_permission
 from app.models import User
 from app.schemas.saved_query import (
     SavedQueryCreate,
+    SavedQueryListResponse,
     SavedQueryResponse,
     SavedQueryUpdate,
 )
@@ -106,22 +107,31 @@ def _require_query_write_permission():
 
 @router.get(
     "/connections/{connection_id}/saved-queries",
-    response_model=list[SavedQueryResponse],
+    response_model=SavedQueryListResponse,
     summary="Lista consultas salvas para o concorrente e tipo de banco da conexão",
 )
 async def list_saved_queries(
     connection_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    size: int = Query(50, ge=1, le=200),
     _=Depends(_require_connection_permission("CLIENT", "VIEWER")),
-) -> list[SavedQueryResponse]:
+) -> SavedQueryListResponse:
     conn = await _get_connection_or_404(db, connection_id)
-    items = await saved_query_service.list_for_connection(
+    items, total = await saved_query_service.list_for_connection_paginated(
         db,
         player_id=conn.player_id,
         database_type=conn.type,
+        page=page,
+        size=size,
     )
-    return [SavedQueryResponse.model_validate(item) for item in items]
+    return SavedQueryListResponse(
+        items=[SavedQueryResponse.model_validate(item) for item in items],
+        total=total,
+        page=page,
+        size=size,
+    )
 
 
 @router.post(

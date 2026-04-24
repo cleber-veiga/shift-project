@@ -58,6 +58,7 @@ from app.schemas.workflow import (
     VariablesSchemaResponse,
     WorkflowCloneRequest,
     WorkflowCreate,
+    WorkflowListResponse,
     WorkflowParam,
     WorkflowResponse,
     WorkflowUpdate,
@@ -108,44 +109,71 @@ async def create_workflow(
 
 @router.get(
     "/projects/{project_id}/workflows",
-    response_model=list[WorkflowResponse],
+    response_model=WorkflowListResponse,
 )
 async def list_project_workflows(
     project_id: UUID,
     db: AsyncSession = Depends(get_db),
+    page: int = Query(1, ge=1),
+    size: int = Query(50, ge=1, le=200),
     _=Depends(require_permission("project", "CLIENT")),
-) -> list[WorkflowResponse]:
+) -> WorkflowListResponse:
     """Lista os workflows de um projeto."""
-    workflows = await workflow_crud_service.list_for_project(db, project_id)
-    return [WorkflowResponse.model_validate(w) for w in workflows]
+    items, total = await workflow_crud_service.list_for_project_paginated(
+        db, project_id, page=page, size=size
+    )
+    return WorkflowListResponse(
+        items=[WorkflowResponse.model_validate(w) for w in items],
+        total=total,
+        page=page,
+        size=size,
+    )
 
 
 @router.get(
     "/workspaces/{workspace_id}/workflows",
-    response_model=list[WorkflowResponse],
+    response_model=WorkflowListResponse,
 )
 async def list_workspace_workflows(
     workspace_id: UUID,
     db: AsyncSession = Depends(get_db),
+    page: int = Query(1, ge=1),
+    size: int = Query(50, ge=1, le=200),
     _=Depends(require_permission("workspace", "VIEWER")),
-) -> list[WorkflowResponse]:
+) -> WorkflowListResponse:
     """Lista todos os workflows de um workspace (inclui templates e workflows normais)."""
-    workflows = await workflow_crud_service.list_for_workspace(db, workspace_id)
-    return [WorkflowResponse.model_validate(w) for w in workflows]
+    items, total = await workflow_crud_service.list_for_workspace_paginated(
+        db, workspace_id, page=page, size=size
+    )
+    return WorkflowListResponse(
+        items=[WorkflowResponse.model_validate(w) for w in items],
+        total=total,
+        page=page,
+        size=size,
+    )
 
 
 @router.get(
     "/workspaces/{workspace_id}/templates",
-    response_model=list[WorkflowResponse],
+    response_model=WorkflowListResponse,
 )
 async def list_workspace_templates(
     workspace_id: UUID,
     db: AsyncSession = Depends(get_db),
+    page: int = Query(1, ge=1),
+    size: int = Query(50, ge=1, le=200),
     _=Depends(require_permission("workspace", "VIEWER")),
-) -> list[WorkflowResponse]:
+) -> WorkflowListResponse:
     """Lista os templates publicados de um workspace."""
-    templates = await workflow_crud_service.list_templates_for_workspace(db, workspace_id)
-    return [WorkflowResponse.model_validate(t) for t in templates]
+    items, total = await workflow_crud_service.list_templates_for_workspace_paginated(
+        db, workspace_id, page=page, size=size
+    )
+    return WorkflowListResponse(
+        items=[WorkflowResponse.model_validate(t) for t in items],
+        total=total,
+        page=page,
+        size=size,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +411,7 @@ async def get_workflow_variables_schema(
     conectores compativeis (filtrados por ``connection_type`` quando declarado),
     evitando uma segunda chamada do frontend.
     """
-    from sqlalchemy import or_, select as sa_select
+    from sqlalchemy import and_, or_, select as sa_select
     from app.models.connection import Connection
     from app.models import Project
 
@@ -416,46 +444,97 @@ async def get_workflow_variables_schema(
     parent_var_names = {v.name for v in all_variables}
     seen_inherited: set[tuple[UUID, str]] = set()
 
+    # Pass 1: coleta todas as refs (sub_wf_id, version_spec normalizado) na
+    # ordem em que aparecem nos nodes, preservando a ordem final de resposta.
+    # version_spec normalizado: string "latest" ou int exato.
+    sub_refs: list[tuple[UUID, str | int]] = []
+    latest_ids: set[UUID] = set()
+    exact_pairs: list[tuple[UUID, int]] = []
     for node in (workflow.definition.get("nodes") if workflow.definition else []) or []:
         ref = _extract_subworkflow_ref(node)
         if ref is None:
             continue
         sub_wf_id, version_spec = ref
 
-        # Busca versao alvo — numero fixo ou a mais recente publicada.
         if version_spec == "latest" or version_spec is None:
-            version_stmt = (
-                sa_select(WorkflowVersion)
-                .where(
-                    WorkflowVersion.workflow_id == sub_wf_id,
-                    WorkflowVersion.published.is_(True),
-                )
-                .order_by(WorkflowVersion.version.desc())
-                .limit(1)
-            )
+            sub_refs.append((sub_wf_id, "latest"))
+            latest_ids.add(sub_wf_id)
         else:
             try:
                 version_num = int(version_spec)
             except (TypeError, ValueError):
-                continue
-            version_stmt = sa_select(WorkflowVersion).where(
-                WorkflowVersion.workflow_id == sub_wf_id,
-                WorkflowVersion.version == version_num,
-            )
+                continue  # version invalida — skip silencioso, mesmo comportamento de antes
+            sub_refs.append((sub_wf_id, version_num))
+            exact_pairs.append((sub_wf_id, version_num))
 
-        version_row = (await db.execute(version_stmt)).scalar_one_or_none()
+    # Pass 2: 3 queries batched em vez de 2*N (nome + versao por sub-workflow).
+    latest_by_wf: dict[UUID, WorkflowVersion] = {}
+    exact_by_pair: dict[tuple[UUID, int], WorkflowVersion] = {}
+    names_by_id: dict[UUID, str] = {}
+
+    if sub_refs:
+        if latest_ids:
+            # Subquery agrega MAX(version) publicada por workflow_id; join traz
+            # a linha completa de WorkflowVersion correspondente.
+            latest_subq = (
+                sa_select(
+                    WorkflowVersion.workflow_id.label("wf_id"),
+                    func.max(WorkflowVersion.version).label("max_v"),
+                )
+                .where(
+                    WorkflowVersion.workflow_id.in_(latest_ids),
+                    WorkflowVersion.published.is_(True),
+                )
+                .group_by(WorkflowVersion.workflow_id)
+            ).subquery()
+            latest_stmt = sa_select(WorkflowVersion).join(
+                latest_subq,
+                and_(
+                    WorkflowVersion.workflow_id == latest_subq.c.wf_id,
+                    WorkflowVersion.version == latest_subq.c.max_v,
+                ),
+            )
+            for wv in (await db.execute(latest_stmt)).scalars().all():
+                latest_by_wf[wv.workflow_id] = wv
+
+        if exact_pairs:
+            # OR de ANDs — funciona em qualquer dialeto (evita tuple_ IN que
+            # pode ter suporte irregular em alguns drivers).
+            exact_stmt = sa_select(WorkflowVersion).where(
+                or_(
+                    *[
+                        and_(
+                            WorkflowVersion.workflow_id == wf_id,
+                            WorkflowVersion.version == ver,
+                        )
+                        for wf_id, ver in exact_pairs
+                    ]
+                )
+            )
+            for wv in (await db.execute(exact_stmt)).scalars().all():
+                exact_by_pair[(wv.workflow_id, wv.version)] = wv
+
+        all_sub_ids = {wid for wid, _ in sub_refs}
+        if all_sub_ids:
+            names_result = await db.execute(
+                sa_select(Workflow.id, Workflow.name).where(Workflow.id.in_(all_sub_ids))
+            )
+            for row_id, row_name in names_result.all():
+                names_by_id[row_id] = row_name
+
+    # Pass 3: itera em memoria, reproduzindo a logica original node a node.
+    for sub_wf_id, version_spec in sub_refs:
+        if version_spec == "latest":
+            version_row = latest_by_wf.get(sub_wf_id)
+        else:
+            version_row = exact_by_pair.get((sub_wf_id, version_spec))
         if version_row is None:
-            continue
+            continue  # sub-workflow/versao inexistente — mesmo skip de antes
 
         sub_def = version_row.definition if isinstance(version_row.definition, dict) else {}
         sub_raw_vars = sub_def.get("variables") or []
         sub_referenced = _collect_referenced_vars(sub_def)
-
-        # Nome do sub-workflow para exibicao (agrupamento no dialog / panel).
-        sub_name_row = await db.execute(
-            sa_select(Workflow.name).where(Workflow.id == sub_wf_id)
-        )
-        sub_name = sub_name_row.scalar_one_or_none() or str(sub_wf_id)
+        sub_name = names_by_id.get(sub_wf_id) or str(sub_wf_id)
 
         for raw in sub_raw_vars:
             try:

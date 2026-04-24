@@ -153,8 +153,15 @@ class AuthService:
     # ── Logout ────────────────────────────────────────────────────────────────
 
     def logout(self, refresh_token: str) -> None:
-        """Invalida o refresh token."""
+        """Invalida o refresh token e remove o user do cache in-memory."""
         _revoked_refresh_tokens.add(refresh_token)
+        try:
+            payload = decode_access_token(refresh_token)
+            user_id = UUID(payload["sub"])
+        except Exception:
+            return
+        from app.core.cache import user_cache
+        user_cache.invalidate(user_id)
 
     # ── /me ───────────────────────────────────────────────────────────────────
 

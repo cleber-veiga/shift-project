@@ -119,7 +119,7 @@ class Invitation(Base):
     )
 
     invited_by: Mapped["User"] = relationship(foreign_keys=[invited_by_id])
-    accepted_by: Mapped["User | None"] = relationship(foreign_keys=[accepted_by_id])
+    accepted_by: Mapped["User | None"] = relationship(foreign_keys=[accepted_by_id], lazy="raise_on_sql")
 
 
 from app.models.user import User  # noqa: E402

@@ -71,9 +71,12 @@ retorna automaticamente a tabela correta para o ramo conectado.
 """
 
 import asyncio
+import os
+import tempfile
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 from uuid import UUID
 
@@ -96,6 +99,128 @@ EventSink = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 DEFAULT_NODE_TIMEOUT_SECONDS = 300
+
+# ---------------------------------------------------------------------------
+# Controle de concorrencia de execucoes
+# ---------------------------------------------------------------------------
+
+_MAX_CONCURRENT_EXECUTIONS = int(os.getenv("SHIFT_MAX_CONCURRENT_EXECUTIONS", "10"))
+_MAX_CONCURRENT_PER_PROJECT = int(os.getenv("SHIFT_MAX_CONCURRENT_PER_PROJECT", "3"))
+_EXECUTION_QUEUE_TIMEOUT = float(os.getenv("SHIFT_EXECUTION_QUEUE_TIMEOUT", "60"))
+
+
+def _check_disk_limit() -> None:
+    """Levanta ``ConcurrencyLimitError`` se o diretorio /tmp/shift superar o limite."""
+    from app.core.config import settings  # import tardio para evitar ciclo  # noqa: PLC0415
+
+    max_gb = settings.SHIFT_MAX_DISK_GB
+    if max_gb <= 0:
+        return
+    base = Path(tempfile.gettempdir()) / "shift"
+    if not base.exists():
+        return
+    total_bytes = sum(
+        f.stat().st_size
+        for f in base.rglob("*")
+        if f.is_file()
+    )
+    used_gb = total_bytes / (1024 ** 3)
+    if used_gb >= max_gb:
+        raise ConcurrencyLimitError(
+            f"Espaco em disco insuficiente: /tmp/shift usa {used_gb:.1f} GB "
+            f"(limite: {max_gb} GB). Aguarde a conclusao de execucoes ativas."
+        )
+
+# Semaforo global: limite total de execucoes simultaneas nesta instancia.
+_global_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_EXECUTIONS)
+# Semaforos por projeto: criados sob demanda, protegidos por lock.
+_project_semaphores: dict[str, asyncio.Semaphore] = {}
+_project_semaphores_lock = asyncio.Lock()
+
+# Contadores de monitoramento (sem lock — leitura aproximada e suficiente).
+_active_count: int = 0
+_queued_count: int = 0
+_active_by_project: dict[str, int] = defaultdict(int)
+
+
+class ConcurrencyLimitError(Exception):
+    """Levantada quando o limite de concorrencia e atingido apos timeout."""
+
+
+async def _get_project_semaphore(project_id: str) -> asyncio.Semaphore:
+    async with _project_semaphores_lock:
+        if project_id not in _project_semaphores:
+            _project_semaphores[project_id] = asyncio.Semaphore(
+                _MAX_CONCURRENT_PER_PROJECT
+            )
+        return _project_semaphores[project_id]
+
+
+async def acquire_execution_slot(project_id: str | None = None) -> None:
+    """Adquire slot global e por-projeto com timeout de ``_EXECUTION_QUEUE_TIMEOUT`` s.
+
+    Levanta ``ConcurrencyLimitError`` se nenhum slot liberar dentro do timeout
+    ou se o limite de disco estiver excedido.
+    """
+    global _active_count, _queued_count  # noqa: PLW0603
+
+    _check_disk_limit()
+    _queued_count += 1
+    try:
+        try:
+            await asyncio.wait_for(
+                _global_semaphore.acquire(), timeout=_EXECUTION_QUEUE_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            raise ConcurrencyLimitError(
+                f"Limite global de execucoes concorrentes atingido "
+                f"({_MAX_CONCURRENT_EXECUTIONS} ativas). "
+                "Tente novamente em alguns instantes."
+            ) from None
+
+        if project_id:
+            sem = await _get_project_semaphore(project_id)
+            try:
+                await asyncio.wait_for(
+                    sem.acquire(), timeout=_EXECUTION_QUEUE_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                _global_semaphore.release()
+                raise ConcurrencyLimitError(
+                    f"Limite de execucoes concorrentes por projeto atingido "
+                    f"({_MAX_CONCURRENT_PER_PROJECT} ativas neste projeto). "
+                    "Tente novamente em alguns instantes."
+                ) from None
+    finally:
+        _queued_count = max(0, _queued_count - 1)
+
+    _active_count += 1
+    if project_id:
+        _active_by_project[project_id] += 1
+
+
+def release_execution_slot(project_id: str | None = None) -> None:
+    """Libera slot global e por-projeto adquiridos em ``acquire_execution_slot``."""
+    global _active_count  # noqa: PLW0603
+
+    _global_semaphore.release()
+    if project_id and project_id in _project_semaphores:
+        _project_semaphores[project_id].release()
+        _active_by_project[project_id] = max(
+            0, _active_by_project.get(project_id, 0) - 1
+        )
+    _active_count = max(0, _active_count - 1)
+
+
+def get_concurrency_metrics() -> dict[str, Any]:
+    """Retorna metricas de concorrencia para o endpoint de saude."""
+    return {
+        "active_executions": _active_count,
+        "queued_executions": _queued_count,
+        "max_concurrent": _MAX_CONCURRENT_EXECUTIONS,
+        "max_per_project": _MAX_CONCURRENT_PER_PROJECT,
+        "active_by_project": dict(_active_by_project),
+    }
 
 # --- Sub-workflows -----------------------------------------------------
 # Profundidade maxima de chamadas aninhadas via ``call_workflow``. O
@@ -415,8 +540,41 @@ def _extract_row_counts(result: Any) -> tuple[int | None, int | None]:
 
 
 # Chaves que nao devem ser copiadas para o output_summary persistido em DB
-# (seja por tamanho, seja por conterem estruturas nao serializaveis).
-_OUTPUT_SUMMARY_DROP_KEYS = frozenset({"rows", "data", "upstream_results"})
+# (seja por tamanho, seja por conterem estruturas nao serializaveis ou credenciais).
+_OUTPUT_SUMMARY_DROP_KEYS = frozenset({"rows", "data", "upstream_results", "connection_string"})
+
+# Chaves de credencial/segredo que nunca devem sair no payload SSE, mesmo
+# que a UI precise de ``data``/``rows`` para preview. Lista mais restrita
+# que ``_OUTPUT_SUMMARY_DROP_KEYS`` de proposito — o SSE mantem o shape
+# completo do result para renderizar previews; apenas removemos segredos.
+_EVENT_OUTPUT_DROP_KEYS = frozenset({
+    "connection_string",
+    "password",
+    "secret",
+    "api_key",
+    "access_token",
+    "refresh_token",
+    "private_key",
+})
+
+
+def _sanitize_for_event(value: Any) -> Any:
+    """Remove chaves sensiveis recursivamente antes de emitir em SSE.
+
+    Mantem estruturas como ``data`` (referencia DuckDB) e ``rows`` (preview)
+    intactas — a UI precisa delas. So dropa chaves que casam com segredos
+    conhecidos. Aplica-se em qualquer profundidade, inclusive dentro de
+    ``upstream_results`` ou ``branches``.
+    """
+    if isinstance(value, dict):
+        return {
+            k: _sanitize_for_event(v)
+            for k, v in value.items()
+            if k not in _EVENT_OUTPUT_DROP_KEYS
+        }
+    if isinstance(value, list):
+        return [_sanitize_for_event(item) for item in value]
+    return value
 
 
 def _summarize_result(result: Any) -> dict[str, Any]:
@@ -632,6 +790,29 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+async def _save_checkpoint_safe(
+    execution_id: str,
+    node_id: str,
+    result: dict,
+) -> None:
+    """Salva checkpoint em background sem bloquear o runner.
+
+    Importa checkpoint_service em tempo de execucao para evitar ciclo de
+    importacao (runner <- services e checkpoint_service <- db.session).
+    """
+    try:
+        from app.services import checkpoint_service  # noqa: PLC0415
+        await checkpoint_service.save_checkpoint(execution_id, node_id, result)
+    except Exception as exc:  # noqa: BLE001
+        _logger = get_logger(__name__)
+        _logger.warning(
+            "checkpoint.background_save_failed",
+            execution_id=execution_id,
+            node_id=node_id,
+            error=str(exc),
+        )
+
+
 async def run_workflow(
     workflow_payload: dict[str, Any] | None = None,
     workflow_id: str | None = None,
@@ -647,6 +828,9 @@ async def run_workflow(
     call_stack: list[str] | None = None,
     max_depth: int = SUBWORKFLOW_MAX_DEPTH,
     in_loop: bool = False,
+    checkpoint_results: dict[str, Any] | None = None,
+    run_mode: str = "full",
+    preview_max_rows: int | None = None,
 ) -> dict[str, Any]:
     """
     Entrypoint principal que orquestra a execucao dinamica de um workflow.
@@ -724,6 +908,17 @@ async def run_workflow(
         # qualquer run sem observador anexado.
         "_event_sink": event_sink,
         "_execution_id": execution_id,
+        # Modo de execucao selecionado pelo usuario no momento do disparo:
+        # - ``full`` (padrao): roda tudo.
+        # - ``preview``: processors de extracao aplicam LIMIT via
+        #   ``_preview_max_rows`` — dry-run rapido para validar o pipeline.
+        # - ``validate``: nao chega a invocar o runner (curto-circuito no
+        #   ``workflow_service``), mas o campo fica disponivel para quem
+        #   queira consultar.
+        "run_mode": run_mode,
+        "_preview_max_rows": (
+            preview_max_rows if run_mode == "preview" else None
+        ),
     }
 
     nodes = resolved_payload.get("nodes", [])
@@ -842,6 +1037,86 @@ async def run_workflow(
                         continue
 
                     node_data = node.get("data", {}) if isinstance(node.get("data"), dict) else {}
+
+                    # --- checkpoint: reutiliza resultado de execucao anterior ---
+                    checkpointed_result = (checkpoint_results or {}).get(node_id)
+                    if isinstance(checkpointed_result, dict) and checkpointed_result:
+                        chk_result = _default_success_handle_if_needed(
+                            node_id,
+                            checkpointed_result,
+                            adjacency,
+                            edge_handle_map,
+                        )
+                        with bind_context(node_id=node_id):
+                            logger.info("node.checkpoint_restored")
+                        results[node_id] = chk_result
+                        row_in, row_out = _extract_row_counts(chk_result)
+                        _record_event(
+                            node_id,
+                            node,
+                            "skipped",
+                            row_count_in=row_in,
+                            row_count_out=row_out,
+                            output_summary={"is_checkpoint": True},
+                        )
+                        await _safe_emit(
+                            event_sink,
+                            {
+                                "type": "node_complete",
+                                "execution_id": execution_id,
+                                "timestamp": _iso_now(),
+                                "node_id": node_id,
+                                "node_type": node_type_for_event,
+                                "label": label_for_event,
+                                "output": chk_result,
+                                "duration_ms": 0,
+                                "is_checkpoint": True,
+                                "row_count_in": row_in,
+                                "row_count_out": row_out,
+                            },
+                            logger,
+                        )
+                        continue
+
+                    # --- extract cache: reutiliza resultado de extracao anterior ---
+                    if node_data.get("cache_enabled"):
+                        try:
+                            from app.services.extract_cache_service import extract_cache_service as _ecs  # noqa: PLC0415
+                            _cache_key = _ecs.make_cache_key(node_data)
+                            _cached = await _ecs.get(_cache_key, execution_id or "", node_id)
+                            if _cached is not None:
+                                _cached_result = _default_success_handle_if_needed(
+                                    node_id, _cached, adjacency, edge_handle_map,
+                                )
+                                with bind_context(node_id=node_id):
+                                    logger.info("node.cache_hit")
+                                results[node_id] = _cached_result
+                                row_in, row_out = _extract_row_counts(_cached_result)
+                                _record_event(
+                                    node_id, node, "skipped",
+                                    row_count_in=row_in, row_count_out=row_out,
+                                    output_summary={"is_cache_hit": True},
+                                )
+                                await _safe_emit(
+                                    event_sink,
+                                    {
+                                        "type": "node_complete",
+                                        "execution_id": execution_id,
+                                        "timestamp": _iso_now(),
+                                        "node_id": node_id,
+                                        "node_type": node_type_for_event,
+                                        "label": label_for_event,
+                                        "output": _sanitize_for_event(_cached_result),
+                                        "duration_ms": 0,
+                                        "is_cache_hit": True,
+                                        "row_count_in": row_in,
+                                        "row_count_out": row_out,
+                                    },
+                                    logger,
+                                )
+                                continue
+                        except Exception:  # noqa: BLE001
+                            logger.exception("node.cache_check_failed", node_id=node_id)
 
                     # --- pinnedOutput: usa output fixado, nao chama processor ---
                     pinned_output = node_data.get("pinnedOutput")
@@ -1218,20 +1493,28 @@ async def run_workflow(
                                 completed_at=completed_at,
                                 error_message=str(outcome),
                             )
-                            await _safe_emit(
-                                event_sink,
-                                {
-                                    "type": "node_error",
-                                    "execution_id": execution_id,
-                                    "timestamp": _iso_now(),
-                                    "node_id": node_id,
-                                    "node_type": node_type_for_event,
-                                    "label": label_for_event,
-                                    "error": str(outcome),
-                                    "duration_ms": duration_ms,
-                                },
-                                logger,
-                            )
+                            # Extrai sample de linha problematica do details
+                            # da excecao — o log service mascara PII antes
+                            # de gravar em ``workflow_execution_logs.context``.
+                            error_event: dict[str, Any] = {
+                                "type": "node_error",
+                                "execution_id": execution_id,
+                                "timestamp": _iso_now(),
+                                "node_id": node_id,
+                                "node_type": node_type_for_event,
+                                "label": label_for_event,
+                                "error": str(outcome),
+                                "duration_ms": duration_ms,
+                            }
+                            outcome_details = getattr(outcome, "details", None)
+                            if isinstance(outcome_details, dict):
+                                sample = outcome_details.get("failed_row_sample")
+                                if isinstance(sample, (dict, list)):
+                                    error_event["failed_row_sample"] = sample
+                                extra_ctx = outcome_details.get("context")
+                                if isinstance(extra_ctx, dict):
+                                    error_event["error_context"] = extra_ctx
+                            await _safe_emit(event_sink, error_event, logger)
                             level_failed.append((node_id, outcome))
                             continue
 
@@ -1299,18 +1582,51 @@ async def run_workflow(
                                 "node_id": node_id,
                                 "node_type": node_type_for_event,
                                 "label": label_for_event,
-                                # Emite o resultado completo para a UI (inclui a
-                                # referencia DuckDB em ``data`` necessaria para
-                                # renderizar o preview em tabela). O
-                                # ``output_summary`` segue sendo usado apenas
-                                # para persistencia em DB (snapshot de auditoria).
-                                "output": result,
+                                # Emite o resultado para a UI (inclui a referencia
+                                # DuckDB em ``data`` necessaria para renderizar o
+                                # preview em tabela). Passa por ``_sanitize_for_event``
+                                # para dropar connection_string e outros segredos
+                                # caso algum processor ecoe config no retorno.
+                                # ``output_summary`` segue sendo usado apenas para
+                                # persistencia em DB (snapshot de auditoria).
+                                "output": _sanitize_for_event(result),
                                 "duration_ms": duration_ms,
                                 "row_count_in": row_in,
                                 "row_count_out": row_out,
                             },
                             logger,
                         )
+
+                        # Salva checkpoint se o no tiver checkpoint_enabled=true.
+                        # Roda em background para nao bloquear o fluxo.
+                        node_for_chk = node_map.get(node_id, {})
+                        node_data_for_chk = node_for_chk.get("data", {}) if isinstance(node_for_chk, dict) else {}
+                        if isinstance(node_data_for_chk, dict) and node_data_for_chk.get("checkpoint_enabled") and execution_id:
+                            asyncio.create_task(
+                                _save_checkpoint_safe(execution_id, node_id, result)
+                            )
+
+                        # Salva no cache de extracoes quando cache_enabled=True.
+                        if isinstance(node_data_for_chk, dict) and node_data_for_chk.get("cache_enabled") and execution_id:
+                            _cache_ttl = int(node_data_for_chk.get("cache_ttl_seconds") or 300)
+                            _node_type_for_cache = str(node_for_chk.get("type", "unknown"))
+
+                            async def _save_cache_safe(
+                                _nd=node_data_for_chk,
+                                _r=result,
+                                _nt=_node_type_for_cache,
+                                _ttl=_cache_ttl,
+                                _eid=execution_id,
+                                _nid=node_id,
+                            ) -> None:
+                                try:
+                                    from app.services.extract_cache_service import extract_cache_service as _ecs  # noqa: PLC0415
+                                    _key = _ecs.make_cache_key(_nd)
+                                    await _ecs.save(_key, _r, _nt, _ttl, _eid)
+                                except Exception:  # noqa: BLE001
+                                    logger.exception("node.cache_save_failed", node_id=_nid)
+
+                            asyncio.create_task(_save_cache_safe())
 
                         # Se o no retornou active_handle(s) (no de condicao), marca como
                         # inativas todas as arestas de saida cujo sourceHandle nao esta
@@ -1381,6 +1697,27 @@ async def run_workflow(
             }
         except asyncio.CancelledError:
             final_status = "cancelled"
+            # Registra "cancelled" para nos que iniciaram mas nao concluiram.
+            completed_node_ids = {evt["node_id"] for evt in node_executions}
+            _now_cancel = datetime.now(timezone.utc)
+            for nid, timing in node_timing.items():
+                if nid not in completed_node_ids:
+                    node_for_cancel = node_map.get(nid, {})
+                    t0_c = timing.get("t0")
+                    duration_ms_c = (
+                        int((time.monotonic() - t0_c) * 1000)
+                        if t0_c is not None
+                        else 0
+                    )
+                    _record_event(
+                        nid,
+                        node_for_cancel,
+                        "cancelled",
+                        duration_ms=duration_ms_c,
+                        started_at=timing.get("started_at") or _now_cancel,
+                        completed_at=_now_cancel,
+                        error_message="Execucao cancelada pelo usuario.",
+                    )
             raise
         except BaseException:
             # Excecao inesperada nao tratada nos ramos acima — garante que
@@ -1389,6 +1726,17 @@ async def run_workflow(
                 final_status = "failed"
             raise
         finally:
+            # Evento especifico de cancelamento (antes de execution_end)
+            if final_status == "cancelled":
+                await _safe_emit(
+                    event_sink,
+                    {
+                        "type": "execution.cancelled",
+                        "execution_id": execution_id,
+                        "timestamp": _iso_now(),
+                    },
+                    logger,
+                )
             await _safe_emit(
                 event_sink,
                 {
@@ -1399,3 +1747,16 @@ async def run_workflow(
                 },
                 logger,
             )
+            # Remove arquivos DuckDB temporarios desta execucao
+            if execution_id:
+                try:
+                    from app.data_pipelines.duckdb_storage import (  # noqa: PLC0415
+                        cleanup_execution_storage,
+                    )
+                    cleanup_execution_storage(execution_id)
+                except Exception as _exc:  # noqa: BLE001
+                    logger.warning(
+                        "execution.storage_cleanup_failed",
+                        execution_id=execution_id,
+                        error=str(_exc),
+                    )

@@ -108,6 +108,143 @@ scheduler.add_listener(_on_job_missed, EVENT_JOB_MISSED)
 scheduler.add_listener(_on_job_max_instances, EVENT_JOB_MAX_INSTANCES)
 
 
+# ---------------------------------------------------------------------------
+# Job de limpeza de armazenamento DuckDB
+# ---------------------------------------------------------------------------
+
+async def _run_duckdb_storage_cleanup() -> None:
+    """Remove diretorios DuckDB de execucoes finalizadas ha mais de 24h.
+
+    Roda a cada hora via APScheduler. Loga cada remocao e ignora erros
+    individuais para garantir que o job nunca trave o scheduler.
+    """
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path
+    from uuid import UUID
+
+    from sqlalchemy import select
+
+    from app.db.session import async_session_factory
+    from app.models.workflow import WorkflowExecution
+
+    base = Path(tempfile.gettempdir()) / "shift" / "executions"
+    if not base.exists():
+        return
+
+    _FINAL_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED", "ABORTED", "CRASHED"})
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    removed = 0
+
+    async with async_session_factory() as session:
+        for entry in base.iterdir():
+            if not entry.is_dir():
+                continue
+            try:
+                exec_id = UUID(entry.name)
+            except ValueError:
+                continue
+
+            try:
+                row = (
+                    await session.execute(
+                        select(WorkflowExecution).where(WorkflowExecution.id == exec_id)
+                    )
+                ).scalar_one_or_none()
+
+                should_delete = False
+                if row is None:
+                    should_delete = True
+                elif row.status in _FINAL_STATUSES:
+                    completed_at = row.completed_at
+                    if completed_at is not None:
+                        if completed_at.tzinfo is None:
+                            completed_at = completed_at.replace(tzinfo=timezone.utc)
+                        if completed_at < cutoff:
+                            should_delete = True
+
+                if should_delete:
+                    import shutil
+                    shutil.rmtree(entry, ignore_errors=True)
+                    logger.info(
+                        "storage.gc.removed",
+                        execution_id=str(exec_id),
+                        path=str(entry),
+                    )
+                    removed += 1
+
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "storage.gc.entry_failed",
+                    path=str(entry),
+                    error=str(exc),
+                )
+
+    if removed:
+        logger.info("storage.gc.completed", removed=removed)
+
+
+def register_storage_cleanup_job() -> None:
+    """Registra job APScheduler de limpeza de armazenamento DuckDB (1h)."""
+    scheduler.add_job(
+        _run_duckdb_storage_cleanup,
+        trigger="interval",
+        hours=1,
+        id="shift_storage_cleanup",
+        replace_existing=True,
+        name="Limpeza de armazenamento DuckDB",
+    )
+    logger.info("storage.gc.job_registered")
+
+
+async def _run_checkpoint_cleanup() -> None:
+    """Remove checkpoints expirados (DB + arquivos DuckDB persistentes)."""
+    try:
+        from app.services import checkpoint_service  # noqa: PLC0415
+        removed = await checkpoint_service.cleanup_expired()
+        if removed:
+            logger.info("checkpoint.gc.completed", removed=removed)
+    except Exception:  # noqa: BLE001
+        logger.exception("checkpoint.gc.failed")
+
+
+def register_checkpoint_cleanup_job() -> None:
+    """Registra job APScheduler de limpeza de checkpoints (1x por dia)."""
+    scheduler.add_job(
+        _run_checkpoint_cleanup,
+        trigger="interval",
+        hours=24,
+        id="shift_checkpoint_cleanup",
+        replace_existing=True,
+        name="Limpeza de checkpoints expirados",
+    )
+    logger.info("checkpoint.gc.job_registered")
+
+
+async def _run_extract_cache_cleanup() -> None:
+    """Remove entradas de cache de extracao expiradas (DB + arquivos DuckDB)."""
+    try:
+        from app.services.extract_cache_service import extract_cache_service  # noqa: PLC0415
+        removed = await extract_cache_service.cleanup_expired()
+        if removed:
+            logger.info("extract_cache.gc.completed", removed=removed)
+    except Exception:  # noqa: BLE001
+        logger.exception("extract_cache.gc.failed")
+
+
+def register_extract_cache_cleanup_job() -> None:
+    """Registra job APScheduler de limpeza de cache de extracoes (1x por dia)."""
+    scheduler.add_job(
+        _run_extract_cache_cleanup,
+        trigger="interval",
+        hours=24,
+        id="shift_extract_cache_cleanup",
+        replace_existing=True,
+        name="Limpeza de cache de extracoes expiradas",
+    )
+    logger.info("extract_cache.gc.job_registered")
+
+
 def _job_id(workflow_id: UUID | str) -> str:
     return f"workflow-cron-{workflow_id}"
 
@@ -303,26 +440,45 @@ async def bootstrap_schedules() -> None:
     jobs no Postgres, mas este passo reconcilia divergencias (ex.:
     workflows alterados com app offline).
     """
-    async with async_session_factory() as db:
-        result = await db.execute(select(Workflow))
-        workflows = list(result.scalars().all())
-
+    # Chunking interno — evita carregar todos os workflows na memoria de uma
+    # vez em bases grandes. Itera ordenado por PK com keyset pagination
+    # (mais estavel que offset sob escritas concorrentes).
+    CHUNK_SIZE = 500
+    last_id: UUID | None = None
+    total = 0
     registered = 0
     removed = 0
-    for workflow in workflows:
-        cron = extract_cron_trigger(workflow.definition)
-        is_production = getattr(workflow, "status", "draft") == "published"
-        is_public = bool(getattr(workflow, "is_published", False))
-        if is_production and is_public and cron is not None:
-            if register_workflow_schedule(workflow):
-                registered += 1
-        else:
-            if remove_workflow_schedule(workflow.id):
-                removed += 1
+
+    while True:
+        stmt = select(Workflow).order_by(Workflow.id).limit(CHUNK_SIZE)
+        if last_id is not None:
+            stmt = stmt.where(Workflow.id > last_id)
+        async with async_session_factory() as db:
+            result = await db.execute(stmt)
+            chunk = list(result.scalars().all())
+
+        if not chunk:
+            break
+
+        for workflow in chunk:
+            cron = extract_cron_trigger(workflow.definition)
+            is_production = getattr(workflow, "status", "draft") == "published"
+            is_public = bool(getattr(workflow, "is_published", False))
+            if is_production and is_public and cron is not None:
+                if register_workflow_schedule(workflow):
+                    registered += 1
+            else:
+                if remove_workflow_schedule(workflow.id):
+                    removed += 1
+
+        total += len(chunk)
+        last_id = chunk[-1].id
+        if len(chunk) < CHUNK_SIZE:
+            break
 
     logger.info(
         "scheduler.bootstrapped",
-        total=len(workflows),
+        total=total,
         registered=registered,
         removed=removed,
     )

@@ -11,7 +11,7 @@ from urllib.parse import quote_plus
 from uuid import UUID
 
 import sqlalchemy as sa
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.connection import Connection
@@ -88,6 +88,36 @@ class ConnectionService:
         )
         return list(result.scalars().all())
 
+    async def list_paginated(
+        self,
+        db: AsyncSession,
+        workspace_id: UUID,
+        current_user_id: UUID,
+        *,
+        page: int,
+        size: int,
+    ) -> tuple[list[Connection], int]:
+        """Versao paginada de :meth:`list`: retorna (items, total)."""
+        filters = [
+            Connection.workspace_id == workspace_id,
+            or_(
+                Connection.is_public.is_(True),
+                Connection.created_by_id == current_user_id,
+            ),
+        ]
+        total = await db.scalar(
+            select(func.count()).select_from(Connection).where(*filters)
+        )
+        stmt = (
+            select(Connection)
+            .where(*filters)
+            .order_by(Connection.name, Connection.id)
+            .offset((page - 1) * size)
+            .limit(size)
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all()), int(total or 0)
+
     async def list_for_project(
         self,
         db: AsyncSession,
@@ -112,6 +142,40 @@ class ConnectionService:
             .order_by(Connection.name)
         )
         return list(result.scalars().all())
+
+    async def list_for_project_paginated(
+        self,
+        db: AsyncSession,
+        project_id: UUID,
+        workspace_id: UUID,
+        current_user_id: UUID,
+        *,
+        page: int,
+        size: int,
+    ) -> tuple[list[Connection], int]:
+        """Versao paginada de :meth:`list_for_project`: retorna (items, total)."""
+        filters = [
+            or_(
+                Connection.workspace_id == workspace_id,
+                Connection.project_id == project_id,
+            ),
+            or_(
+                Connection.is_public.is_(True),
+                Connection.created_by_id == current_user_id,
+            ),
+        ]
+        total = await db.scalar(
+            select(func.count()).select_from(Connection).where(*filters)
+        )
+        stmt = (
+            select(Connection)
+            .where(*filters)
+            .order_by(Connection.name, Connection.id)
+            .offset((page - 1) * size)
+            .limit(size)
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all()), int(total or 0)
 
     async def get(
         self,

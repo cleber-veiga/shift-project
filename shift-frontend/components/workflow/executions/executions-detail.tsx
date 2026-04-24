@@ -10,6 +10,7 @@ import {
   Copy,
   DatabaseZap,
   Loader2,
+  Play,
   Square,
   Trash2,
   User,
@@ -28,11 +29,14 @@ import {
   type NodeExecution,
   type TriggeredBy,
 } from "@/lib/api/executions"
+import { executeWorkflow } from "@/lib/api/workflow-variables"
 
 interface ExecutionsDetailProps {
   executionId: string | null
+  workflowId: string
   onDeleted: (id: string) => void
   onCancelled: (id: string) => void
+  onRetried?: (newExecutionId: string) => void
 }
 
 function statusBadgeCls(status: ExecutionStatus) {
@@ -103,8 +107,10 @@ function nodeStatusIcon(status: NodeExecution["status"]) {
 
 export function ExecutionsDetail({
   executionId,
+  workflowId,
   onDeleted,
   onCancelled,
+  onRetried,
 }: ExecutionsDetailProps) {
   const [detail, setDetail] = useState<ExecutionDetail | null>(null)
   const [loading, setLoading] = useState(false)
@@ -184,6 +190,35 @@ export function ExecutionsDetail({
     }
   }
 
+  const handleRetry = async () => {
+    if (!detail) return
+    const reusePrevVars =
+      !!detail.input_data?.variable_values &&
+      Object.keys(detail.input_data.variable_values).length > 0
+    const message = reusePrevVars
+      ? "Retomar execução? Nós concluídos serão pulados via checkpoint e as mesmas variáveis serão reutilizadas."
+      : "Retomar execução? Nós concluídos serão pulados via checkpoint."
+    if (!window.confirm(message)) return
+    setBusy(true)
+    try {
+      const variableValues = (detail.input_data?.variable_values ?? {}) as Record<
+        string,
+        unknown
+      >
+      const resp = await executeWorkflow(workflowId, {
+        variableValues,
+        retryFromExecutionId: detail.execution_id,
+      })
+      if ("execution_id" in resp) {
+        onRetried?.(resp.execution_id)
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Falha ao retomar execução.")
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (!executionId) {
     return (
       <div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">
@@ -256,15 +291,32 @@ export function ExecutionsDetail({
               Cancelar
             </button>
           ) : (
-            <button
-              type="button"
-              onClick={handleDelete}
-              disabled={busy}
-              className="flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-[11px] text-red-600 hover:bg-red-500/10 disabled:opacity-60"
-            >
-              <Trash2 className="size-3" />
-              Excluir
-            </button>
+            <>
+              {(detail.status === "FAILED" ||
+                detail.status === "CRASHED" ||
+                detail.status === "CANCELLED" ||
+                detail.status === "ABORTED") && (
+                <button
+                  type="button"
+                  onClick={handleRetry}
+                  disabled={busy}
+                  title="Retomar a partir dos checkpoints salvos desta execução."
+                  className="flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-[11px] text-emerald-600 hover:bg-emerald-500/10 disabled:opacity-60"
+                >
+                  <Play className="size-3" />
+                  Retomar
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={busy}
+                className="flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-[11px] text-red-600 hover:bg-red-500/10 disabled:opacity-60"
+              >
+                <Trash2 className="size-3" />
+                Excluir
+              </button>
+            </>
           )}
         </div>
       </div>

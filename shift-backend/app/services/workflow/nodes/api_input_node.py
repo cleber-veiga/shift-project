@@ -59,6 +59,7 @@ from uuid import uuid4
 
 import httpx
 
+from app.core.config import settings
 from app.data_pipelines.duckdb_storage import JsonlStreamer
 from app.services.workflow.nodes import BaseNodeProcessor, register_processor
 from app.services.workflow.nodes.exceptions import NodeProcessingError
@@ -86,7 +87,13 @@ class ApiInputNodeProcessor(BaseNodeProcessor):
         auth_config: dict[str, Any] | None = resolved_config.get("auth")
         pagination_type = str(resolved_config.get("pagination_type", "none")).lower()
         pagination_config: dict[str, Any] = resolved_config.get("pagination_config") or {}
-        max_records: int | None = resolved_config.get("max_records")
+        preview_max_rows: int | None = context.get("_preview_max_rows")
+        configured_max_records = resolved_config.get("max_records")
+        max_records: int | None = (
+            preview_max_rows
+            if preview_max_rows is not None
+            else (int(configured_max_records) if configured_max_records is not None else settings.EXTRACT_DEFAULT_MAX_ROWS)
+        )
         max_pages = int(resolved_config.get("max_pages", _DEFAULT_MAX_PAGES))
         timeout_seconds = float(resolved_config.get("timeout_seconds", _DEFAULT_TIMEOUT))
         output_field = str(resolved_config.get("output_field", "data"))

@@ -39,4 +39,4 @@ class InputModelRow(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    input_model: Mapped["InputModel"] = relationship(back_populates="rows")
+    input_model: Mapped["InputModel"] = relationship(back_populates="rows", lazy="raise_on_sql")

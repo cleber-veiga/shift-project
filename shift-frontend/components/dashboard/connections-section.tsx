@@ -125,9 +125,9 @@ export function ConnectionsSection({ scope }: ConnectionsSectionProps) {
       const wsId = selectedWorkspace?.id ?? selectedProject?.workspace_id
       const [connectionsData, playersData] = await Promise.all([
         scope === "space" && selectedWorkspace
-          ? listWorkspaceConnections(selectedWorkspace.id)
+          ? listWorkspaceConnections(selectedWorkspace.id, { size: 200 }).then((r) => r.items)
           : scope === "project" && selectedProject
-            ? listProjectConnections(selectedProject.id)
+            ? listProjectConnections(selectedProject.id, { size: 200 }).then((r) => r.items)
             : Promise.resolve([] as Connection[]),
         wsId ? listWorkspacePlayers(wsId) : Promise.resolve([] as WorkspacePlayer[]),
       ])

@@ -64,6 +64,33 @@ class SavedQueryService:
         result = await db.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_for_connection_paginated(
+        self,
+        db: AsyncSession,
+        player_id: UUID,
+        database_type: str,
+        *,
+        page: int,
+        size: int,
+    ) -> tuple[list[SavedQuery], int]:
+        """Versao paginada: retorna (items, total)."""
+        filters = [
+            SavedQuery.player_id == player_id,
+            SavedQuery.database_type == database_type,
+        ]
+        total = await db.scalar(
+            sa.select(sa.func.count()).select_from(SavedQuery).where(*filters)
+        )
+        stmt = (
+            sa.select(SavedQuery)
+            .where(*filters)
+            .order_by(SavedQuery.name, SavedQuery.id)
+            .offset((page - 1) * size)
+            .limit(size)
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all()), int(total or 0)
+
     async def get(self, db: AsyncSession, query_id: UUID) -> SavedQuery | None:
         result = await db.execute(
             sa.select(SavedQuery).where(SavedQuery.id == query_id)

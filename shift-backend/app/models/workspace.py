@@ -51,30 +51,36 @@ class Workspace(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    organization: Mapped["Organization"] = relationship(back_populates="workspaces")
+    organization: Mapped["Organization"] = relationship(back_populates="workspaces", lazy="raise_on_sql")
     projects: Mapped[list["Project"]] = relationship(
         back_populates="workspace",
         cascade="all, delete-orphan",
+        lazy="raise_on_sql",
     )
     members: Mapped[list["WorkspaceMember"]] = relationship(
         back_populates="workspace",
         cascade="all, delete-orphan",
+        lazy="raise_on_sql",
     )
     players: Mapped[list["WorkspacePlayer"]] = relationship(
         back_populates="workspace",
         cascade="all, delete-orphan",
+        lazy="raise_on_sql",
     )
     users: Mapped[list["User"]] = relationship(
         secondary="workspace_members",
         viewonly=True,
+        lazy="raise_on_sql",
     )
     workflows: Mapped[list["Workflow"]] = relationship(
         back_populates="workspace",
         cascade="all, delete-orphan",
+        lazy="raise_on_sql",
     )
     input_models: Mapped[list["InputModel"]] = relationship(
         back_populates="workspace",
         cascade="all, delete-orphan",
+        lazy="raise_on_sql",
     )
 
 
@@ -115,8 +121,8 @@ class WorkspaceMember(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    workspace: Mapped["Workspace"] = relationship(back_populates="members")
-    user: Mapped["User"] = relationship(back_populates="workspace_memberships")
+    workspace: Mapped["Workspace"] = relationship(back_populates="members", lazy="raise_on_sql")
+    user: Mapped["User"] = relationship(back_populates="workspace_memberships", lazy="raise_on_sql")
 
 
 class WorkspacePlayer(Base):
@@ -146,4 +152,4 @@ class WorkspacePlayer(Base):
         nullable=False,
     )
 
-    workspace: Mapped["Workspace"] = relationship(back_populates="players")
+    workspace: Mapped["Workspace"] = relationship(back_populates="players", lazy="raise_on_sql")

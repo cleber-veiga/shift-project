@@ -64,8 +64,8 @@ export function TruncateTableConfig({ data, onUpdate }: TruncateTableConfigProps
   useEffect(() => {
     if (!selectedWorkspace?.id) return
     setConnectionsLoading(true)
-    listWorkspaceConnections(selectedWorkspace.id)
-      .then(setConnections)
+    listWorkspaceConnections(selectedWorkspace.id, { size: 200 })
+      .then((r) => setConnections(r.items))
       .catch(() => setConnections([]))
       .finally(() => setConnectionsLoading(false))
   }, [selectedWorkspace?.id])

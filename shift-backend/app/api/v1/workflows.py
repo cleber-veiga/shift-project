@@ -2,6 +2,8 @@
 Endpoints de execucao e acompanhamento de workflows.
 """
 
+import hashlib
+import json
 from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
@@ -10,21 +12,31 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, sta
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.dependencies import get_db
+from app.api.dependencies import get_db, populate_rate_limit_context
+from app.core.config import settings
+from app.core.rate_limit import limiter, _project_key_func, _user_key_func
 from app.core.security import require_permission
 from sqlalchemy import func as sa_func, select as sa_select
 
-from app.models.workflow import WorkflowExecution, WorkflowNodeExecution
+from app.models.workflow import Workflow, WorkflowExecution, WorkflowExecutionLog, WorkflowNodeExecution
+from app.models.workflow import WorkflowCheckpoint
 from app.schemas.workflow import (
+    CheckpointSummary,
+    CheckpointsResponse,
     ExecuteWorkflowRequest,
+    ExecutionDefinitionResponse,
     ExecutionDetailResponse,
     ExecutionListResponse,
+    ExecutionLogEntry,
+    ExecutionLogsResponse,
     ExecutionResponse,
     ExecutionStatusResponse,
     ExecutionSummaryResponse,
     NodeExecutionResponse,
+    ValidateExecutionResponse,
 )
-from app.services import execution_registry
+from app.orchestration.flows.dynamic_runner import ConcurrencyLimitError, get_concurrency_metrics
+from app.services import checkpoint_service, execution_registry
 from app.services.workflow_service import workflow_service
 from app.services.workflow_test_service import workflow_test_service
 
@@ -33,34 +45,66 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
 
 @router.post(
     "/{workflow_id}/execute",
-    response_model=ExecutionResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
+@limiter.limit(f"{settings.RATE_LIMIT_EXECUTE_USER_MINUTE}/minute", key_func=_user_key_func)
+@limiter.limit(f"{settings.RATE_LIMIT_EXECUTE_USER_HOUR}/hour", key_func=_user_key_func)
+@limiter.limit(f"{settings.RATE_LIMIT_EXECUTE_PROJECT_MINUTE}/minute", key_func=_project_key_func)
+@limiter.limit(f"{settings.RATE_LIMIT_EXECUTE_PROJECT_HOUR}/hour", key_func=_project_key_func)
 async def execute_workflow(
+    request: Request,
     workflow_id: UUID,
     payload: ExecuteWorkflowRequest = Body(default_factory=ExecuteWorkflowRequest),
     db: AsyncSession = Depends(get_db),
     _=Depends(require_permission("workspace", "CONSULTANT")),
-) -> ExecutionResponse:
+    _rl=Depends(populate_rate_limit_context),
+):
     """Submete um workflow para execucao assincrona em background.
 
     O corpo e opcional; quando omitido o workflow roda sem variaveis externas.
     ``variable_values`` mapeia nome da variavel ao valor fornecido pelo
     chamador — obrigatorias sem valor retornam HTTP 400.
+
+    ``run_mode`` controla o escopo da execucao:
+    - ``full``: execucao completa (padrao).
+    - ``preview``: limita cada no de extracao a ``WORKFLOW_PREVIEW_MAX_ROWS``
+      linhas — dry-run para validar transformacoes sem mover o volume real.
+    - ``validate``: valida variaveis + testa conectividade e retorna
+      sincronamente ``ValidateExecutionResponse`` (status 200). Nao cria
+      ``WorkflowExecution`` e nao invoca o runner.
     """
     try:
+        if payload.run_mode == "validate":
+            result = await workflow_service.validate_workflow(
+                db=db,
+                workflow_id=workflow_id,
+                input_data={"variable_values": payload.variable_values},
+            )
+            # validate e sincrono — devolvemos 200 em vez de 202.
+            return result
+
         return await workflow_service.execute_workflow(
             db=db,
             workflow_id=workflow_id,
             input_data={"variable_values": payload.variable_values},
+            retry_from_execution_id=payload.retry_from_execution_id,
+            run_mode=payload.run_mode,
         )
+    except ConcurrencyLimitError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={"Retry-After": "30"},
+        ) from exc
     except ValueError as exc:
         detail = str(exc)
-        http_status = (
-            status.HTTP_400_BAD_REQUEST
-            if "obrigatoria" in detail or "deve ser" in detail
-            else status.HTTP_404_NOT_FOUND
-        )
+        if "escopo autorizado" in detail:
+            # Conexao referenciada pertence a outro projeto/workspace — acesso negado.
+            http_status = status.HTTP_403_FORBIDDEN
+        elif "obrigatoria" in detail or "deve ser" in detail:
+            http_status = status.HTTP_400_BAD_REQUEST
+        else:
+            http_status = status.HTTP_404_NOT_FOUND
         raise HTTPException(status_code=http_status, detail=detail) from exc
 
 
@@ -123,6 +167,22 @@ async def test_workflow(
             "Connection": "keep-alive",
         },
     )
+
+
+@router.get("/concurrency")
+async def get_execution_concurrency(
+    _=Depends(require_permission("workspace", "VIEWER")),
+) -> dict:
+    """Retorna metricas de concorrencia de execucoes nesta instancia.
+
+    Campos:
+    - ``active_executions``: execucoes rodando agora.
+    - ``queued_executions``: requests aguardando slot (em fila).
+    - ``max_concurrent``: limite global (env SHIFT_MAX_CONCURRENT_EXECUTIONS).
+    - ``max_per_project``: limite por projeto (env SHIFT_MAX_CONCURRENT_PER_PROJECT).
+    - ``active_by_project``: mapa project_id -> contagem ativa.
+    """
+    return get_concurrency_metrics()
 
 
 @router.get("/executions/running")
@@ -282,6 +342,7 @@ async def list_workflow_executions(
             WorkflowExecution.started_at,
             WorkflowExecution.completed_at,
             WorkflowExecution.error_message,
+            WorkflowExecution.definition_snapshot_hash,
             sa_func.coalesce(node_count_sq.c.node_count, 0).label("node_count"),
         )
         .select_from(
@@ -322,10 +383,219 @@ async def list_workflow_executions(
                 completed_at=row["completed_at"],
                 node_count=int(row["node_count"] or 0),
                 error_message=row["error_message"],
+                definition_snapshot_hash=row["definition_snapshot_hash"],
             )
         )
 
     return ExecutionListResponse(items=items, total=int(total), page=page, size=size)
+
+
+@router.get(
+    "/executions/{execution_id}/definition",
+    response_model=ExecutionDefinitionResponse,
+)
+async def get_execution_definition(
+    execution_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_permission("workspace", "VIEWER")),
+) -> ExecutionDefinitionResponse:
+    """Retorna o snapshot da definicao do workflow no momento da execucao.
+
+    Permite reconstruir o canvas exatamente como estava quando o workflow
+    foi executado — util para auditar resultados de execucoes antigas apos
+    edicoes no workflow.
+
+    O campo ``definition_diverged`` indica se a definicao atual do workflow
+    divergiu da que foi usada nesta execucao (comparacao de hash SHA-256).
+    """
+    result = await db.execute(
+        sa_select(WorkflowExecution).where(WorkflowExecution.id == execution_id)
+    )
+    execution = result.scalar_one_or_none()
+    if execution is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execucao '{execution_id}' nao encontrada.",
+        )
+
+    # Busca definicao atual do workflow para comparar hash
+    wf_result = await db.execute(
+        sa_select(Workflow.definition).where(Workflow.id == execution.workflow_id)
+    )
+    current_definition = wf_result.scalar_one_or_none()
+    current_hash: str | None = None
+    if current_definition is not None:
+        current_hash = hashlib.sha256(
+            json.dumps(current_definition, sort_keys=True, default=str).encode()
+        ).hexdigest()
+
+    snapshot_hash = execution.definition_snapshot_hash
+    diverged = (
+        snapshot_hash is not None
+        and current_hash is not None
+        and snapshot_hash != current_hash
+    )
+
+    return ExecutionDefinitionResponse(
+        execution_id=execution.id,
+        workflow_id=execution.workflow_id,
+        snapshot=execution.workflow_definition_snapshot,
+        snapshot_hash=snapshot_hash,
+        current_hash=current_hash,
+        definition_diverged=diverged,
+    )
+
+
+@router.get(
+    "/executions/{execution_id}/logs",
+    response_model=ExecutionLogsResponse,
+)
+async def get_execution_logs(
+    execution_id: UUID,
+    level: Optional[str] = Query(
+        None,
+        description="Filtra por nivel: info | warning | error.",
+    ),
+    node_id: Optional[str] = Query(
+        None,
+        description="Filtra logs de um no especifico.",
+    ),
+    limit: int = Query(1000, ge=1, le=5000),
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_permission("workspace", "VIEWER")),
+) -> ExecutionLogsResponse:
+    """Retorna o log estruturado de uma execucao para troubleshooting.
+
+    Uma execucao pode gerar centenas de logs (um por evento do runner).
+    O parametro ``limit`` (default 1000, max 5000) protege contra payloads
+    enormes; ``truncated=true`` indica que ha mais entradas alem do retornado.
+
+    Para download completo em formato texto, use
+    ``GET /executions/{id}/logs/download``.
+    """
+    filters: list[Any] = [WorkflowExecutionLog.execution_id == execution_id]
+    if level:
+        level_lower = level.lower()
+        if level_lower in ("info", "warning", "error"):
+            filters.append(WorkflowExecutionLog.level == level_lower)
+    if node_id:
+        filters.append(WorkflowExecutionLog.node_id == node_id)
+
+    count_stmt = sa_select(sa_func.count()).select_from(WorkflowExecutionLog).where(*filters)
+    total = int((await db.execute(count_stmt)).scalar_one() or 0)
+
+    stmt = (
+        sa_select(WorkflowExecutionLog)
+        .where(*filters)
+        .order_by(WorkflowExecutionLog.timestamp.asc(), WorkflowExecutionLog.id.asc())
+        .limit(limit)
+    )
+    result = await db.execute(stmt)
+    rows = list(result.scalars().all())
+
+    return ExecutionLogsResponse(
+        execution_id=execution_id,
+        entries=[ExecutionLogEntry.model_validate(r) for r in rows],
+        total=total,
+        truncated=total > len(rows),
+    )
+
+
+@router.get("/executions/{execution_id}/logs/download")
+async def download_execution_logs(
+    execution_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_permission("workspace", "VIEWER")),
+) -> StreamingResponse:
+    """Baixa o log completo da execucao em texto plano (uma linha por evento).
+
+    Nao pagina — stream direto do banco para o cliente. Usado pelo frontend
+    no botao "Baixar log" e por ferramentas CLI de diagnostico.
+    """
+    # Verifica que a execucao existe (e que o usuario tem acesso via
+    # permission dependency acima, que valida workspace).
+    exists_stmt = sa_select(WorkflowExecution.id).where(WorkflowExecution.id == execution_id)
+    if (await db.execute(exists_stmt)).scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execucao '{execution_id}' nao encontrada.",
+        )
+
+    async def _text_stream():
+        yield f"# Log de execucao {execution_id}\n"
+        yield f"# Formato: TIMESTAMP  LEVEL  [NODE_ID]  MESSAGE\n\n"
+
+        offset = 0
+        page_size = 500
+        while True:
+            page_stmt = (
+                sa_select(WorkflowExecutionLog)
+                .where(WorkflowExecutionLog.execution_id == execution_id)
+                .order_by(WorkflowExecutionLog.timestamp.asc(), WorkflowExecutionLog.id.asc())
+                .offset(offset)
+                .limit(page_size)
+            )
+            result = await db.execute(page_stmt)
+            batch = list(result.scalars().all())
+            if not batch:
+                break
+            for entry in batch:
+                ts = entry.timestamp.isoformat() if entry.timestamp else "-"
+                node_ref = f"[{entry.node_id}]" if entry.node_id else "[-]"
+                yield f"{ts}  {entry.level.upper():<7}  {node_ref}  {entry.message}\n"
+            if len(batch) < page_size:
+                break
+            offset += page_size
+
+    return StreamingResponse(
+        _text_stream(),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="execution-{execution_id}.log"',
+        },
+    )
+
+
+@router.get(
+    "/executions/{execution_id}/checkpoints",
+    response_model=CheckpointsResponse,
+)
+async def get_execution_checkpoints(
+    execution_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_permission("workspace", "VIEWER")),
+) -> CheckpointsResponse:
+    """Lista checkpoints disponiveis para retomada de execucao falhada.
+
+    Retorna os nos que completaram com sucesso e foram checkpointed,
+    junto com o flag ``resumable`` que indica se ha ao menos um checkpoint
+    valido (nao expirado, arquivo DuckDB presente).
+    """
+    from datetime import datetime, timezone
+
+    result = await db.execute(
+        sa_select(WorkflowCheckpoint).where(
+            WorkflowCheckpoint.source_execution_id == execution_id
+        )
+    )
+    records = list(result.scalars().all())
+    now = datetime.now(timezone.utc)
+    valid_nodes = await checkpoint_service.load_checkpoints(execution_id)
+
+    checkpoints = [
+        CheckpointSummary(
+            node_id=r.node_id,
+            created_at=r.created_at,
+            expires_at=r.expires_at,
+            used_by_execution_id=r.used_by_execution_id,
+        )
+        for r in records
+    ]
+    return CheckpointsResponse(
+        source_execution_id=execution_id,
+        checkpoints=checkpoints,
+        resumable=bool(valid_nodes),
+    )
 
 
 @router.delete(

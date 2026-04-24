@@ -24,7 +24,8 @@ const DEFAULT_FILTERS: ExecutionFilterValues = {
 }
 
 const PAGE_SIZE = 20
-const AUTO_REFRESH_MS = 5000
+const AUTO_REFRESH_BASE_MS = 10_000
+const AUTO_REFRESH_MAX_MS = 60_000
 
 function toIsoOrUndef(local: string): string | undefined {
   if (!local) return undefined
@@ -50,10 +51,10 @@ export function ExecutionsTab({ workflowId, active }: ExecutionsTabProps) {
   // Evita corrida: a ultima request com request_id atual vence.
   const requestSeq = useRef(0)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<boolean> => {
     if (workflowId === "new") {
       setData({ items: [], total: 0, page: 1, size: PAGE_SIZE })
-      return
+      return true
     }
     const myId = ++requestSeq.current
     setLoading(true)
@@ -69,10 +70,12 @@ export function ExecutionsTab({ workflowId, active }: ExecutionsTabProps) {
         size: PAGE_SIZE,
       })
       if (requestSeq.current === myId) setData(resp)
+      return true
     } catch (e) {
       if (requestSeq.current === myId) {
         setError(e instanceof Error ? e.message : "Falha ao listar execuções.")
       }
+      return false
     } finally {
       if (requestSeq.current === myId) setLoading(false)
     }
@@ -83,12 +86,57 @@ export function ExecutionsTab({ workflowId, active }: ExecutionsTabProps) {
     void load()
   }, [active, load])
 
+  // Auto-refresh com:
+  //  • pausa quando a aba nao esta visivel (retoma imediatamente ao voltar);
+  //  • backoff exponencial em falha (base 10s → 60s), reseta apos sucesso.
+  // Usa setTimeout recursivo (nao setInterval) para poder variar o delay.
   useEffect(() => {
     if (!active || !autoRefresh) return
-    const id = window.setInterval(() => {
-      void load()
-    }, AUTO_REFRESH_MS)
-    return () => window.clearInterval(id)
+
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let currentDelay = AUTO_REFRESH_BASE_MS
+
+    const tick = async () => {
+      if (cancelled) return
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        // pausado — visibilitychange cuida de retomar
+        return
+      }
+      const ok = await load()
+      if (cancelled) return
+      // Revalida visibilidade pos-await: se a aba virou hidden durante
+      // o load, nao reagendamos — o listener de visibilitychange reinicia
+      // quando voltar a ficar visivel.
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        timer = null
+        return
+      }
+      currentDelay = ok
+        ? AUTO_REFRESH_BASE_MS
+        : Math.min(currentDelay * 2, AUTO_REFRESH_MAX_MS)
+      timer = setTimeout(tick, currentDelay)
+    }
+
+    const handleVisibility = () => {
+      if (cancelled) return
+      if (document.visibilityState === "visible") {
+        if (timer) clearTimeout(timer)
+        void tick()
+      } else if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+    }
+
+    timer = setTimeout(tick, currentDelay)
+    document.addEventListener("visibilitychange", handleVisibility)
+
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+      document.removeEventListener("visibilitychange", handleVisibility)
+    }
   }, [active, autoRefresh, load])
 
   const handleFilterChange = (patch: Partial<ExecutionFilterValues>) => {
@@ -107,6 +155,11 @@ export function ExecutionsTab({ workflowId, active }: ExecutionsTabProps) {
   }
 
   const handleCancelled = () => {
+    void load()
+  }
+
+  const handleRetried = (newExecutionId: string) => {
+    setSelectedId(newExecutionId)
     void load()
   }
 
@@ -139,8 +192,10 @@ export function ExecutionsTab({ workflowId, active }: ExecutionsTabProps) {
         />
         <ExecutionsDetail
           executionId={selectedId}
+          workflowId={workflowId}
           onDeleted={handleDeleted}
           onCancelled={handleCancelled}
+          onRetried={handleRetried}
         />
       </div>
     </div>

@@ -14,6 +14,7 @@ from app.core.security import authorization_service, require_permission
 from app.models import Project, User
 from app.schemas.connection import (
     ConnectionCreate,
+    ConnectionListResponse,
     ConnectionResponse,
     ConnectionUpdate,
     TestConnectionResult,
@@ -93,24 +94,36 @@ def _require_connection_owner_permission(
     return dependency
 
 
-@router.get("/connections", response_model=list[ConnectionResponse])
+@router.get("/connections", response_model=ConnectionListResponse)
 async def list_connections(
     workspace_id: UUID = Query(...),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    size: int = Query(50, ge=1, le=200),
     _=Depends(require_permission("workspace", "VIEWER")),
-) -> list[ConnectionResponse]:
+) -> ConnectionListResponse:
     """Lista conectores do workspace visiveis ao usuario (publicos ou criados por ele)."""
-    return await connection_service.list(db, workspace_id, current_user.id)
+    items, total = await connection_service.list_paginated(
+        db, workspace_id, current_user.id, page=page, size=size
+    )
+    return ConnectionListResponse(
+        items=[ConnectionResponse.model_validate(c) for c in items],
+        total=total,
+        page=page,
+        size=size,
+    )
 
 
-@router.get("/projects/{project_id}/connections", response_model=list[ConnectionResponse])
+@router.get("/projects/{project_id}/connections", response_model=ConnectionListResponse)
 async def list_project_connections(
     project_id: UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    page: int = Query(1, ge=1),
+    size: int = Query(50, ge=1, le=200),
     _=Depends(require_permission("project", "CLIENT")),
-) -> list[ConnectionResponse]:
+) -> ConnectionListResponse:
     """Lista conexoes visiveis ao usuario no projeto e no workspace pai."""
     workspace_id = await db.scalar(
         select(Project.workspace_id).where(Project.id == project_id)
@@ -120,7 +133,15 @@ async def list_project_connections(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Projeto nao encontrado.",
         )
-    return await connection_service.list_for_project(db, project_id, workspace_id, current_user.id)
+    items, total = await connection_service.list_for_project_paginated(
+        db, project_id, workspace_id, current_user.id, page=page, size=size
+    )
+    return ConnectionListResponse(
+        items=[ConnectionResponse.model_validate(c) for c in items],
+        total=total,
+        page=page,
+        size=size,
+    )
 
 
 @router.post("/connections", response_model=ConnectionResponse, status_code=status.HTTP_201_CREATED)

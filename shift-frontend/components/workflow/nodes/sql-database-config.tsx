@@ -68,8 +68,8 @@ export function SqlDatabaseConfig({ data, onUpdate }: SqlDatabaseConfigProps) {
   useEffect(() => {
     if (!selectedWorkspace?.id) return
     setConnectionsLoading(true)
-    listWorkspaceConnections(selectedWorkspace.id)
-      .then(setConnections)
+    listWorkspaceConnections(selectedWorkspace.id, { size: 200 })
+      .then((r) => setConnections(r.items))
       .catch(() => setConnections([]))
       .finally(() => setConnectionsLoading(false))
   }, [selectedWorkspace?.id])
@@ -81,8 +81,8 @@ export function SqlDatabaseConfig({ data, onUpdate }: SqlDatabaseConfigProps) {
       return
     }
     setQueriesLoading(true)
-    listSavedQueries(selectedConnectionId)
-      .then(setSavedQueries)
+    listSavedQueries(selectedConnectionId, { size: 200 })
+      .then((r) => setSavedQueries(r.items))
       .catch(() => setSavedQueries([]))
       .finally(() => setQueriesLoading(false))
   }, [selectedConnectionId])

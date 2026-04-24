@@ -901,20 +901,43 @@ export async function lookupCep(cep: string): Promise<CEPLookup> {
 
 // ─── Conexões ─────────────────────────────────────────────────────────────────
 
+export interface PaginatedResponse<T> {
+  items: T[]
+  total: number
+  page: number
+  size: number
+}
+
+export interface ListOptions {
+  page?: number
+  size?: number
+}
+
+function buildPageQuery(opts?: ListOptions, separator: "?" | "&" = "&"): string {
+  if (!opts || (opts.page === undefined && opts.size === undefined)) return ""
+  const params = new URLSearchParams()
+  if (opts.page !== undefined) params.set("page", String(opts.page))
+  if (opts.size !== undefined) params.set("size", String(opts.size))
+  const qs = params.toString()
+  return qs ? `${separator}${qs}` : ""
+}
+
 export async function listWorkspaceConnections(
-  workspaceId: string
-): Promise<Connection[]> {
-  return authorizedRequest<Connection[]>(
-    `/connections?workspace_id=${workspaceId}`,
+  workspaceId: string,
+  opts?: ListOptions
+): Promise<PaginatedResponse<Connection>> {
+  return authorizedRequest<PaginatedResponse<Connection>>(
+    `/connections?workspace_id=${workspaceId}${buildPageQuery(opts, "&")}`,
     { method: "GET" }
   )
 }
 
 export async function listProjectConnections(
-  projectId: string
-): Promise<Connection[]> {
-  return authorizedRequest<Connection[]>(
-    `/projects/${projectId}/connections`,
+  projectId: string,
+  opts?: ListOptions
+): Promise<PaginatedResponse<Connection>> {
+  return authorizedRequest<PaginatedResponse<Connection>>(
+    `/projects/${projectId}/connections${buildPageQuery(opts, "?")}`,
     { method: "GET" }
   )
 }
@@ -1228,9 +1251,12 @@ export type SavedQuery = {
   updated_at: string
 }
 
-export async function listSavedQueries(connectionId: string): Promise<SavedQuery[]> {
-  return authorizedRequest<SavedQuery[]>(
-    `/connections/${connectionId}/saved-queries`,
+export async function listSavedQueries(
+  connectionId: string,
+  opts?: ListOptions
+): Promise<PaginatedResponse<SavedQuery>> {
+  return authorizedRequest<PaginatedResponse<SavedQuery>>(
+    `/connections/${connectionId}/saved-queries${buildPageQuery(opts, "?")}`,
     { method: "GET" }
   )
 }
@@ -1531,28 +1557,31 @@ export async function createWorkflow(
 }
 
 export async function listProjectWorkflows(
-  projectId: string
-): Promise<Workflow[]> {
-  return authorizedRequest<Workflow[]>(
-    `/projects/${projectId}/workflows`,
+  projectId: string,
+  opts?: ListOptions
+): Promise<PaginatedResponse<Workflow>> {
+  return authorizedRequest<PaginatedResponse<Workflow>>(
+    `/projects/${projectId}/workflows${buildPageQuery(opts, "?")}`,
     { method: "GET" }
   )
 }
 
 export async function listWorkspaceWorkflows(
-  workspaceId: string
-): Promise<Workflow[]> {
-  return authorizedRequest<Workflow[]>(
-    `/workspaces/${workspaceId}/workflows`,
+  workspaceId: string,
+  opts?: ListOptions
+): Promise<PaginatedResponse<Workflow>> {
+  return authorizedRequest<PaginatedResponse<Workflow>>(
+    `/workspaces/${workspaceId}/workflows${buildPageQuery(opts, "?")}`,
     { method: "GET" }
   )
 }
 
 export async function listWorkspaceTemplates(
-  workspaceId: string
-): Promise<Workflow[]> {
-  return authorizedRequest<Workflow[]>(
-    `/workspaces/${workspaceId}/templates`,
+  workspaceId: string,
+  opts?: ListOptions
+): Promise<PaginatedResponse<Workflow>> {
+  return authorizedRequest<PaginatedResponse<Workflow>>(
+    `/workspaces/${workspaceId}/templates${buildPageQuery(opts, "?")}`,
     { method: "GET" }
   )
 }

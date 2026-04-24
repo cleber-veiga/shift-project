@@ -53,9 +53,10 @@ class InputModel(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    workspace: Mapped["Workspace"] = relationship(back_populates="input_models")
+    workspace: Mapped["Workspace"] = relationship(back_populates="input_models", lazy="raise_on_sql")
     rows: Mapped[list["InputModelRow"]] = relationship(
         back_populates="input_model",
         cascade="all, delete-orphan",
         order_by="InputModelRow.row_order",
+        lazy="raise_on_sql",
     )

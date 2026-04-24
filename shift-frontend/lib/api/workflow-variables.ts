@@ -47,6 +47,28 @@ export async function getVariablesSchema(workflowId: string): Promise<VariablesS
   )
 }
 
+export type WorkflowRunMode = "full" | "preview" | "validate"
+
+export interface ExecuteWorkflowOptions {
+  variableValues?: Record<string, unknown>
+  retryFromExecutionId?: string
+  runMode?: WorkflowRunMode
+}
+
+export interface ValidateConnectionResult {
+  connection_id: string
+  name: string
+  ok: boolean
+  error: string | null
+}
+
+export interface ValidateExecutionResponse {
+  ok: boolean
+  connections: ValidateConnectionResult[]
+  missing_variables: string[]
+  errors: string[]
+}
+
 export async function executeWorkflowWithVars(
   workflowId: string,
   variableValues: Record<string, unknown>,
@@ -56,6 +78,34 @@ export async function executeWorkflowWithVars(
     {
       method: "POST",
       body: JSON.stringify({ variable_values: variableValues }),
+    },
+  )
+}
+
+/**
+ * Dispara uma execucao com controle de ``run_mode`` e retry.
+ *
+ * - ``run_mode=validate`` e sincrono: retorna ``ValidateExecutionResponse``.
+ * - ``run_mode=preview|full`` retorna ``{ execution_id }`` (202).
+ */
+export async function executeWorkflow(
+  workflowId: string,
+  options: ExecuteWorkflowOptions = {},
+): Promise<{ execution_id: string } | ValidateExecutionResponse> {
+  const body: Record<string, unknown> = {
+    variable_values: options.variableValues ?? {},
+  }
+  if (options.retryFromExecutionId) {
+    body.retry_from_execution_id = options.retryFromExecutionId
+  }
+  if (options.runMode) {
+    body.run_mode = options.runMode
+  }
+  return authorizedRequest(
+    `/workflows/${workflowId}/execute`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
     },
   )
 }

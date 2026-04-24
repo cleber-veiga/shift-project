@@ -47,8 +47,11 @@ from app.services import webhook_service
 from app.services.agent.graph.checkpointer import close_checkpointer
 from app.services.agent.safety.expiration_job import register_agent_expiration_job
 from app.core.config import settings
-from app.services.scheduler_service import bootstrap_schedules, scheduler
+from app.services.scheduler_service import bootstrap_schedules, register_checkpoint_cleanup_job, register_extract_cache_cleanup_job, register_storage_cleanup_job, scheduler
 from app.services.workflow_service import cleanup_orphaned_executions
+from app.api.v1.admin_storage import router as admin_storage_router
+from app.api.v1.extract_cache import router as extract_cache_router
+from app.services.memory_monitor import start_memory_monitor, stop_memory_monitor
 
 logger = get_logger(__name__)
 
@@ -86,6 +89,9 @@ async def lifespan(app: FastAPI):
     await cleanup_orphaned_executions()
     scheduler.start()
     await bootstrap_schedules()
+    register_storage_cleanup_job()
+    register_checkpoint_cleanup_job()
+    register_extract_cache_cleanup_job()
     if settings.AGENT_ENABLED:
         register_agent_expiration_job(
             scheduler,
@@ -97,6 +103,7 @@ async def lifespan(app: FastAPI):
     cleanup_task = asyncio.create_task(
         _build_session_cleanup_loop(), name="build-session-cleanup"
     )
+    start_memory_monitor()
     logger.info("scheduler.started")
     try:
         yield
@@ -107,6 +114,7 @@ async def lifespan(app: FastAPI):
         cleanup_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await cleanup_task
+        await stop_memory_monitor()
         scheduler.shutdown(wait=True)
         logger.info("scheduler.stopped")
         await close_checkpointer()
@@ -182,6 +190,8 @@ app.include_router(ai_chat_router, prefix="/api/v1")
 app.include_router(input_models_router, prefix="/api/v1")
 app.include_router(input_model_rows_router, prefix="/api/v1")
 app.include_router(invitations_router, prefix="/api/v1")
+app.include_router(admin_storage_router, prefix="/api/v1")
+app.include_router(extract_cache_router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["sistema"])

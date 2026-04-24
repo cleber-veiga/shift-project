@@ -24,12 +24,17 @@ uma unica vez ao fechar — consumindo apenas ~1 batch de RAM por vez.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 import tempfile
 from typing import Any
 from uuid import uuid4
 
 import duckdb
+
+from app.core.logging import get_logger
+
+_logger = get_logger(__name__)
 
 
 DuckDbReference = dict[str, Any]
@@ -275,6 +280,29 @@ def build_input_database_path(execution_id: str, node_id: str) -> Path:
     sem passar por ``ensure_duckdb_reference``.
     """
     return _build_duckdb_path(execution_id, node_id)
+
+
+def cleanup_execution_storage(execution_id: str) -> None:
+    """Remove o diretorio temporario de uma execucao (/tmp/shift/executions/{id}/).
+
+    Chamado pelo dynamic_runner no finally apos qualquer status final.
+    Nunca levanta excecao — falhas sao logadas como warning.
+    """
+    base_dir = Path(tempfile.gettempdir()) / "shift" / "executions" / execution_id
+    try:
+        if base_dir.exists():
+            shutil.rmtree(base_dir)
+            _logger.info(
+                "storage.cleanup.removed",
+                execution_id=execution_id,
+                path=str(base_dir),
+            )
+    except Exception as exc:  # noqa: BLE001
+        _logger.warning(
+            "storage.cleanup.failed",
+            execution_id=execution_id,
+            error=str(exc),
+        )
 
 
 def _build_duckdb_path(execution_id: str, node_id: str) -> Path:

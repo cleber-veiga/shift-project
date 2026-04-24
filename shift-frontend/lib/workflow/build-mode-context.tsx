@@ -120,7 +120,7 @@ export function BuildModeProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null)
   const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const confirmSseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const heartbeatRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const workflowIdRef = useRef<string | null>(null)
   // Preserved after exitBuildMode so undoBuild can still reference the confirmed session.
@@ -445,13 +445,21 @@ export function BuildModeProvider({ children }: { children: ReactNode }) {
     return () => document.removeEventListener("keydown", handleKeyDown)
   }, [buildState, pendingNodes.length, cancelBuild])
 
-  // Heartbeat: ping every 10s while in build/awaiting state
+  // Heartbeat: ping a cada 10s enquanto em build/awaiting. Pausa quando a aba
+  // nao esta visivel (nao adianta manter sessao viva com usuario ausente — o
+  // backend expira naturalmente) e retoma com um ping imediato ao voltar.
   useEffect(() => {
     if (buildState === "idle") {
-      if (heartbeatRef.current) clearInterval(heartbeatRef.current)
+      if (heartbeatRef.current) {
+        clearTimeout(heartbeatRef.current)
+        heartbeatRef.current = null
+      }
       return
     }
-    heartbeatRef.current = setInterval(async () => {
+
+    let cancelled = false
+
+    const sendHeartbeat = async () => {
       const sid = sessionIdRef.current
       const wid = workflowIdRef.current
       if (!sid || !wid) return
@@ -460,9 +468,39 @@ export function BuildModeProvider({ children }: { children: ReactNode }) {
       } catch {
         // heartbeat failures are non-fatal; backend will eventually clean up
       }
-    }, 10_000)
+    }
+
+    const tick = async () => {
+      if (cancelled) return
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return
+      }
+      await sendHeartbeat()
+      if (cancelled) return
+      heartbeatRef.current = setTimeout(tick, 10_000)
+    }
+
+    const handleVisibility = () => {
+      if (cancelled) return
+      if (document.visibilityState === "visible") {
+        if (heartbeatRef.current) clearTimeout(heartbeatRef.current)
+        void tick()
+      } else if (heartbeatRef.current) {
+        clearTimeout(heartbeatRef.current)
+        heartbeatRef.current = null
+      }
+    }
+
+    heartbeatRef.current = setTimeout(tick, 10_000)
+    document.addEventListener("visibilitychange", handleVisibility)
+
     return () => {
-      if (heartbeatRef.current) clearInterval(heartbeatRef.current)
+      cancelled = true
+      if (heartbeatRef.current) {
+        clearTimeout(heartbeatRef.current)
+        heartbeatRef.current = null
+      }
+      document.removeEventListener("visibilitychange", handleVisibility)
     }
   }, [buildState])
 

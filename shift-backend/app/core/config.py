@@ -50,6 +50,46 @@ class Settings(BaseSettings):
     FRONTEND_BASE_URL: str = "http://localhost:3000"
     INVITATION_EXPIRE_DAYS: int = 7
 
+    # --- Checkpoints de execucao ---
+    # Diretorio persistente onde arquivos DuckDB de nos com checkpoint_enabled
+    # sao copiados para sobreviver a limpeza de /tmp.
+    # ATENCAO: o default e relativo ao CWD do processo (``./shift_data/checkpoints``).
+    # Em producao DEVE apontar para um volume persistente externo (ex:
+    # ``/var/lib/shift/checkpoints`` ou um volume montado em container).
+    # NUNCA use ``/tmp/...`` em producao: reboots, politica de tmpfiles e
+    # limite de disco do tmpfs podem destruir checkpoints.
+    SHIFT_CHECKPOINT_DIR: str = "shift_data/checkpoints"
+    # Tempo de expiracao de checkpoints em dias (0 = nao expira).
+    SHIFT_CHECKPOINT_EXPIRE_DAYS: int = 7
+
+    # --- Limites de execucao ---
+    # Timeout global por execucao em segundos (0 = sem limite).
+    WORKFLOW_DEFAULT_MAX_EXECUTION_TIME_SECONDS: int = 3600
+    # Maximo de linhas extraidas por no (sql_database, csv_input, excel_input, api_input).
+    EXTRACT_DEFAULT_MAX_ROWS: int = 10_000_000
+    # Limite injetado em nos de extracao quando ``run_mode=preview`` — permite
+    # ao consultor validar o pipeline sem mover o volume todo.
+    WORKFLOW_PREVIEW_MAX_ROWS: int = 100
+    # Monitor de RAM: cancela a execucao mais antiga ao ultrapassar este limite (MB).
+    SHIFT_MAX_EXECUTION_MEMORY_MB: int = 4096
+    # Monitor de disco: bloqueia novas execucoes quando /tmp/shift superar este limite (GB).
+    SHIFT_MAX_DISK_GB: int = 20
+
+    # --- Rate limiting de execucoes (Sprint 4.2) ---
+    # Limites por usuario autenticado (decoded do JWT, sem DB lookup).
+    RATE_LIMIT_EXECUTE_USER_MINUTE: int = 30
+    RATE_LIMIT_EXECUTE_USER_HOUR: int = 500
+    # Limites por projeto (workflow_id -> project_id resolvido em cache em memoria).
+    RATE_LIMIT_EXECUTE_PROJECT_MINUTE: int = 100
+    RATE_LIMIT_EXECUTE_PROJECT_HOUR: int = 2000
+
+    # --- Cache de extracoes (Sprint 4.4) ---
+    # Diretorio persistente para DuckDB de entradas em cache.
+    # ATENCAO: nao use /tmp — deve sobreviver a restarts.
+    SHIFT_EXTRACT_CACHE_DIR: str = "shift_data/extract_cache"
+    # TTL padrao em segundos para entradas de cache quando nao configurado no no.
+    SHIFT_EXTRACT_CACHE_DEFAULT_TTL_SECONDS: int = 300
+
     # --- Webhooks ---
     # URL publica do backend usada para montar as URLs de webhook exibidas
     # na UI. Em desenvolvimento, usa-se tipicamente http://localhost:8000.

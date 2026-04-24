@@ -41,3 +41,12 @@ class SavedQueryResponse(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class SavedQueryListResponse(BaseModel):
+    """Resposta paginada de consultas salvas."""
+
+    items: list[SavedQueryResponse]
+    total: int
+    page: int
+    size: int

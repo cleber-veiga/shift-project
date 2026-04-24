@@ -40,14 +40,17 @@ class Organization(Base):
     workspaces: Mapped[list["Workspace"]] = relationship(
         back_populates="organization",
         cascade="all, delete-orphan",
+        lazy="raise_on_sql",
     )
     members: Mapped[list["OrganizationMember"]] = relationship(
         back_populates="organization",
         cascade="all, delete-orphan",
+        lazy="raise_on_sql",
     )
     economic_groups: Mapped[list["EconomicGroup"]] = relationship(
         back_populates="organization",
         cascade="all, delete-orphan",
+        lazy="raise_on_sql",
     )
 
 
@@ -88,8 +91,8 @@ class OrganizationMember(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    organization: Mapped["Organization"] = relationship(back_populates="members")
-    user: Mapped["User"] = relationship(back_populates="organization_memberships")
+    organization: Mapped["Organization"] = relationship(back_populates="members", lazy="raise_on_sql")
+    user: Mapped["User"] = relationship(back_populates="organization_memberships", lazy="raise_on_sql")
 
 
 class EconomicGroup(Base):
@@ -124,10 +127,11 @@ class EconomicGroup(Base):
         nullable=False,
     )
 
-    organization: Mapped["Organization"] = relationship(back_populates="economic_groups")
+    organization: Mapped["Organization"] = relationship(back_populates="economic_groups", lazy="raise_on_sql")
     establishments: Mapped[list["Establishment"]] = relationship(
         back_populates="economic_group",
         cascade="all, delete-orphan",
+        lazy="raise_on_sql",
     )
 
 
@@ -171,4 +175,4 @@ class Establishment(Base):
         nullable=False,
     )
 
-    economic_group: Mapped["EconomicGroup"] = relationship(back_populates="establishments")
+    economic_group: Mapped["EconomicGroup"] = relationship(back_populates="establishments", lazy="raise_on_sql")

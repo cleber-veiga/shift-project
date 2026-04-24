@@ -77,12 +77,12 @@ export function CloneTemplateModal({
     setLoadingData(true)
     Promise.all([
       listWorkspaceProjects(workspaceId),
-      listWorkspaceConnections(workspaceId),
+      listWorkspaceConnections(workspaceId, { size: 200 }),
     ])
       .then(([projs, conns]) => {
         if (cancelled) return
         setProjects(projs)
-        setConnections(conns)
+        setConnections(conns.items)
         if (projs.length === 1) setTargetProjectId(projs[0].id)
       })
       .catch(() => {

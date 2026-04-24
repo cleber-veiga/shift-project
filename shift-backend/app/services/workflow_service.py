@@ -4,6 +4,8 @@ Servico de workflows: dispatch local via asyncio e consulta de status.
 
 import asyncio
 import copy
+import hashlib
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -12,11 +14,20 @@ from uuid import UUID
 from sqlalchemy import func as sa_func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.logging import bind_context, get_logger
+from app.services import checkpoint_service
+from app.services.execution_log_service import ExecutionLogBuffer
 from app.db.session import async_session_factory
 from app.models import Project
 from app.models.workflow import Workflow, WorkflowExecution, WorkflowNodeExecution
-from app.orchestration.flows.dynamic_runner import EventSink, run_workflow
+from app.orchestration.flows.dynamic_runner import (
+    ConcurrencyLimitError,
+    EventSink,
+    acquire_execution_slot,
+    release_execution_slot,
+    run_workflow,
+)
 from app.schemas.workflow import ExecutionResponse, ExecutionStatusResponse
 from app.services import execution_registry
 from app.services.connection_service import connection_service
@@ -312,6 +323,8 @@ class WorkflowExecutionService:
         mode: str | None = None,
         wait: bool = False,
         target_node_id: str | None = None,
+        retry_from_execution_id: UUID | None = None,
+        run_mode: str = "full",
     ) -> ExecutionResponse:
         """Unico entrypoint de execucao de workflow deste servico.
 
@@ -360,105 +373,140 @@ class WorkflowExecutionService:
                 f"Projeto associado ao workflow '{workflow_id}' nao encontrado."
             )
 
-        # --- Resolucao de variaveis do workflow ---
-        var_decls: list[dict[str, Any]] = workflow.definition.get("variables", [])
-        variable_values_raw: dict[str, Any] = {}
-        if isinstance(input_data, dict):
-            variable_values_raw = input_data.get("variable_values") or {}
+        # --- Limite de concorrencia ---
+        # Adquire slot apos saber o project_id — levanta ConcurrencyLimitError
+        # se nenhum slot liberar dentro de SHIFT_EXECUTION_QUEUE_TIMEOUT segundos.
+        project_id_str = str(workflow.project_id) if workflow.project_id else None
+        await acquire_execution_slot(project_id_str)
 
-        referenced_names = _collect_referenced_var_names(workflow.definition)
+        # Slot adquirido. Deve ser liberado em TODOS os caminhos de saida.
+        # Para wait=False o slot e transferido para a background task.
+        _release_slot_here = True
+        try:
+            # --- Resolucao de variaveis do workflow ---
+            var_decls: list[dict[str, Any]] = workflow.definition.get("variables", [])
+            variable_values_raw: dict[str, Any] = {}
+            if isinstance(input_data, dict):
+                variable_values_raw = input_data.get("variable_values") or {}
 
-        # Agrega variaveis herdadas de sub-workflows (nos call_workflow).
-        # O valor submetido pelo usuario no formulario de execucao fica em
-        # ``variable_values_raw`` junto com as do pai; a resolucao trata
-        # ambos igualmente. Ja no runtime, quem entra no contexto via
-        # ``context['vars']`` serve de fonte para o auto-forward do
-        # ``CallWorkflowProcessor`` em cada sub-chamada.
-        parent_names = {
-            d.get("name") for d in var_decls if isinstance(d, dict) and d.get("name")
-        }
-        inherited_decls, inherited_names = await _collect_inherited_var_decls(
-            db, workflow.definition, parent_names=parent_names
-        )
-        full_var_decls = list(var_decls) + list(inherited_decls)
-        full_referenced = referenced_names | inherited_names
+            referenced_names = _collect_referenced_var_names(workflow.definition)
 
-        resolved_vars = await _validate_and_resolve_variables(
-            var_decls=full_var_decls,
-            variable_values=variable_values_raw,
-            referenced_names=full_referenced,
-        )
-
-        # Substitui {{vars.X}} na definicao antes de resolver conexoes e de
-        # passar para o runner — garante que connection_id com template se
-        # torna UUID real para _inject_connection_string.
-        definition_for_exec = _substitute_vars_in_definition(
-            workflow.definition, resolved_vars
-        )
-
-        resolved_connections = await connection_service.resolve_for_workflow(
-            db,
-            definition_for_exec,
-            project_id=workflow.project_id,
-            workspace_id=workspace_id,
-        )
-
-        effective_mode = mode or (
-            "production" if workflow.status == "published" else "test"
-        )
-
-        # Mascara segredos antes de persistir em input_data (secrets nao ficam em claro no DB)
-        secret_names = {
-            d.get("name") for d in var_decls if isinstance(d, dict) and d.get("type") == "secret"
-        }
-        masked_vars: dict[str, Any] = {
-            k: "***" if k in secret_names else v for k, v in resolved_vars.items()
-        }
-
-        execution = WorkflowExecution(
-            workflow_id=workflow.id,
-            status="RUNNING",
-            triggered_by=triggered_by,
-            started_at=datetime.now(timezone.utc),
-            input_data={"variable_values": masked_vars} if masked_vars else None,
-        )
-        db.add(execution)
-        await db.flush()
-
-        # Captura dados antes de liberar a sessao — a execucao roda em background
-        # (ou inline) e abre sua propria sessao para persistir o resultado.
-        execution_id = execution.id
-        exec_status = execution.status
-        await db.commit()
-
-        run_coro = self._run_and_persist(
-            execution_id=execution_id,
-            workflow_id=workflow.id,
-            workflow_definition=definition_for_exec,
-            triggered_by=triggered_by,
-            input_data=input_data or {},
-            resolved_connections=resolved_connections,
-            variable_values=resolved_vars,
-            event_sink=event_sink,
-            mode=effective_mode,
-            target_node_id=target_node_id,
-        )
-
-        if wait:
-            # Roda inline — quem chamou (SSE) ja esta consumindo eventos
-            # em paralelo via event_sink/queue.
-            await run_coro
-        else:
-            task = asyncio.create_task(
-                run_coro,
-                name=f"workflow-execution-{execution_id}",
+            # Agrega variaveis herdadas de sub-workflows (nos call_workflow).
+            # O valor submetido pelo usuario no formulario de execucao fica em
+            # ``variable_values_raw`` junto com as do pai; a resolucao trata
+            # ambos igualmente. Ja no runtime, quem entra no contexto via
+            # ``context['vars']`` serve de fonte para o auto-forward do
+            # ``CallWorkflowProcessor`` em cada sub-chamada.
+            parent_names = {
+                d.get("name") for d in var_decls if isinstance(d, dict) and d.get("name")
+            }
+            inherited_decls, inherited_names = await _collect_inherited_var_decls(
+                db, workflow.definition, parent_names=parent_names
             )
-            await execution_registry.register(execution_id, task)
+            full_var_decls = list(var_decls) + list(inherited_decls)
+            full_referenced = referenced_names | inherited_names
 
-        return ExecutionResponse(
-            execution_id=execution_id,
-            status=exec_status,
-        )
+            resolved_vars = await _validate_and_resolve_variables(
+                var_decls=full_var_decls,
+                variable_values=variable_values_raw,
+                referenced_names=full_referenced,
+            )
+
+            # Substitui {{vars.X}} na definicao antes de resolver conexoes e de
+            # passar para o runner — garante que connection_id com template se
+            # torna UUID real para _inject_connection_string.
+            definition_for_exec = _substitute_vars_in_definition(
+                workflow.definition, resolved_vars
+            )
+
+            resolved_connections = await connection_service.resolve_for_workflow(
+                db,
+                definition_for_exec,
+                project_id=workflow.project_id,
+                workspace_id=workspace_id,
+            )
+
+            effective_mode = mode or (
+                "production" if workflow.status == "published" else "test"
+            )
+
+            # Mascara segredos antes de persistir em input_data (secrets nao ficam em claro no DB)
+            secret_names = {
+                d.get("name") for d in var_decls if isinstance(d, dict) and d.get("type") == "secret"
+            }
+            masked_vars: dict[str, Any] = {
+                k: "***" if k in secret_names else v for k, v in resolved_vars.items()
+            }
+
+            _snapshot_hash = hashlib.sha256(
+                json.dumps(definition_for_exec, sort_keys=True, default=str).encode()
+            ).hexdigest()
+
+            execution = WorkflowExecution(
+                workflow_id=workflow.id,
+                status="RUNNING",
+                triggered_by=triggered_by,
+                started_at=datetime.now(timezone.utc),
+                input_data={"variable_values": masked_vars} if masked_vars else None,
+                workflow_definition_snapshot=definition_for_exec,
+                definition_snapshot_hash=_snapshot_hash,
+            )
+            db.add(execution)
+            await db.flush()
+
+            # Captura dados antes de liberar a sessao — a execucao roda em background
+            # (ou inline) e abre sua propria sessao para persistir o resultado.
+            execution_id = execution.id
+            exec_status = execution.status
+            await db.commit()
+
+            # Lê timeout da definicao do workflow; None usa o default de config.
+            raw_timeout = definition_for_exec.get("max_execution_time_seconds")
+            wf_timeout = int(raw_timeout) if raw_timeout is not None else None
+
+            run_coro = self._run_and_persist(
+                execution_id=execution_id,
+                workflow_id=workflow.id,
+                workflow_definition=definition_for_exec,
+                triggered_by=triggered_by,
+                input_data=input_data or {},
+                resolved_connections=resolved_connections,
+                variable_values=resolved_vars,
+                event_sink=event_sink,
+                mode=effective_mode,
+                target_node_id=target_node_id,
+                max_execution_time_seconds=wf_timeout,
+                retry_from_execution_id=retry_from_execution_id,
+                run_mode=run_mode,
+            )
+
+            if wait:
+                # Roda inline — quem chamou (SSE) ja esta consumindo eventos
+                # em paralelo via event_sink/queue.
+                await run_coro
+            else:
+                _p = project_id_str
+
+                async def _bg_run_with_slot_release() -> None:
+                    try:
+                        await run_coro
+                    finally:
+                        release_execution_slot(_p)
+
+                task = asyncio.create_task(
+                    _bg_run_with_slot_release(),
+                    name=f"workflow-execution-{execution_id}",
+                )
+                await execution_registry.register(execution_id, task)
+                _release_slot_here = False  # background task e responsavel
+
+            return ExecutionResponse(
+                execution_id=execution_id,
+                status=exec_status,
+            )
+        finally:
+            if _release_slot_here:
+                release_execution_slot(project_id_str)
 
     async def run_with_events(
         self,
@@ -470,6 +518,7 @@ class WorkflowExecutionService:
         input_data: dict[str, Any] | None = None,
         mode: str | None = None,
         target_node_id: str | None = None,
+        retry_from_execution_id: UUID | None = None,
     ) -> ExecutionResponse:
         """Acucar para a rota SSE: ``run(..., wait=True, event_sink=...)``.
 
@@ -485,6 +534,7 @@ class WorkflowExecutionService:
             mode=mode,
             wait=True,
             target_node_id=target_node_id,
+            retry_from_execution_id=retry_from_execution_id,
         )
 
     async def execute_workflow(
@@ -492,6 +542,8 @@ class WorkflowExecutionService:
         db: AsyncSession,
         workflow_id: UUID,
         input_data: dict[str, Any] | None = None,
+        retry_from_execution_id: UUID | None = None,
+        run_mode: str = "full",
     ) -> ExecutionResponse:
         """Mantem compatibilidade com a rota POST /execute (HTTP publica)."""
         return await self.run(
@@ -500,6 +552,144 @@ class WorkflowExecutionService:
             triggered_by="api",
             input_data=input_data,
             mode="production",
+            retry_from_execution_id=retry_from_execution_id,
+            run_mode=run_mode,
+        )
+
+    async def validate_workflow(
+        self,
+        db: AsyncSession,
+        workflow_id: UUID,
+        input_data: dict[str, Any] | None = None,
+    ) -> "ValidateExecutionResponse":
+        """Valida variaveis e testa conectividade das conexoes referenciadas
+        pelo workflow, sem invocar o runner nem criar uma ``WorkflowExecution``.
+
+        Esse caminho e usado pelo ``run_mode=validate`` — equivalente a um
+        "dry run sem dados": garante que o workflow esta apto a executar
+        (variaveis obrigatorias presentes, conectores respondem) sem o custo
+        de processar o pipeline.
+        """
+        from app.schemas.workflow import (
+            ValidateConnectionResult,
+            ValidateExecutionResponse,
+        )
+
+        errors: list[str] = []
+        missing_vars: list[str] = []
+        connection_results: list[ValidateConnectionResult] = []
+
+        result = await db.execute(
+            select(
+                Workflow,
+                sa_func.coalesce(Workflow.workspace_id, Project.workspace_id).label(
+                    "effective_workspace_id"
+                ),
+            )
+            .outerjoin(Project, Project.id == Workflow.project_id)
+            .where(Workflow.id == workflow_id)
+        )
+        row = result.one_or_none()
+        if row is None:
+            return ValidateExecutionResponse(
+                ok=False, errors=[f"Workflow '{workflow_id}' nao encontrado."]
+            )
+
+        workflow = row[0]
+        workspace_id = row[1]
+
+        var_decls: list[dict[str, Any]] = workflow.definition.get("variables", [])
+        variable_values_raw: dict[str, Any] = {}
+        if isinstance(input_data, dict):
+            variable_values_raw = input_data.get("variable_values") or {}
+
+        referenced_names = _collect_referenced_var_names(workflow.definition)
+        parent_names = {
+            d.get("name") for d in var_decls if isinstance(d, dict) and d.get("name")
+        }
+        try:
+            inherited_decls, inherited_names = await _collect_inherited_var_decls(
+                db, workflow.definition, parent_names=parent_names
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ValidateExecutionResponse(
+                ok=False, errors=[f"Falha ao resolver sub-workflows: {exc}"]
+            )
+
+        full_var_decls = list(var_decls) + list(inherited_decls)
+        full_referenced = referenced_names | inherited_names
+
+        try:
+            resolved_vars = await _validate_and_resolve_variables(
+                var_decls=full_var_decls,
+                variable_values=variable_values_raw,
+                referenced_names=full_referenced,
+            )
+        except ValueError as exc:
+            # ``_validate_and_resolve_variables`` levanta ValueError com a
+            # lista de variaveis faltantes — repassamos como errors para que
+            # o consumidor possa exibir ao usuario.
+            msg = str(exc)
+            if "faltando" in msg.lower() or "obrigat" in msg.lower():
+                missing_vars = [msg]
+            else:
+                errors.append(msg)
+            return ValidateExecutionResponse(
+                ok=False, missing_variables=missing_vars, errors=errors
+            )
+
+        # Substitui {{vars.X}} para permitir que resolve_for_workflow ache
+        # os connection_ids reais.
+        definition_for_exec = _substitute_vars_in_definition(
+            workflow.definition, resolved_vars
+        )
+        try:
+            resolved_connections = await connection_service.resolve_for_workflow(
+                db,
+                definition_for_exec,
+                project_id=workflow.project_id,
+                workspace_id=workspace_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ValidateExecutionResponse(
+                ok=False, errors=[f"Falha ao resolver conexoes: {exc}"]
+            )
+
+        for conn_id_str in (resolved_connections or {}).keys():
+            try:
+                conn_uuid = UUID(conn_id_str)
+            except ValueError:
+                errors.append(f"ID de conexao invalido no grafo: {conn_id_str}")
+                continue
+            conn_obj = await connection_service.get(db, conn_uuid)
+            conn_name = conn_obj.name if conn_obj is not None else str(conn_uuid)
+            try:
+                test_result = await connection_service.test_connection(db, conn_uuid)
+                connection_results.append(
+                    ValidateConnectionResult(
+                        connection_id=conn_uuid,
+                        name=conn_name,
+                        ok=bool(test_result.success),
+                        error=None if test_result.success else test_result.message,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                connection_results.append(
+                    ValidateConnectionResult(
+                        connection_id=conn_uuid,
+                        name=conn_name,
+                        ok=False,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                )
+
+        all_connections_ok = all(c.ok for c in connection_results)
+        ok = all_connections_ok and not errors and not missing_vars
+        return ValidateExecutionResponse(
+            ok=ok,
+            connections=connection_results,
+            missing_variables=missing_vars,
+            errors=errors,
         )
 
     async def _run_and_persist(
@@ -514,6 +704,9 @@ class WorkflowExecutionService:
         event_sink: EventSink | None = None,
         mode: str = "production",
         target_node_id: str | None = None,
+        max_execution_time_seconds: int | None = None,
+        retry_from_execution_id: UUID | None = None,
+        run_mode: str = "full",
     ) -> None:
         """
         Roda o workflow e persiste o estado final em uma sessao propria —
@@ -525,9 +718,46 @@ class WorkflowExecutionService:
         error: str | None = None
         cancelled = False
 
+        # Timeout efetivo: usa o campo do workflow, cai para o default de config.
+        # Valor 0 significa sem limite.
+        effective_timeout = (
+            max_execution_time_seconds
+            if max_execution_time_seconds is not None
+            else settings.WORKFLOW_DEFAULT_MAX_EXECUTION_TIME_SECONDS
+        )
+
+        # Buffer de log estruturado: persiste eventos do runner em
+        # ``workflow_execution_logs`` para troubleshooting remoto via API.
+        # O wrapper envolve o ``event_sink`` original (SSE, se houver) sem
+        # alterar seu comportamento.
+        log_buffer = ExecutionLogBuffer(execution_id)
+        wrapped_sink = log_buffer.event_sink_wrapper(event_sink)
+
         with bind_context(execution_id=str(execution_id), workflow_id=str(workflow_id)):
             try:
-                result = await run_workflow(
+                # Carrega checkpoints da execucao anterior (se for um retry).
+                checkpoint_results: dict | None = None
+                if retry_from_execution_id is not None:
+                    checkpoint_results = await checkpoint_service.load_checkpoints(retry_from_execution_id)
+                    if checkpoint_results:
+                        logger.info(
+                            "execution.checkpoints_loaded",
+                            source_execution_id=str(retry_from_execution_id),
+                            checkpointed_nodes=list(checkpoint_results.keys()),
+                        )
+                        await checkpoint_service.mark_checkpoints_used(
+                            retry_from_execution_id, execution_id
+                        )
+                        await log_buffer.record(
+                            level="info",
+                            message=(
+                                f"Retomando execucao a partir de {retry_from_execution_id}. "
+                                f"Nos com checkpoint: {', '.join(checkpoint_results.keys())}"
+                            ),
+                            context={"checkpointed_nodes": list(checkpoint_results.keys())},
+                        )
+
+                run_coro = run_workflow(
                     workflow_payload=workflow_definition,
                     workflow_id=str(workflow_id),
                     triggered_by=triggered_by,
@@ -535,9 +765,29 @@ class WorkflowExecutionService:
                     execution_id=str(execution_id),
                     resolved_connections=resolved_connections,
                     variable_values=variable_values,
-                    event_sink=event_sink,
+                    event_sink=wrapped_sink,
                     mode=mode,
                     target_node_id=target_node_id,
+                    checkpoint_results=checkpoint_results,
+                    run_mode=run_mode,
+                    preview_max_rows=(
+                        settings.WORKFLOW_PREVIEW_MAX_ROWS
+                        if run_mode == "preview"
+                        else None
+                    ),
+                )
+                if effective_timeout and effective_timeout > 0:
+                    result = await asyncio.wait_for(run_coro, timeout=float(effective_timeout))
+                else:
+                    result = await run_coro
+            except asyncio.TimeoutError:
+                cancelled = True
+                error = (
+                    f"Execucao cancelada por timeout ({effective_timeout}s)."
+                )
+                logger.warning(
+                    "execution.timeout",
+                    timeout_seconds=effective_timeout,
                 )
             except asyncio.CancelledError:
                 cancelled = True
@@ -552,6 +802,10 @@ class WorkflowExecutionService:
                 error = f"{type(exc).__name__}: {exc}"
                 logger.exception("execution.unexpected_error")
             finally:
+                # Fecha o buffer de log antes de persistir o estado final
+                # para garantir que qualquer evento de fim (execution_end,
+                # cancelled) ja esteja gravado em workflow_execution_logs.
+                await log_buffer.close()
                 await self._persist_final_state(
                     execution_id=execution_id,
                     result=result,

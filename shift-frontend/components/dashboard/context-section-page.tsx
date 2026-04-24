@@ -42,8 +42,8 @@ function TemplatesSection({ workspaceId }: { workspaceId: string }) {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    listWorkspaceTemplates(workspaceId)
-      .then((data) => { if (!cancelled) setTemplates(data) })
+    listWorkspaceTemplates(workspaceId, { size: 200 })
+      .then((data) => { if (!cancelled) setTemplates(data.items) })
       .catch(() => { if (!cancelled) setTemplates([]) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
@@ -176,10 +176,10 @@ function FlowsSection({
     setLoading(true)
     try {
       const [data, playerData] = await Promise.all([
-        listWorkspaceWorkflows(selectedWorkspace.id),
+        listWorkspaceWorkflows(selectedWorkspace.id, { size: 200 }),
         listWorkspacePlayers(selectedWorkspace.id),
       ])
-      setWorkflows(data)
+      setWorkflows(data.items)
       setPlayers(playerData)
     } catch {
       setWorkflows([])

@@ -28,7 +28,10 @@ from .workflow import (
     DeadLetterEntry,
     WebhookTestCapture,
     Workflow,
+    WorkflowCheckpoint,
     WorkflowExecution,
+    WorkflowExecutionLog,
+    WorkflowNodeExecution,
     WorkflowVersion,
 )
 from .workflow_definition_event import WorkflowDefinitionEvent
@@ -68,8 +71,11 @@ __all__ = [
     "User",
     "WebhookTestCapture",
     "Workflow",
-    "WorkflowExecution",
+    "WorkflowCheckpoint",
     "WorkflowDefinitionEvent",
+    "WorkflowExecution",
+    "WorkflowExecutionLog",
+    "WorkflowNodeExecution",
     "WorkflowVersion",
     "Workspace",
     "WorkspaceMember",

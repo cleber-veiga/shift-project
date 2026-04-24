@@ -199,6 +199,16 @@ export function NodeConfigFields({
     />
   ) : null
 
+  const checkpointEnabled = !!data.checkpoint_enabled
+  const checkpointSection = supportsRetry ? (
+    <CheckpointToggle
+      enabled={checkpointEnabled}
+      onChange={(next) =>
+        onUpdate(node.id, { ...data, checkpoint_enabled: next })
+      }
+    />
+  ) : null
+
   const specific = renderNodeSpecificFields({
     nodeType,
     node,
@@ -214,6 +224,48 @@ export function NodeConfigFields({
     <div className="space-y-4">
       {specific}
       {retrySection}
+      {checkpointSection}
+    </div>
+  )
+}
+
+function CheckpointToggle({
+  enabled,
+  onChange,
+}: {
+  enabled: boolean
+  onChange: (next: boolean) => void
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-card p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-semibold text-foreground">Checkpoint</p>
+          <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+            Persiste a sa&iacute;da deste n&oacute; ao concluir. Em caso de falha,
+            &quot;Retomar&quot; pula este n&oacute; e reaproveita o resultado salvo.
+          </p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          onClick={() => onChange(!enabled)}
+          className={
+            enabled
+              ? "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full bg-emerald-500 transition-colors"
+              : "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full bg-muted transition-colors"
+          }
+        >
+          <span
+            className={
+              enabled
+                ? "inline-block size-4 translate-x-[18px] transform rounded-full bg-white shadow transition-transform"
+                : "inline-block size-4 translate-x-0.5 transform rounded-full bg-white shadow transition-transform"
+            }
+          />
+        </button>
+      </div>
     </div>
   )
 }

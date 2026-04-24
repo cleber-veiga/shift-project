@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.cache import user_cache
 from app.core.config import settings
-from app.db.session import get_async_session
+from app.db.session import get_db
 from app.models.connection import Connection
 from app.models.input_model import InputModel
 from app.models.input_model_row import InputModelRow
@@ -535,17 +535,18 @@ class AuthorizationService:
 authorization_service = AuthorizationService()
 
 
-async def _get_db() -> AsyncSession:
-    async for session in get_async_session():
-        yield session
-
-
 def require_permission(scope: str, role: str):
-    """Dependencia FastAPI para validar permissao no banco a cada request."""
+    """Dependencia FastAPI para validar permissao no banco a cada request.
+
+    Usa `Depends(get_db)` (mesma callable que `app.api.dependencies.get_db`
+    reexporta) para que a sessão seja compartilhada com `get_current_user`,
+    o handler da rota e qualquer outro `Depends(get_db)` na cadeia —
+    FastAPI cacheia dependências por callable dentro de uma request.
+    """
 
     async def dependency(
         request: Request,
-        db: AsyncSession = Depends(_get_db),
+        db: AsyncSession = Depends(get_db),
         current_user: User = Depends(_resolve_current_user),
     ) -> User:
         await authorization_service.require(
@@ -562,7 +563,7 @@ def require_permission(scope: str, role: str):
 
 async def _resolve_current_user(
     request: Request,
-    db: AsyncSession = Depends(_get_db),
+    db: AsyncSession = Depends(get_db),
 ) -> User:
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):

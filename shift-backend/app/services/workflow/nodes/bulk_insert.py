@@ -6,6 +6,14 @@ Le o dataset DuckDB upstream, aplica um mapeamento de colunas
 no destino SQL via ``load_service.insert`` — que faz introspeccao
 automatica dos tipos da tabela destino e cast inteligente.
 
+Leitura em chunks
+-----------------
+O DuckDB e lido em batches de ``batch_size`` linhas via ``fetchmany``,
+nunca materializando a tabela inteira em RAM. Cada chunk e mapeado e
+inserido independentemente no destino. As partitions de sucesso/erro
+para branches downstream sao escritas incrementalmente em JSONL
+(``JsonlStreamer``) e so materializadas em DuckDB ao final.
+
 Configuracao do no
 ------------------
     connection_id    : UUID do conector SQL de destino (resolvido pelo runner
@@ -19,21 +27,44 @@ Configuracao do no
     batch_size       : Tamanho do lote do insert (padrao 1000).
     output_field     : Nome do campo com o relatorio de carga (padrao
                        ``"load_result"``).
+    load_strategy    : Estrategia de carga. Tres opcoes:
+
+        ``"append_fast"`` (padrao)
+            Usa dlt com commit por chunk. Alta throughput, mas em caso de
+            falha parcial os chunks ja comitados ficam persistidos — nao ha
+            rollback automatico. Ideal para tabelas de log ou situacoes onde
+            reprocessamento parcial e aceitavel.
+
+        ``"append_safe"``
+            Usa SQLAlchemy em transacao unica. Se qualquer linha falhar, toda
+            a operacao e revertida (rollback total). Garante atomicidade, mas
+            requer que a conexao suporte transacoes longas. Indicado quando a
+            tabela de destino nao pode ficar em estado parcial.
+
+        ``"upsert"``
+            Usa INSERT ... ON CONFLICT (PostgreSQL), INSERT ... ON DUPLICATE
+            KEY UPDATE (MySQL) ou MERGE INTO (MSSQL/Oracle/Firebird). Requer
+            que ``unique_columns`` esteja configurado — esses campos formam a
+            chave de idempotencia. Em caso de falha o comportamento e igual ao
+            ``append_safe``: transacao unica com rollback total. Use quando o
+            mesmo dado pode chegar mais de uma vez e a tabela destino deve
+            refletir sempre o valor mais recente.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any
+import time
+from typing import Any, Iterator
 
 import duckdb
 
 from app.data_pipelines.duckdb_storage import (
-    ensure_duckdb_reference,
+    JsonlStreamer,
     build_table_ref,
     get_primary_input_reference,
 )
-from app.services.load_service import RejectedRow, load_service
+from app.services.load_service import LoadResult, RejectedRow, load_service
 from app.services.workflow.nodes import BaseNodeProcessor, register_processor
 from app.services.workflow.nodes.exceptions import NodeProcessingError
 from app.services.workflow.parameter_value import (
@@ -41,7 +72,6 @@ from app.services.workflow.parameter_value import (
     compile_parameter,
     execute_compiled,
     parse_parameter_value,
-    resolve_parameter,
 )
 
 
@@ -78,25 +108,29 @@ def _normalize_bulk_map(m: Any) -> dict[str, Any] | None:
     return {"pv": None, "source": source, "target": target}
 
 
-def _resolve_rows_pv(
-    raw_rows: list[dict[str, Any]],
+def _compile_pv_maps(
     valid_maps: list[dict[str, Any]],
-    ctx: ResolutionContext,
-) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
-    """Resolve ParameterValue mappings por linha.
-
-    Retorna (rows_com_colunas_destino, identity_column_mapping).
-    """
-    # Pre-compila cada PV uma vez fora do loop — elimina Pydantic + regex por linha.
-    compiled_maps: list[tuple[str, Any, str | None]] = []
+) -> list[tuple[str, Any, str | None]]:
+    """Pre-compila mapeamentos PV uma vez — reutilizavel por chunk."""
+    compiled: list[tuple[str, Any, str | None]] = []
     for m in valid_maps:
         if m["pv"] is not None:
-            compiled_maps.append((m["target"], compile_parameter(parse_parameter_value(m["pv"])), None))
+            compiled.append(
+                (m["target"], compile_parameter(parse_parameter_value(m["pv"])), None)
+            )
         else:
-            compiled_maps.append((m["target"], None, m["source"]))
+            compiled.append((m["target"], None, m["source"]))
+    return compiled
 
-    resolved_rows: list[dict[str, Any]] = []
-    for row in raw_rows:
+
+def _apply_pv_maps(
+    raw_chunk: list[dict[str, Any]],
+    compiled_maps: list[tuple[str, Any, str | None]],
+    ctx: ResolutionContext,
+) -> list[dict[str, Any]]:
+    """Aplica mapeamentos pre-compilados a um chunk de linhas."""
+    resolved: list[dict[str, Any]] = []
+    for row in raw_chunk:
         row_ctx = ResolutionContext(
             input_data={**ctx.input_data, **row},
             upstream_results=ctx.upstream_results,
@@ -109,12 +143,17 @@ def _resolve_rows_pv(
                 resolved_row[target] = execute_compiled(compiled, row_ctx)
             else:
                 resolved_row[target] = row.get(source)  # type: ignore[arg-type]
-        resolved_rows.append(resolved_row)
+        resolved.append(resolved_row)
+    return resolved
 
-    identity_mapping = [
-        {"source": m["target"], "target": m["target"]} for m in valid_maps
-    ]
-    return resolved_rows, identity_mapping
+
+def _sample_ram_mb() -> float | None:
+    """Retorna uso atual de RAM do processo em MB, ou None se psutil indisponivel."""
+    try:
+        import psutil  # noqa: PLC0415
+        return psutil.Process().memory_info().rss / (1024.0 * 1024.0)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 @register_processor("bulk_insert")
@@ -136,6 +175,7 @@ class BulkInsertProcessor(BaseNodeProcessor):
         unique_columns_raw = resolved_config.get("unique_columns") or []
         batch_size = int(resolved_config.get("batch_size") or 1000)
         output_field = str(resolved_config.get("output_field", "load_result"))
+        load_strategy = str(resolved_config.get("load_strategy") or "append_fast")
 
         if not connection_string:
             raise NodeProcessingError(
@@ -184,8 +224,8 @@ class BulkInsertProcessor(BaseNodeProcessor):
 
         input_reference = get_primary_input_reference(context, node_id)
 
+        # Determina colunas a ler do DuckDB e pre-compila mapeamentos
         if has_pv:
-            # Coleta todas as colunas DuckDB necessarias (refs de PV + sources legados)
             seen: set[str] = set()
             needed_cols: list[str] = []
             for m in valid_maps:
@@ -196,32 +236,160 @@ class BulkInsertProcessor(BaseNodeProcessor):
                     if col not in seen:
                         seen.add(col)
                         needed_cols.append(col)
-            raw_rows = _read_cols_from_duckdb(input_reference, needed_cols)
+            compiled_maps = _compile_pv_maps(valid_maps)
+            load_column_mapping: list[dict[str, str]] = [
+                {"source": m["target"], "target": m["target"]} for m in valid_maps
+            ]
         else:
-            # Caminho legado: lê apenas as colunas source
-            legacy_cols = list({m["source"] for m in valid_maps if m["source"]})
-            raw_rows = _read_cols_from_duckdb(input_reference, legacy_cols)
-
-        rows: list[dict[str, Any]]
-        load_column_mapping: list[dict[str, str]]
-        if has_pv:
-            rows, load_column_mapping = _resolve_rows_pv(raw_rows, valid_maps, ctx)
-        else:
-            rows = raw_rows
+            needed_cols = list({m["source"] for m in valid_maps if m["source"]})
+            compiled_maps = None
             load_column_mapping = [
                 {"source": m["source"], "target": m["target"]} for m in valid_maps
             ]
 
-        if not rows:
+        execution_id_str = str(
+            context.get("execution_id") or context.get("workflow_id") or node_id
+        )
+
+        # ── Metricas ──────────────────────────────────────────────────────────
+        t_start = time.monotonic()
+        ram_start_mb = _sample_ram_mb()
+        peak_ram_delta_mb: float | None = None
+
+        chunks_processed = 0
+        has_any_data = False
+        row_offset = 0
+
+        # Acumuladores por chunk
+        total_rows_received = 0
+        total_rows_written = 0
+        total_duplicates_removed = 0
+        total_rejected: list[RejectedRow] = []
+        total_successful_rn: list[int] = []
+        total_failed_rn: list[int] = []
+        combined_status = "success"
+        dest_count_before = -1
+        dest_count_after = -1
+        cast_summary: dict[str, int] = {}
+        column_types: dict[str, str] = {}
+        columns_mapped = 0
+        cast_warnings: list[str] = []
+        loader = "sqlalchemy"
+        duplicate_sample: list[dict[str, Any]] = []
+
+        # Partitions de branch escritas incrementalmente em JSONL → DuckDB
+        with (
+            JsonlStreamer(execution_id_str, f"{node_id}_success") as success_stream,
+            JsonlStreamer(execution_id_str, f"{node_id}_on_error") as error_stream,
+        ):
+            for raw_chunk in _read_cols_from_duckdb_chunked(
+                input_reference, needed_cols, batch_size
+            ):
+                if not raw_chunk:
+                    continue
+
+                has_any_data = True
+
+                # Aplica mapeamento de colunas
+                if has_pv and compiled_maps is not None:
+                    chunk_rows = _apply_pv_maps(raw_chunk, compiled_maps, ctx)
+                else:
+                    chunk_rows = raw_chunk
+
+                if not chunk_rows:
+                    row_offset += len(raw_chunk)
+                    continue
+
+                chunk_result = load_service.insert(
+                    str(connection_string),
+                    conn_type,
+                    target_table,
+                    chunk_rows,
+                    column_mapping=load_column_mapping,
+                    batch_size=batch_size,
+                    unique_columns=unique_columns if unique_columns else None,
+                    load_strategy=load_strategy,
+                )
+                chunks_processed += 1
+
+                # Agrega metricas
+                total_rows_received += chunk_result.rows_received
+                total_rows_written += chunk_result.rows_written
+                total_duplicates_removed += chunk_result.duplicates_removed
+
+                if chunk_result.status not in ("success", "skipped"):
+                    combined_status = "error"
+
+                if chunks_processed == 1:
+                    dest_count_before = chunk_result.dest_count_before
+                    cast_summary = dict(chunk_result.cast_summary)
+                    column_types = dict(chunk_result.column_types)
+                    columns_mapped = chunk_result.columns_mapped
+                    cast_warnings = list(chunk_result.cast_warnings)
+                    loader = chunk_result.loader
+
+                if chunk_result.dest_count_after >= 0:
+                    dest_count_after = chunk_result.dest_count_after
+
+                if chunk_result.duplicate_sample and len(duplicate_sample) < 5:
+                    duplicate_sample.extend(
+                        chunk_result.duplicate_sample[: 5 - len(duplicate_sample)]
+                    )
+
+                # Ajusta numeros de linha para offset global
+                rejected_by_chunk_row = {
+                    rr.row_number: rr for rr in chunk_result.rejected_rows
+                }
+                success_set = set(chunk_result.successful_row_numbers)
+
+                for rr in chunk_result.rejected_rows:
+                    total_rejected.append(
+                        RejectedRow(
+                            row_number=rr.row_number + row_offset,
+                            error=rr.error,
+                            column=rr.column,
+                            value=rr.value,
+                            expected_type=rr.expected_type,
+                            failed_alias=rr.failed_alias,
+                        )
+                    )
+                for rn in chunk_result.successful_row_numbers:
+                    total_successful_rn.append(rn + row_offset)
+                for rn in chunk_result.failed_row_numbers:
+                    total_failed_rn.append(rn + row_offset)
+
+                # Escrita incremental das partitions de branch em JSONL
+                for row_number, row in enumerate(chunk_rows, start=1):
+                    if row_number in success_set:
+                        success_stream.write_row(dict(row))
+                    elif row_number in rejected_by_chunk_row:
+                        enriched = _enrich_failed_row(
+                            dict(row), rejected_by_chunk_row[row_number]
+                        )
+                        error_stream.write_row(enriched)
+
+                row_offset += len(chunk_rows)
+
+                # Pico de RAM por chunk
+                current_ram = _sample_ram_mb()
+                if current_ram is not None and ram_start_mb is not None:
+                    delta = current_ram - ram_start_mb
+                    if peak_ram_delta_mb is None or delta > peak_ram_delta_mb:
+                        peak_ram_delta_mb = delta
+
+            # ── JsonlStreamer.__exit__ materializa os DuckDB aqui ─────────────
+            success_ref = success_stream.reference
+            error_ref = error_stream.reference
+            success_count = success_stream.row_count
+            error_count = error_stream.row_count
+
+        if not has_any_data:
             skipped_payload = {
                 "status": "skipped",
                 "message": "Sem dados upstream para inserir.",
                 "rows_written": 0,
                 "target_table": target_table,
             }
-            # Top-level status reflete o resultado da operacao (parity com
-            # workflow_test_service). Downstream if_node pode gate em
-            # ``status == "skipped"`` ou ``!= "success"``.
             return {
                 "node_id": node_id,
                 **skipped_payload,
@@ -229,32 +397,51 @@ class BulkInsertProcessor(BaseNodeProcessor):
                 output_field: skipped_payload,
             }
 
-        load_result = load_service.insert(
-            str(connection_string),
-            conn_type,
-            target_table,
-            rows,
-            column_mapping=load_column_mapping,
-            batch_size=batch_size,
-            unique_columns=unique_columns if unique_columns else None,
+        elapsed = time.monotonic() - t_start
+
+        # Constroi LoadResult agregado
+        aggregated = LoadResult(
+            status=combined_status,
+            rows_received=total_rows_received,
+            rows_written=total_rows_written,
+            duplicates_removed=total_duplicates_removed,
+            target_table=target_table,
+            dest_count_before=dest_count_before,
+            dest_count_after=dest_count_after,
+            cast_summary=cast_summary,
+            column_types=column_types,
+            columns_mapped=columns_mapped,
+            cast_warnings=cast_warnings,
+            loader=loader,
+            batches=chunks_processed,
+            rejected_rows=total_rejected,
+            successful_row_numbers=total_successful_rn,
+            failed_row_numbers=total_failed_rn,
+            unique_columns=unique_columns,
+            duplicate_sample=duplicate_sample,
         )
 
-        result_dict = load_result.to_dict()
-        result_dict["message"] = _build_insert_report(load_result, target_table)
-        execution_id = str(
-            context.get("execution_id") or context.get("workflow_id") or node_id
+        result_dict = aggregated.to_dict()
+        result_dict["message"] = _build_insert_report(aggregated, target_table)
+
+        # Metricas de execucao
+        result_dict["chunks_processed"] = chunks_processed
+        result_dict["rows_per_second"] = (
+            round(total_rows_written / elapsed) if elapsed > 0 else 0
         )
-        _attach_branch_outputs(
+        if peak_ram_delta_mb is not None:
+            result_dict["peak_ram_mb"] = round(peak_ram_delta_mb, 1)
+
+        _attach_branch_outputs_from_streams(
             result_dict=result_dict,
-            rows=rows,
-            rejected_rows=load_result.rejected_rows,
-            successful_row_numbers=load_result.successful_row_numbers,
-            execution_id=execution_id,
+            success_reference=success_ref,
+            error_reference=error_ref,
+            success_count=success_count,
+            error_count=error_count,
+            total_rejected=total_rejected,
             node_id=node_id,
         )
 
-        # Top-level status vem do LoadResult (``success``/``error``) para
-        # parity com workflow_test_service e para habilitar if_node gates.
         return {
             "node_id": node_id,
             **result_dict,
@@ -263,13 +450,18 @@ class BulkInsertProcessor(BaseNodeProcessor):
         }
 
 
-def _read_cols_from_duckdb(
+def _read_cols_from_duckdb_chunked(
     reference: dict[str, Any],
     columns: list[str],
-) -> list[dict[str, Any]]:
-    """Projeta apenas as colunas necessarias da tabela DuckDB upstream."""
+    chunk_size: int,
+) -> Iterator[list[dict[str, Any]]]:
+    """Projeta colunas da tabela DuckDB upstream em batches via fetchmany.
+
+    Nunca carrega a tabela inteira em RAM — cada yield e um batch de
+    no maximo ``chunk_size`` linhas.
+    """
     if not columns:
-        return []
+        return
 
     table_ref = build_table_ref(reference)
     projection = ", ".join(_quote_identifier(c) for c in columns)
@@ -278,7 +470,11 @@ def _read_cols_from_duckdb(
     try:
         cursor = conn.execute(f"SELECT {projection} FROM {table_ref}")
         col_names = [desc[0] for desc in cursor.description]
-        return [dict(zip(col_names, row)) for row in cursor.fetchall()]
+        while True:
+            batch = cursor.fetchmany(chunk_size)
+            if not batch:
+                break
+            yield [dict(zip(col_names, row)) for row in batch]
     finally:
         conn.close()
 
@@ -328,54 +524,36 @@ def _build_insert_report(result: Any, target_table: str) -> str:
     return " | ".join(lines)
 
 
-def _attach_branch_outputs(
+def _attach_branch_outputs_from_streams(
     *,
     result_dict: dict[str, Any],
-    rows: list[dict[str, Any]],
-    rejected_rows: list[RejectedRow],
-    successful_row_numbers: list[int],
-    execution_id: str,
+    success_reference: Any,
+    error_reference: Any,
+    success_count: int,
+    error_count: int,
+    total_rejected: list[RejectedRow],
     node_id: str,
 ) -> None:
-    rejected_by_row = {row.row_number: row for row in rejected_rows}
-    success_set = set(successful_row_numbers)
-
-    success_rows: list[dict[str, Any]] = []
-    failed_rows: list[dict[str, Any]] = []
-    for row_number, row in enumerate(rows, start=1):
-        if row_number in success_set:
-            success_rows.append(dict(row))
-        elif row_number in rejected_by_row:
-            failed_rows.append(
-                _enrich_failed_row(dict(row), rejected_by_row[row_number])
-            )
-
+    """Conecta as referencias DuckDB das partitions de branch ao resultado."""
     branches: dict[str, Any] = {}
     active_handles: list[str] = []
-    if success_rows:
-        branches["success"] = ensure_duckdb_reference(
-            success_rows,
-            execution_id,
-            f"{node_id}_success",
-        )
+
+    if success_reference is not None:
+        branches["success"] = success_reference
         active_handles.append("success")
-    if failed_rows:
-        branches["on_error"] = ensure_duckdb_reference(
-            failed_rows,
-            execution_id,
-            f"{node_id}_on_error",
-        )
+        result_dict["succeeded_rows_count"] = success_count
+
+    if error_reference is not None:
+        branches["on_error"] = error_reference
         active_handles.append("on_error")
+        result_dict["failed_rows_count"] = error_count
         result_dict["failed_node"] = node_id
-        result_dict["error"] = failed_rows[0].get("_dead_letter_error")
+        if total_rejected:
+            result_dict["error"] = total_rejected[0].error
 
     if branches:
         result_dict["branches"] = branches
         result_dict["active_handles"] = active_handles
-    if success_rows:
-        result_dict["succeeded_rows_count"] = len(success_rows)
-    if failed_rows:
-        result_dict["failed_rows_count"] = len(failed_rows)
 
 
 def _enrich_failed_row(

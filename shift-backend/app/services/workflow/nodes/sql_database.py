@@ -7,6 +7,7 @@ Delega para extraction_service que centraliza toda logica de leitura.
 from typing import Any
 from uuid import uuid4
 
+from app.core.config import settings
 from app.services.extraction_service import extraction_service
 from app.services.workflow.nodes import BaseNodeProcessor, register_processor
 from app.services.workflow.nodes.exceptions import NodeProcessingError
@@ -29,7 +30,13 @@ class SqlDatabaseProcessor(BaseNodeProcessor):
         query = resolved_config.get("query")
         output_field = str(resolved_config.get("output_field", "data"))
         chunk_size = int(resolved_config.get("chunk_size", 1000))
-        max_rows = resolved_config.get("max_rows")
+        preview_max_rows: int | None = context.get("_preview_max_rows")
+        configured_max_rows = resolved_config.get("max_rows")
+        effective_max_rows: int | None = (
+            preview_max_rows
+            if preview_max_rows is not None
+            else (int(configured_max_rows) if configured_max_rows is not None else settings.EXTRACT_DEFAULT_MAX_ROWS)
+        )
 
         if not connection_string:
             raise NodeProcessingError(
@@ -60,7 +67,7 @@ class SqlDatabaseProcessor(BaseNodeProcessor):
             execution_id=execution_id,
             resource_name=node_id,
             table_name=str(table_name) if table_name else node_id,
-            max_rows=int(max_rows) if max_rows is not None else None,
+            max_rows=effective_max_rows,
             chunk_size=chunk_size,
         )
 

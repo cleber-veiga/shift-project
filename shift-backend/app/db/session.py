@@ -12,8 +12,8 @@ from app.core.config import settings
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
-    pool_size=10,
-    max_overflow=5,
+    pool_size=20,
+    max_overflow=10,
     pool_pre_ping=True,
     pool_recycle=3600,
 )
@@ -35,3 +35,10 @@ async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
         except Exception:
             await session.rollback()
             raise
+
+
+# Alias reexportado como dependência FastAPI. FastAPI cacheia dependências por
+# identidade de callable dentro de uma request; manter UM único símbolo
+# (`get_db`) usado em toda a cadeia de Depends garante que apenas uma sessão
+# seja aberta por request, em vez de uma por lugar que chamava "get_db" local.
+get_db = get_async_session

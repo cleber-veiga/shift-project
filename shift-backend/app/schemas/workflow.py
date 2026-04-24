@@ -821,6 +821,42 @@ class ExecuteWorkflowRequest(BaseModel):
     """Payload para submeter um workflow para execucao via POST /execute."""
 
     variable_values: dict[str, Any] = Field(default_factory=dict)
+    retry_from_execution_id: UUID | None = Field(
+        default=None,
+        description=(
+            "ID de uma execucao anterior falhada. Quando informado, o runner carrega "
+            "checkpoints dessa execucao e pula nos ja concluidos com sucesso."
+        ),
+    )
+    run_mode: Literal["full", "preview", "validate"] = Field(
+        default="full",
+        description=(
+            "Modo de execucao. 'full' = execucao completa (padrao); "
+            "'preview' = aplica LIMIT 100 em nos de extracao para dry-run rapido; "
+            "'validate' = apenas testa conexoes e valida variaveis, sem mover dados."
+        ),
+    )
+
+
+class ValidateConnectionResult(BaseModel):
+    """Resultado da validacao de uma conexao durante run_mode=validate."""
+
+    connection_id: UUID
+    name: str
+    ok: bool
+    error: str | None = None
+
+
+class ValidateExecutionResponse(BaseModel):
+    """Resposta sincrona do endpoint /execute quando run_mode=validate.
+
+    Nao cria WorkflowExecution — apenas reporta o resultado da validacao.
+    """
+
+    ok: bool
+    connections: list[ValidateConnectionResult] = Field(default_factory=list)
+    missing_variables: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
 
 # --- Schema de Variaveis (endpoint /variables/schema) ---
@@ -860,6 +896,27 @@ class VariablesSchemaResponse(BaseModel):
     inherited_variables: list[InheritedVariable] = Field(
         default_factory=list,
         description="Variaveis declaradas por sub-workflows referenciados, com metadados da origem.",
+    )
+
+
+# --- Checkpoints ---
+
+class CheckpointSummary(BaseModel):
+    """Resumo de um checkpoint de no."""
+
+    node_id: str
+    created_at: datetime
+    expires_at: datetime
+    used_by_execution_id: UUID | None = None
+
+
+class CheckpointsResponse(BaseModel):
+    """Lista de checkpoints disponiveis para retomada de execucao."""
+
+    source_execution_id: UUID
+    checkpoints: list[CheckpointSummary]
+    resumable: bool = Field(
+        description="True quando ha ao menos um checkpoint valido (nao expirado, arquivo DuckDB presente)."
     )
 
 
@@ -936,6 +993,7 @@ class ExecutionSummaryResponse(BaseModel):
     completed_at: datetime | None = None
     node_count: int = 0
     error_message: str | None = None
+    definition_snapshot_hash: str | None = None
 
 
 class ExecutionListResponse(BaseModel):
@@ -945,6 +1003,39 @@ class ExecutionListResponse(BaseModel):
     total: int
     page: int
     size: int
+
+
+class ExecutionDefinitionResponse(BaseModel):
+    """Resposta do endpoint GET /executions/{id}/definition (Sprint 4.1)."""
+
+    execution_id: UUID
+    workflow_id: UUID
+    snapshot: dict[str, Any] | None
+    snapshot_hash: str | None
+    current_hash: str | None
+    definition_diverged: bool = False
+
+
+class ExecutionLogEntry(BaseModel):
+    """Linha de log estruturado de uma execucao."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    timestamp: datetime
+    level: str
+    message: str
+    node_id: str | None = None
+    context: dict[str, Any] | None = None
+
+
+class ExecutionLogsResponse(BaseModel):
+    """Resposta do endpoint GET /executions/{id}/logs."""
+
+    execution_id: UUID
+    entries: list[ExecutionLogEntry]
+    total: int
+    truncated: bool = False
 
 
 # --- Schemas de CRUD de Workflow ---
@@ -1047,6 +1138,15 @@ class WorkflowResponse(BaseModel):
     tags: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+
+class WorkflowListResponse(BaseModel):
+    """Resposta paginada de workflows."""
+
+    items: list[WorkflowResponse]
+    total: int
+    page: int
+    size: int
 
 
 class WorkflowVersionCreate(BaseModel):

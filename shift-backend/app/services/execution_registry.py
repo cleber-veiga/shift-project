@@ -30,6 +30,10 @@ HEARTBEAT_INTERVAL_SECONDS = 30
 
 _tasks: dict[UUID, asyncio.Task] = {}
 _heartbeat_tasks: dict[UUID, asyncio.Task] = {}
+# Monotonic timestamp (asyncio.get_event_loop().time()) do registro de cada
+# execucao — consumido pelo memory monitor para escolher a "execucao mais
+# antiga" quando precisa liberar RAM.
+_started_at: dict[UUID, float] = {}
 _lock = asyncio.Lock()
 
 
@@ -82,6 +86,7 @@ async def register(execution_id: UUID, task: asyncio.Task) -> None:
     async with _lock:
         _tasks[execution_id] = task
         _heartbeat_tasks[execution_id] = heartbeat
+        _started_at[execution_id] = asyncio.get_event_loop().time()
 
     task.add_done_callback(
         lambda _t, eid=execution_id: asyncio.create_task(unregister(eid))
@@ -92,6 +97,7 @@ async def unregister(execution_id: UUID) -> None:
     """Remove a task do registry e cancela o heartbeat (idempotente)."""
     async with _lock:
         _tasks.pop(execution_id, None)
+        _started_at.pop(execution_id, None)
         heartbeat = _heartbeat_tasks.pop(execution_id, None)
     if heartbeat is not None and not heartbeat.done():
         heartbeat.cancel()
@@ -134,3 +140,20 @@ def list_running() -> list[UUID]:
     chamada de endpoints sem precisar esperar o lock.
     """
     return [eid for eid, task in _tasks.items() if not task.done()]
+
+
+def oldest_running() -> UUID | None:
+    """Retorna o ID da execucao ativa mais antiga (menor ``started_at``).
+
+    Usado pelo memory monitor para eleger quem sera cancelado sob pressao
+    de RAM. None quando nao ha execucoes vivas.
+    """
+    candidates = [
+        (ts, eid)
+        for eid, ts in _started_at.items()
+        if eid in _tasks and not _tasks[eid].done()
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: t[0])
+    return candidates[0][1]

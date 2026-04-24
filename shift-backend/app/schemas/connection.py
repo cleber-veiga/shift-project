@@ -102,3 +102,12 @@ class TestConnectionResult(BaseModel):
 
     success: bool
     message: str
+
+
+class ConnectionListResponse(BaseModel):
+    """Resposta paginada de conectores."""
+
+    items: list[ConnectionResponse]
+    total: int
+    page: int
+    size: int

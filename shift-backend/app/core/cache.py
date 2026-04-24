@@ -12,7 +12,7 @@ from uuid import UUID
 
 T = TypeVar("T")
 
-_DEFAULT_TTL = 30  # segundos
+_DEFAULT_TTL = 300  # segundos (5 min) — User é praticamente imutável durante a sessão
 
 
 class TTLCache:
@@ -53,4 +53,4 @@ class TTLCache:
             del self._store[k]
 
 
-user_cache = TTLCache(ttl=30, max_size=1024)
+user_cache = TTLCache(ttl=_DEFAULT_TTL, max_size=1024)

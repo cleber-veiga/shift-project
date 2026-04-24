@@ -1,5 +1,6 @@
 "use client"
 
+import dynamic from "next/dynamic"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ReactFlow,
@@ -27,14 +28,25 @@ import { WorkflowEdge } from "@/components/workflow/workflow-edge"
 import { HelperLines } from "@/components/workflow/helper-lines"
 import { getHelperLines, type GuideLine } from "@/lib/workflow/helper-lines"
 import { WorkflowToolbar } from "@/components/workflow/workflow-toolbar"
-import { NodeLibrary } from "@/components/workflow/node-library"
-import { NodeConfigModal, type UpstreamOutput } from "@/components/workflow/node-config-modal"
-import { ExecutionPanel } from "@/components/workflow/execution-panel"
-import { ExecutionsTab } from "@/components/workflow/executions/executions-tab"
-import { IoSchemaEditor, isIoSchemaValid } from "@/components/workflow/io-schema-editor"
-import { PublishVersionModal } from "@/components/workflow/publish-version-modal"
-import { VariablesPanel } from "@/components/workflow/variables-panel"
-import { ExecuteWorkflowDialog } from "@/components/workflow/execute-workflow-dialog"
+import type { UpstreamOutput } from "@/components/workflow/node-config-modal"
+import { isIoSchemaValid } from "@/lib/workflow/io-schema-utils"
+
+// Placeholder para paineis — evita flash vazio enquanto o chunk carrega.
+const DynamicPanelFallback = () => (
+  <div className="flex h-full w-full items-center justify-center p-4">
+    <div className="h-2 w-24 animate-pulse rounded bg-muted" />
+  </div>
+)
+
+const NodeLibrary = dynamic(() => import("@/components/workflow/node-library").then((m) => m.NodeLibrary), { ssr: false, loading: DynamicPanelFallback })
+// Modais (loading: null) — soh aparecem apos clique explicito do usuario.
+const NodeConfigModal = dynamic(() => import("@/components/workflow/node-config-modal").then((m) => m.NodeConfigModal), { ssr: false, loading: () => null })
+const ExecutionPanel = dynamic(() => import("@/components/workflow/execution-panel").then((m) => m.ExecutionPanel), { ssr: false, loading: DynamicPanelFallback })
+const ExecutionsTab = dynamic(() => import("@/components/workflow/executions/executions-tab").then((m) => m.ExecutionsTab), { ssr: false, loading: DynamicPanelFallback })
+const IoSchemaEditor = dynamic(() => import("@/components/workflow/io-schema-editor").then((m) => m.IoSchemaEditor), { ssr: false, loading: DynamicPanelFallback })
+const PublishVersionModal = dynamic(() => import("@/components/workflow/publish-version-modal").then((m) => m.PublishVersionModal), { ssr: false, loading: () => null })
+const VariablesPanel = dynamic(() => import("@/components/workflow/variables-panel").then((m) => m.VariablesPanel), { ssr: false, loading: DynamicPanelFallback })
+const ExecuteWorkflowDialog = dynamic(() => import("@/components/workflow/execute-workflow-dialog").then((m) => m.ExecuteWorkflowDialog), { ssr: false, loading: () => null })
 import type { WorkflowIOSchema } from "@/lib/api/workflow-versions"
 import { useWorkflowVariables } from "@/lib/workflow/use-workflow-variables"
 import {
@@ -72,7 +84,7 @@ import { useToast } from "@/lib/context/toast-context"
 // no chat via AIBuildConfirmationCard, evitando duplicar o controle no topo do
 // canvas. Se futuramente precisarmos de fallback para quando o chat esta fechado,
 // podemos reintroduzir condicionalmente aqui.
-import { BuildOpsPanel } from "@/components/workflow/build-ops-panel"
+const BuildOpsPanel = dynamic(() => import("@/components/workflow/build-ops-panel").then((m) => m.BuildOpsPanel), { ssr: false, loading: () => null })
 
 /** Build nodeTypes map — all custom node types share one component */
 function buildNodeTypes(): NodeTypes {

@@ -71,18 +71,20 @@ class Workflow(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    project: Mapped["Project"] = relationship(back_populates="workflows")
-    workspace: Mapped["Workspace"] = relationship(back_populates="workflows")
+    project: Mapped["Project"] = relationship(back_populates="workflows", lazy="raise_on_sql")
+    workspace: Mapped["Workspace"] = relationship(back_populates="workflows", lazy="raise_on_sql")
     executions: Mapped[list["WorkflowExecution"]] = relationship(
         back_populates="workflow",
         cascade="all, delete-orphan",
         passive_deletes=True,
+        lazy="raise_on_sql",
     )
     versions: Mapped[list["WorkflowVersion"]] = relationship(
         back_populates="workflow",
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="WorkflowVersion.version",
+        lazy="raise_on_sql",
     )
 
 
@@ -128,7 +130,7 @@ class WorkflowVersion(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )
 
-    workflow: Mapped["Workflow"] = relationship(back_populates="versions")
+    workflow: Mapped["Workflow"] = relationship(back_populates="versions", lazy="raise_on_sql")
 
 
 class WorkflowExecution(Base):
@@ -158,6 +160,14 @@ class WorkflowExecution(Base):
     input_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    workflow_definition_snapshot: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True,
+        comment="Snapshot da definicao do workflow no momento do disparo (Sprint 4.1).",
+    )
+    definition_snapshot_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True,
+        comment="SHA-256 hex do snapshot — permite comparacao rapida com a definicao atual.",
+    )
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -171,14 +181,16 @@ class WorkflowExecution(Base):
         nullable=False,
     )
 
-    workflow: Mapped["Workflow"] = relationship(back_populates="executions")
+    workflow: Mapped["Workflow"] = relationship(back_populates="executions", lazy="raise_on_sql")
     node_executions: Mapped[list["WorkflowNodeExecution"]] = relationship(
         back_populates="execution",
         cascade="all, delete-orphan",
+        lazy="raise_on_sql",
     )
     dead_letter_entries: Mapped[list["DeadLetterEntry"]] = relationship(
         back_populates="execution",
         cascade="all, delete-orphan",
+        lazy="raise_on_sql",
     )
 
 
@@ -241,6 +253,7 @@ class WorkflowNodeExecution(Base):
 
     execution: Mapped["WorkflowExecution"] = relationship(
         back_populates="node_executions",
+        lazy="raise_on_sql",
     )
 
 
@@ -293,6 +306,7 @@ class DeadLetterEntry(Base):
 
     execution: Mapped["WorkflowExecution"] = relationship(
         back_populates="dead_letter_entries",
+        lazy="raise_on_sql",
     )
 
 
@@ -340,4 +354,108 @@ class WebhookTestCapture(Base):
     )
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
+    )
+
+
+class WorkflowExecutionLog(Base):
+    """Log estruturado de eventos de execucao — granularidade maior que
+    ``WorkflowNodeExecution`` (que agrega 1 linha por no).
+
+    Esta tabela armazena mensagens individuais (info, warning, error) emitidas
+    durante a execucao — um no pode gerar varios logs. Usado para troubleshooting
+    remoto de consultores: mostra exatamente o que aconteceu, com timestamps
+    e contexto estruturado, sem precisar de acesso SSH ao servidor.
+
+    Nao armazena payloads de dados — apenas metadados. Se um no falha com
+    erro de conversao de tipo, as linhas-amostra ficam em ``context`` com PII
+    mascarada.
+    """
+
+    __tablename__ = "workflow_execution_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    execution_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workflow_executions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    node_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        comment="ID do no emitente. None para eventos de execucao global.",
+    )
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+        index=True,
+    )
+    level: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="info",
+        comment="info | warning | error",
+    )
+    message: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+    context: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment="Metadados estruturados: chunk_idx, rows_sample (PII masked), error_type.",
+    )
+
+
+class WorkflowCheckpoint(Base):
+    """Checkpoint de um no para retomada de execucao falhada.
+
+    Quando ``checkpoint_enabled=true`` no config do no, o output e persistido
+    aqui (com caminho DuckDB copiado para local persistente) e pode ser
+    reutilizado por uma execucao de retry sem re-executar o no.
+    """
+
+    __tablename__ = "workflow_checkpoints"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=text("gen_random_uuid()"),
+    )
+    source_execution_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("workflow_executions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+        comment="Execucao que gerou este checkpoint.",
+    )
+    node_id: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        comment="ID do no React Flow que produziu o output.",
+    )
+    result_json: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        comment="Result dict do processador com caminhos DuckDB persistentes.",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        comment="Checkpoint expira automaticamente (default: 7 dias apos criacao).",
+    )
+    used_by_execution_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+        comment="ID da execucao de retry que consumiu este checkpoint.",
     )

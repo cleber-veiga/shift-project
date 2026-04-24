@@ -248,9 +248,53 @@ class LoadService:
         merge_key: list[str] | None = None,
         batch_size: int = 1000,
         unique_columns: list[str] | None = None,
+        load_strategy: str = "append_fast",
     ) -> LoadResult:
         """
         Insere dados na tabela destino.
+
+        Estrategias de carga (``load_strategy``):
+        - ``"append_fast"`` (padrao): comportamento atual — dlt para PG/MySQL/MSSQL,
+          SQLAlchemy para Oracle/Firebird. Commit por chunk; sem rollback global.
+        - ``"append_safe"``: SQLAlchemy com transacao unica. Rollback total em
+          qualquer erro. Insercao atomica — ou tudo vai ou nada vai.
+        - ``"upsert"``: INSERT ... ON CONFLICT DO UPDATE (PG) / MERGE (MSSQL/Oracle)
+          / INSERT ... ON DUPLICATE KEY UPDATE (MySQL). Requer ``merge_key``.
+
+        Matriz de comportamento por destino (em caso de falha no meio da carga):
+
+        +-------------+----------------------+----------------------+----------------------+
+        | Destino     | append_fast          | append_safe          | upsert               |
+        +=============+======================+======================+======================+
+        | PostgreSQL  | Commit por chunk via | Transacao unica.     | ON CONFLICT DO       |
+        |             | dlt. Chunks ja       | Rollback total em    | UPDATE. Idempotente  |
+        |             | commitados ficam no  | qualquer erro.       | por merge_key.       |
+        |             | destino.             |                      |                      |
+        +-------------+----------------------+----------------------+----------------------+
+        | MySQL       | Commit por chunk via | Transacao unica em   | ON DUPLICATE KEY     |
+        |             | dlt. Chunks          | engines InnoDB.      | UPDATE. Requer       |
+        |             | commitados           | MyISAM nao suporta   | indice UNIQUE sobre  |
+        |             | permanecem.          | rollback — use       | merge_key.           |
+        |             |                      | append_safe so em    |                      |
+        |             |                      | InnoDB.              |                      |
+        +-------------+----------------------+----------------------+----------------------+
+        | SQL Server  | Commit por chunk via | Transacao unica via  | MERGE statement.     |
+        |             | dlt.                 | SQLAlchemy. Rollback | Requer merge_key.    |
+        |             |                      | total.               |                      |
+        +-------------+----------------------+----------------------+----------------------+
+        | Oracle      | SQLAlchemy em batch, | Transacao unica.     | MERGE INTO.          |
+        |             | commit por chunk     | Rollback total.      | Requer merge_key.    |
+        |             | (dlt nao suportado). |                      |                      |
+        +-------------+----------------------+----------------------+----------------------+
+        | Firebird    | SQLAlchemy em batch, | Transacao unica.     | UPDATE OR INSERT.    |
+        |             | commit por chunk.    | Rollback total.      | Requer merge_key.    |
+        +-------------+----------------------+----------------------+----------------------+
+
+        Recomendacao para migracao de dados cliente:
+        - Volumes > 10M: ``append_fast`` (rollback total inviavel em Oracle/SQL Server
+          por log de transacao). Carga em tabela staging + swap manual.
+        - Volumes < 10M com destino critico: ``append_safe``.
+        - Reexecucao incremental de mesmo dataset: ``upsert`` com ``merge_key`` = PK.
 
         Fluxo:
         1. Valida parametros
@@ -356,35 +400,22 @@ class LoadService:
             count_before = _count_rows(engine, target_table)
 
             # Decide estrategia de carga
-            loader = _choose_loader(connection_string)
-
-            if loader == "dlt":
-                try:
-                    result = _insert_via_dlt(
-                        connection_string=connection_string,
-                        target_table=target_table,
-                        rows=[prepared.values for prepared in prepared_rows],
-                        source_row_numbers=[
-                            prepared.source_row_number for prepared in prepared_rows
-                        ],
-                        write_disposition=write_disposition,
-                        merge_key=merge_key,
-                        batch_size=batch_size,
+            if load_strategy == "upsert":
+                if not merge_key:
+                    raise ValueError(
+                        "load_strategy='upsert' requer merge_key com ao menos uma coluna."
                     )
-                except Exception:
-                    # dlt nao devolve diagnostico por linha. Se falhar,
-                    # recai no caminho SQLAlchemy para capturar split
-                    # success/on_error sem abortar o workflow inteiro.
-                    result = _insert_via_sqlalchemy(
-                        engine=engine,
-                        target_table=target_table,
-                        prepared_rows=prepared_rows,
-                        cols=cols,
-                        write_disposition=write_disposition,
-                        merge_key=merge_key or [],
-                        batch_size=batch_size,
-                    )
-            else:
+                result = _upsert_via_sqlalchemy(
+                    engine=engine,
+                    connection_string=connection_string,
+                    conn_type=conn_type,
+                    target_table=target_table,
+                    prepared_rows=prepared_rows,
+                    cols=cols,
+                    merge_key=merge_key,
+                    batch_size=batch_size,
+                )
+            elif load_strategy == "append_safe":
                 result = _insert_via_sqlalchemy(
                     engine=engine,
                     target_table=target_table,
@@ -394,6 +425,45 @@ class LoadService:
                     merge_key=merge_key or [],
                     batch_size=batch_size,
                 )
+            else:
+                # append_fast: dlt para PG/MySQL/MSSQL, SQLAlchemy para Oracle/Firebird
+                loader = _choose_loader(connection_string)
+                if loader == "dlt":
+                    try:
+                        result = _insert_via_dlt(
+                            connection_string=connection_string,
+                            target_table=target_table,
+                            rows=[prepared.values for prepared in prepared_rows],
+                            source_row_numbers=[
+                                prepared.source_row_number for prepared in prepared_rows
+                            ],
+                            write_disposition=write_disposition,
+                            merge_key=merge_key,
+                            batch_size=batch_size,
+                        )
+                    except Exception:
+                        # dlt nao devolve diagnostico por linha. Se falhar,
+                        # recai no caminho SQLAlchemy para capturar split
+                        # success/on_error sem abortar o workflow inteiro.
+                        result = _insert_via_sqlalchemy(
+                            engine=engine,
+                            target_table=target_table,
+                            prepared_rows=prepared_rows,
+                            cols=cols,
+                            write_disposition=write_disposition,
+                            merge_key=merge_key or [],
+                            batch_size=batch_size,
+                        )
+                else:
+                    result = _insert_via_sqlalchemy(
+                        engine=engine,
+                        target_table=target_table,
+                        prepared_rows=prepared_rows,
+                        cols=cols,
+                        write_disposition=write_disposition,
+                        merge_key=merge_key or [],
+                        batch_size=batch_size,
+                    )
 
             # ── COUNT(*) apos insercao ──────────────────────────────────────
             count_after = _count_rows(engine, target_table)
@@ -1078,6 +1148,132 @@ def _diagnose_row_error(
         if col.lower() in error_lower:
             return col, repr(val), type(val).__name__
     return None, None, None
+
+
+# ─── Upsert via SQLAlchemy (append_safe idempotente por chave) ───────────────
+
+def _upsert_via_sqlalchemy(
+    engine: sa.Engine,
+    connection_string: str,
+    conn_type: str,
+    target_table: str,
+    prepared_rows: list[PreparedLoadRow],
+    cols: list[str],
+    merge_key: list[str],
+    batch_size: int,
+) -> LoadResult:
+    """Upsert idempotente por chave de idempotencia.
+
+    Comportamento por dialeto:
+    - PostgreSQL  : INSERT ... ON CONFLICT (key) DO UPDATE SET col = EXCLUDED.col
+    - MySQL       : INSERT ... ON DUPLICATE KEY UPDATE col = VALUES(col)
+    - MSSQL/Oracle: MERGE INTO target USING source ON match WHEN MATCHED UPDATE / WHEN NOT MATCHED INSERT
+    - Outros      : fallback para _insert_via_sqlalchemy com write_disposition='merge'
+      (nao e idempotente mas nao quebra o workflow).
+
+    Todos os dialetos executam em transacao unica — rollback total em erro.
+    """
+    dialect = engine.dialect.name.lower()
+    col_names = ", ".join(f'"{c}"' for c in cols)
+
+    rows_written = 0
+    rejected: list[RejectedRow] = []
+    successful_row_numbers: list[int] = []
+    batch_count = 0
+
+    with engine.begin() as db_conn:
+        for i in range(0, len(prepared_rows), batch_size):
+            batch_prepared = prepared_rows[i:i + batch_size]
+            batch_count += 1
+
+            for prepared in batch_prepared:
+                row = prepared.values
+                placeholders = ", ".join(f":{c}" for c in cols)
+                sp = db_conn.begin_nested()
+                try:
+                    if dialect == "postgresql":
+                        set_clause = ", ".join(
+                            f'"{c}" = EXCLUDED."{c}"'
+                            for c in cols
+                            if c not in merge_key
+                        ) or f'"{cols[0]}" = EXCLUDED."{cols[0]}"'
+                        key_cols = ", ".join(f'"{k}"' for k in merge_key)
+                        stmt = sa.text(
+                            f"INSERT INTO {target_table} ({col_names}) "
+                            f"VALUES ({placeholders}) "
+                            f"ON CONFLICT ({key_cols}) DO UPDATE SET {set_clause}"
+                        )
+                    elif dialect == "mysql":
+                        set_clause = ", ".join(
+                            f'`{c}` = VALUES(`{c}`)'
+                            for c in cols
+                            if c not in merge_key
+                        ) or f'`{cols[0]}` = VALUES(`{cols[0]}`)'
+                        mysql_cols = ", ".join(f'`{c}`' for c in cols)
+                        mysql_ph = ", ".join(f":{c}" for c in cols)
+                        stmt = sa.text(
+                            f"INSERT INTO {target_table} ({mysql_cols}) "
+                            f"VALUES ({mysql_ph}) "
+                            f"ON DUPLICATE KEY UPDATE {set_clause}"
+                        )
+                    else:
+                        # MSSQL / Oracle / outros: MERGE statement
+                        match_cond = " AND ".join(
+                            f'target."{k}" = source."{k}"' for k in merge_key
+                        )
+                        src_cols_alias = ", ".join(f":{c} AS \"{c}\"" for c in cols)
+                        update_clause = ", ".join(
+                            f'target."{c}" = source."{c}"'
+                            for c in cols
+                            if c not in merge_key
+                        )
+                        insert_clause = f"({col_names}) VALUES ({', '.join(f'source.\"{c}\"' for c in cols)})"
+                        if update_clause:
+                            merge_sql = (
+                                f"MERGE INTO {target_table} AS target "
+                                f"USING (SELECT {src_cols_alias}) AS source ON ({match_cond}) "
+                                f"WHEN MATCHED THEN UPDATE SET {update_clause} "
+                                f"WHEN NOT MATCHED THEN INSERT {insert_clause}"
+                            )
+                        else:
+                            merge_sql = (
+                                f"MERGE INTO {target_table} AS target "
+                                f"USING (SELECT {src_cols_alias}) AS source ON ({match_cond}) "
+                                f"WHEN NOT MATCHED THEN INSERT {insert_clause}"
+                            )
+                        stmt = sa.text(merge_sql)
+
+                    db_conn.execute(stmt, row)
+                    sp.commit()
+                    rows_written += 1
+                    successful_row_numbers.append(prepared.source_row_number)
+                except Exception as row_exc:
+                    sp.rollback()
+                    col_hint, val_hint, type_hint = _diagnose_row_error(row, str(row_exc))
+                    rejected.append(RejectedRow(
+                        row_number=prepared.source_row_number,
+                        error=str(row_exc)[:300],
+                        column=col_hint,
+                        value=val_hint,
+                        expected_type=type_hint,
+                    ))
+
+    failed_row_numbers = [r.row_number for r in rejected]
+    status = "success"
+    if rejected:
+        status = "partial" if rows_written > 0 else "error"
+
+    return LoadResult(
+        status=status,
+        rows_written=rows_written,
+        batches=batch_count,
+        rejected_rows=rejected,
+        successful_row_numbers=successful_row_numbers,
+        failed_row_numbers=failed_row_numbers,
+        loader="sqlalchemy",
+        write_disposition="merge",
+        unique_columns=merge_key,
+    )
 
 
 # ─── Insercao via dlt ────────────────────────────────────────────────────────

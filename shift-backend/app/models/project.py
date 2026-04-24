@@ -41,14 +41,16 @@ class Project(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    workspace: Mapped["Workspace"] = relationship(back_populates="projects")
+    workspace: Mapped["Workspace"] = relationship(back_populates="projects", lazy="raise_on_sql")
     workflows: Mapped[list["Workflow"]] = relationship(
         back_populates="project",
         cascade="all, delete-orphan",
+        lazy="raise_on_sql",
     )
     members: Mapped[list["ProjectMember"]] = relationship(
         back_populates="project",
         cascade="all, delete-orphan",
+        lazy="raise_on_sql",
     )
 
 
@@ -89,5 +91,5 @@ class ProjectMember(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    project: Mapped["Project"] = relationship(back_populates="members")
-    user: Mapped["User"] = relationship(back_populates="project_memberships")
+    project: Mapped["Project"] = relationship(back_populates="members", lazy="raise_on_sql")
+    user: Mapped["User"] = relationship(back_populates="project_memberships", lazy="raise_on_sql")
