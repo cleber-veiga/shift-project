@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { ChevronDown, Database, ExternalLink, FileSearch, Loader2, Plug2, Search } from "lucide-react"
+import { ChevronDown, Database, ExternalLink, FileSearch, Loader2, Plug2, Search, Trash2, Zap } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useDashboard } from "@/lib/context/dashboard-context"
 import {
@@ -11,6 +11,7 @@ import {
   type SavedQuery,
 } from "@/lib/auth"
 import { ConnectionField } from "@/components/workflow/connection-field"
+import { deleteExtractCache } from "@/lib/api/executions"
 
 // ── Database type labels ─────────────────────────────────────────────────────
 
@@ -363,6 +364,106 @@ export function SqlDatabaseConfig({ data, onUpdate }: SqlDatabaseConfigProps) {
               placeholder="Sem limite"
               className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
             />
+          </div>
+
+          {/* ── Cache de extração (Sprint 4.4) ── */}
+          <CacheSection nodeType="sql_database" data={data} onUpdate={onUpdate} />
+        </>
+      )}
+    </div>
+  )
+}
+
+// ── Cache section — reutilizavel por qualquer no de extracao ─────────────────
+
+export interface CacheSectionProps {
+  nodeType: string
+  data: Record<string, unknown>
+  onUpdate: (data: Record<string, unknown>) => void
+}
+
+export function CacheSection({ nodeType, data, onUpdate }: CacheSectionProps) {
+  const cacheEnabled = Boolean(data.cache_enabled)
+  const ttl = (data.cache_ttl_seconds as number) ?? 300
+  const [clearing, setClearing] = useState(false)
+  const [clearMsg, setClearMsg] = useState<string | null>(null)
+
+  const handleClearCache = async () => {
+    setClearing(true)
+    setClearMsg(null)
+    try {
+      // cache_key so e conhecido em runtime; invalida todas entradas do node_type
+      const res = await deleteExtractCache({ nodeType })
+      setClearMsg(`${res.deleted} entrada(s) removida(s).`)
+    } catch {
+      setClearMsg("Falha ao limpar cache.")
+    } finally {
+      setClearing(false)
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5">
+          <Zap className="size-3.5 text-emerald-500" />
+          <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Cache de Extração
+          </span>
+        </div>
+        {/* Toggle */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={cacheEnabled}
+          onClick={() => onUpdate({ ...data, cache_enabled: !cacheEnabled })}
+          className={cn(
+            "relative inline-flex h-4 w-8 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors",
+            cacheEnabled ? "bg-emerald-500" : "bg-muted-foreground/30",
+          )}
+        >
+          <span
+            className={cn(
+              "pointer-events-none inline-block size-3 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out",
+              cacheEnabled ? "translate-x-4" : "translate-x-0",
+            )}
+          />
+        </button>
+      </div>
+
+      {cacheEnabled && (
+        <>
+          <p className="text-[10px] text-muted-foreground">
+            Quando ativo, o resultado desta extração é reutilizado por execuções posteriores
+            enquanto a configuração do nó não mudar e o TTL não expirar.
+          </p>
+
+          <div className="space-y-1">
+            <label className="text-[11px] font-medium text-muted-foreground">
+              TTL (segundos)
+            </label>
+            <input
+              type="number"
+              min={10}
+              value={ttl}
+              onChange={(e) => onUpdate({ ...data, cache_ttl_seconds: Number(e.target.value) || 300 })}
+              className="h-7 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none focus:ring-1 focus:ring-primary"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleClearCache}
+              disabled={clearing}
+              className="flex items-center gap-1 rounded border border-border bg-card px-2 py-1 text-[11px] text-red-600 hover:bg-red-500/10 disabled:opacity-60"
+            >
+              <Trash2 className="size-3" />
+              {clearing ? "Limpando…" : "Limpar cache do nó"}
+            </button>
+            {clearMsg && (
+              <span className="text-[11px] text-muted-foreground">{clearMsg}</span>
+            )}
           </div>
         </>
       )}

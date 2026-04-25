@@ -5,7 +5,7 @@ import { type Node } from "@xyflow/react"
 import { getNodeDefinition } from "@/lib/workflow/types"
 import { getNodeIcon } from "@/lib/workflow/node-icons"
 import { cn } from "@/lib/utils"
-import { SqlDatabaseConfig } from "@/components/workflow/nodes/sql-database-config"
+import { SqlDatabaseConfig, CacheSection } from "@/components/workflow/nodes/sql-database-config"
 import { MapperConfig } from "@/components/workflow/nodes/mapper-config"
 import { FilterConfig } from "@/components/workflow/nodes/filter-config"
 import { DeduplicationConfig } from "@/components/workflow/nodes/deduplication-config"
@@ -387,6 +387,11 @@ function renderNodeSpecificFields({
               onChange={(v) => update("encoding", v)}
             />
           </ConfigField>
+          <CacheSection
+            nodeType="csv_input"
+            data={data}
+            onUpdate={(newData) => onUpdate(node.id, newData)}
+          />
         </div>
       )
 
@@ -412,6 +417,11 @@ function renderNodeSpecificFields({
               placeholder="Sheet1 (vazio = primeira aba)"
             />
           </ConfigField>
+          <CacheSection
+            nodeType="excel_input"
+            data={data}
+            onUpdate={(newData) => onUpdate(node.id, newData)}
+          />
         </div>
       )
 

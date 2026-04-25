@@ -1,6 +1,7 @@
 "use client"
 
 import {
+  Camera,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -124,6 +125,15 @@ export function ExecutionsList({
                     <span>{formatDuration(item.duration_ms)}</span>
                     <span className="opacity-60">•</span>
                     <span>{item.node_count} nós</span>
+                    {item.definition_snapshot_hash && (
+                      <span
+                        title="Snapshot da definição disponível"
+                        className="ml-auto flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] text-indigo-500 bg-indigo-500/10"
+                      >
+                        <Camera className="size-2.5" />
+                        snap
+                      </span>
+                    )}
                   </div>
                   {item.error_message && (
                     <div className="truncate text-[11px] text-red-500/90">

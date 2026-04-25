@@ -9,13 +9,16 @@ import {
   Clock,
   Copy,
   DatabaseZap,
+  GitCompareArrows,
   Loader2,
   Play,
+  Sparkles,
   Square,
   Trash2,
   User,
   Webhook,
   XCircle,
+  Zap,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { formatDateTime, formatDuration } from "@/lib/format"
@@ -29,6 +32,7 @@ import {
   type NodeExecution,
   type TriggeredBy,
 } from "@/lib/api/executions"
+import { SnapshotCanvasModal } from "@/components/workflow/executions/snapshot-canvas-modal"
 import { executeWorkflow } from "@/lib/api/workflow-variables"
 
 interface ExecutionsDetailProps {
@@ -117,6 +121,7 @@ export function ExecutionsDetail({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [showSnapshot, setShowSnapshot] = useState(false)
 
   useEffect(() => {
     if (!executionId) {
@@ -252,6 +257,13 @@ export function ExecutionsDetail({
       : null
 
   return (
+    <>
+    {showSnapshot && detail && (
+      <SnapshotCanvasModal
+        executionId={detail.execution_id}
+        onClose={() => setShowSnapshot(false)}
+      />
+    )}
     <div className="flex min-w-0 flex-1 flex-col">
       <div className="shrink-0 border-b border-border bg-muted/20 px-4 py-3">
         <div className="flex flex-wrap items-center gap-2">
@@ -281,6 +293,19 @@ export function ExecutionsDetail({
             <Copy className="size-3" />
             {detail.execution_id.slice(0, 8)}
           </button>
+          {/* Ver snapshot — disponivel para qualquer execucao com snapshot */}
+          {detail.definition_snapshot_hash && (
+            <button
+              type="button"
+              onClick={() => setShowSnapshot(true)}
+              className="flex items-center gap-1 rounded border border-border bg-card px-2 py-0.5 text-[11px] text-indigo-600 hover:bg-indigo-500/10"
+              title="Ver o workflow como estava no momento desta execução"
+            >
+              <GitCompareArrows className="size-3" />
+              Ver como foi executado
+            </button>
+          )}
+
           {detail.status === "RUNNING" ? (
             <button
               type="button"
@@ -392,6 +417,15 @@ export function ExecutionsDetail({
                       </div>
                     </div>
                     <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                      {node.is_cache_hit && (
+                        <span
+                          title="Resultado servido pelo cache de extração"
+                          className="flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] font-medium text-emerald-600 bg-emerald-500/10"
+                        >
+                          <Zap className="size-2.5" />
+                          cache hit
+                        </span>
+                      )}
                       <span>{formatDuration(node.duration_ms)}</span>
                       {node.row_count_out != null && (
                         <span>• {node.row_count_out} linhas</span>
@@ -425,5 +459,6 @@ export function ExecutionsDetail({
         )}
       </div>
     </div>
+    </>
   )
 }

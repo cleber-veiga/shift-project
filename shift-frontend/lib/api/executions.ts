@@ -26,6 +26,8 @@ export interface ExecutionSummary {
   completed_at: string | null
   node_count: number
   error_message: string | null
+  /** SHA-256 do snapshot da definicao no momento da execucao (Sprint 4.1). */
+  definition_snapshot_hash: string | null
 }
 
 export interface ExecutionListResponse {
@@ -49,6 +51,18 @@ export interface NodeExecution {
   error_message: string | null
   started_at: string | null
   completed_at: string | null
+  /** true quando o resultado foi servido pelo cache de extracao (Sprint 4.4). */
+  is_cache_hit?: boolean
+}
+
+/** Resposta de GET /executions/{id}/definition (Sprint 4.1). */
+export interface ExecutionDefinitionResponse {
+  execution_id: string
+  workflow_id: string
+  snapshot: Record<string, unknown> | null
+  snapshot_hash: string | null
+  current_hash: string | null
+  definition_diverged: boolean
 }
 
 export interface ExecutionDetail {
@@ -61,6 +75,8 @@ export interface ExecutionDetail {
   completed_at: string | null
   nodes: NodeExecution[]
   input_data?: { variable_values?: Record<string, unknown> } | null
+  /** SHA-256 do snapshot da definicao — presente quando a execucao tem snapshot (Sprint 4.1). */
+  definition_snapshot_hash?: string | null
 }
 
 export interface ListExecutionsParams {
@@ -114,6 +130,31 @@ export async function cancelExecution(executionId: string): Promise<void> {
 export async function deleteExecution(executionId: string): Promise<void> {
   await authorizedRequest<unknown>(
     `/workflows/executions/${executionId}`,
+    { method: "DELETE" },
+  )
+}
+
+/** Busca snapshot da definicao do workflow no momento da execucao (Sprint 4.1). */
+export async function getExecutionDefinition(
+  executionId: string,
+): Promise<ExecutionDefinitionResponse> {
+  return authorizedRequest<ExecutionDefinitionResponse>(
+    `/workflows/executions/${executionId}/definition`,
+    { method: "GET" },
+  )
+}
+
+/** Invalida cache de extracao manual (Sprint 4.4). */
+export async function deleteExtractCache(params: {
+  cacheKey?: string
+  nodeType?: string
+}): Promise<{ deleted: number }> {
+  const qs = new URLSearchParams()
+  if (params.cacheKey) qs.set("cache_key", params.cacheKey)
+  if (params.nodeType) qs.set("node_type", params.nodeType)
+  const query = qs.toString() ? `?${qs.toString()}` : ""
+  return authorizedRequest<{ deleted: number }>(
+    `/extract-cache${query}`,
     { method: "DELETE" },
   )
 }
