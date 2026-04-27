@@ -343,7 +343,9 @@ def _read_rows_from_reference(reference: dict[str, Any]) -> list[dict[str, Any]]
     if find_duckdb_reference(reference) is None:
         return []
 
-    conn = duckdb.connect(str(reference["database_path"]), read_only=True)
+    # ``read_only=True`` removido — incompativel com writers concorrentes
+    # no mesmo path (DuckDB rejeita config divergente no mesmo processo).
+    conn = duckdb.connect(str(reference["database_path"]))
     try:
         cursor = conn.execute(f"SELECT * FROM {build_table_ref(reference)}")
         columns = [desc[0] for desc in cursor.description]

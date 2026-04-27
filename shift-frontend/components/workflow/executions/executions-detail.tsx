@@ -294,7 +294,7 @@ export function ExecutionsDetail({
             {detail.execution_id.slice(0, 8)}
           </button>
           {/* Ver snapshot — disponivel para qualquer execucao com snapshot */}
-          {detail.definition_snapshot_hash && (
+          {detail.template_version && (
             <button
               type="button"
               onClick={() => setShowSnapshot(true)}

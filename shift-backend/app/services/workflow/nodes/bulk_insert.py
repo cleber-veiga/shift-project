@@ -309,6 +309,7 @@ class BulkInsertProcessor(BaseNodeProcessor):
                     batch_size=batch_size,
                     unique_columns=unique_columns if unique_columns else None,
                     load_strategy=load_strategy,
+                    workspace_id=context.get("workspace_id"),
                 )
                 chunks_processed += 1
 
@@ -466,7 +467,9 @@ def _read_cols_from_duckdb_chunked(
     table_ref = build_table_ref(reference)
     projection = ", ".join(_quote_identifier(c) for c in columns)
 
-    conn = duckdb.connect(str(reference["database_path"]), read_only=True)
+    # ``read_only=True`` removido — DuckDB rejeita config divergente
+    # entre conexoes no mesmo arquivo / mesmo processo.
+    conn = duckdb.connect(str(reference["database_path"]))
     try:
         cursor = conn.execute(f"SELECT {projection} FROM {table_ref}")
         col_names = [desc[0] for desc in cursor.description]

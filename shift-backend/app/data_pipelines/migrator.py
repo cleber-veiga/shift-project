@@ -551,7 +551,13 @@ def _read_source(
             if "///" in source_connection
             else ":memory:"
         )
-        conn = _duckdb.connect(db_path, read_only=True)
+        # Removido ``read_only=True`` — DuckDB nao tolera mistura de configs
+        # para o mesmo arquivo no mesmo processo. Causa
+        # ``Can't open a connection to same database file with a different
+        # configuration than existing connections`` quando um RW-writer
+        # (ex: filter_node) abre o mesmo path. Default RW e seguro para
+        # leitura tambem; nao perdemos nenhuma garantia em single-process.
+        conn = _duckdb.connect(db_path)
         try:
             result = conn.execute(query)
             columns = [desc[0] for desc in result.description]

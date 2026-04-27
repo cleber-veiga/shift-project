@@ -73,7 +73,18 @@ scheduler = AsyncIOScheduler(
 # Event listeners — observabilidade do jobstore
 # ---------------------------------------------------------------------------
 
+
+# Jobs de heartbeat (rodam a cada poucos segundos) que NAO devem aparecer
+# em info/warning de execucao normal — log seria so ruido. Erros (job_error)
+# e jobs perdidos (job_missed) continuam sendo logados.
+_HEARTBEAT_JOB_IDS: frozenset[str] = frozenset({
+    "webhook_dispatch_tick",  # tick do worker de webhooks (Prompt 6.3)
+})
+
+
 def _on_job_executed(event: JobExecutionEvent) -> None:
+    if event.job_id in _HEARTBEAT_JOB_IDS:
+        return
     logger.info("scheduler.job_executed", job_id=event.job_id)
 
 
@@ -96,6 +107,11 @@ def _on_job_missed(event: JobExecutionEvent) -> None:
 
 
 def _on_job_max_instances(event: JobExecutionEvent) -> None:
+    # Heartbeats sob carga / cold start podem disparar isso temporariamente
+    # — silencia no log, ainda fica observavel via metrica do APScheduler
+    # se quiser instrumentar depois. Erros reais (job_error) continuam.
+    if event.job_id in _HEARTBEAT_JOB_IDS:
+        return
     logger.warning(
         "scheduler.job_max_instances_reached",
         job_id=event.job_id,

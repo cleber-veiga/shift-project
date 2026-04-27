@@ -21,6 +21,7 @@ from app.schemas.connection import (
     ConnectionUpdate,
     TestConnectionResult,
 )
+from app.services.db.engine_cache import invalidate_engine
 
 _SA_DRIVERS: dict[str, str] = {
     ConnectionType.oracle.value: "oracle+oracledb",
@@ -197,6 +198,12 @@ class ConnectionService:
         if conn is None:
             return None
 
+        # Captura a identidade ANTERIOR antes do mutate. Se host/port/db/user
+        # mudou, precisamos invalidar a chave antiga; se nao, a chave nova
+        # pode coincidir e a invalidacao garante que credenciais novas
+        # entrem em vigor na proxima get_engine().
+        previous_key = self._engine_cache_key_for(conn)
+
         updates = data.model_dump(exclude_none=True)
 
         for field, value in updates.items():
@@ -204,6 +211,12 @@ class ConnectionService:
 
         await db.flush()
         await db.refresh(conn)
+
+        # Invalida a entrada anterior e a atual (caso a chave nao tenha
+        # mudado, a chamada e idempotente — o segundo invalidate retorna
+        # False sem efeito).
+        self._invalidate_cached_engine(previous_key)
+        self._invalidate_cached_engine(self._engine_cache_key_for(conn))
         return conn
 
     async def delete(
@@ -214,9 +227,37 @@ class ConnectionService:
         conn = await self.get(db, connection_id)
         if conn is None:
             return False
+        cache_key = self._engine_cache_key_for(conn)
         await db.delete(conn)
         await db.flush()
+        self._invalidate_cached_engine(cache_key)
         return True
+
+    @staticmethod
+    def _engine_cache_key_for(conn: Connection) -> dict[str, Any]:
+        """Extrai os campos que compoem a chave do engine_cache."""
+        return {
+            "workspace_id": conn.workspace_id,
+            "conn_type": conn.type,
+            "host": conn.host or "",
+            "port": int(conn.port or 0),
+            "database": conn.database or "",
+            "username": conn.username or "",
+        }
+
+    @staticmethod
+    def _invalidate_cached_engine(key: dict[str, Any]) -> None:
+        try:
+            invalidate_engine(
+                key["workspace_id"],
+                conn_type=key["conn_type"],
+                host=key["host"],
+                port=key["port"],
+                database=key["database"],
+                username=key["username"],
+            )
+        except Exception:  # noqa: BLE001 — invalidacao nao pode bloquear o CRUD
+            pass
 
     async def test_connection(
         self,

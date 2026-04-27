@@ -71,7 +71,9 @@ async def duckdb_preview(
     path = _validate_duckdb_path(body.database_path)
 
     try:
-        con = duckdb.connect(str(path), read_only=True)
+        # ``read_only=True`` removido — vide nota em filter_node sobre
+        # incompatibilidade de configs concorrentes pra mesmo arquivo.
+        con = duckdb.connect(str(path))
         try:
             fetch_limit = body.limit + 1
             if body.dataset_name:

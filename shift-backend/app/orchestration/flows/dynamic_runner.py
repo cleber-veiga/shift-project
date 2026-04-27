@@ -84,6 +84,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import bind_context, get_logger
+from app.core.observability import (
+    record_execution,
+    record_node,
+    start_execution_span,
+    start_node_span,
+)
 from app.db.session import async_session_factory
 from app.models.workflow import Workflow
 from app.orchestration.tasks.llm_task import execute_llm_node
@@ -164,6 +170,14 @@ async def acquire_execution_slot(project_id: str | None = None) -> None:
     """
     global _active_count, _queued_count  # noqa: PLW0603
 
+    # Import tardio — keep concurrency module independente da observabilidade
+    # em testes que mockam apenas estes simbolos.
+    from app.core.observability.metrics import (  # noqa: PLC0415
+        SPAWNER_ACTIVE,
+        SPAWNER_ERRORS_TOTAL,
+        SPAWNER_SPAWNED_TOTAL,
+    )
+
     _check_disk_limit()
     _queued_count += 1
     try:
@@ -172,6 +186,7 @@ async def acquire_execution_slot(project_id: str | None = None) -> None:
                 _global_semaphore.acquire(), timeout=_EXECUTION_QUEUE_TIMEOUT
             )
         except asyncio.TimeoutError:
+            SPAWNER_ERRORS_TOTAL.labels("execution", "ConcurrencyLimitError").inc()
             raise ConcurrencyLimitError(
                 f"Limite global de execucoes concorrentes atingido "
                 f"({_MAX_CONCURRENT_EXECUTIONS} ativas). "
@@ -186,6 +201,9 @@ async def acquire_execution_slot(project_id: str | None = None) -> None:
                 )
             except asyncio.TimeoutError:
                 _global_semaphore.release()
+                SPAWNER_ERRORS_TOTAL.labels(
+                    "project_slot", "ConcurrencyLimitError"
+                ).inc()
                 raise ConcurrencyLimitError(
                     f"Limite de execucoes concorrentes por projeto atingido "
                     f"({_MAX_CONCURRENT_PER_PROJECT} ativas neste projeto). "
@@ -197,11 +215,20 @@ async def acquire_execution_slot(project_id: str | None = None) -> None:
     _active_count += 1
     if project_id:
         _active_by_project[project_id] += 1
+    SPAWNER_ACTIVE.labels("execution").set(_active_count)
+    SPAWNER_SPAWNED_TOTAL.labels("execution").inc()
+    if project_id:
+        SPAWNER_ACTIVE.labels("project_slot").set(
+            sum(_active_by_project.values())
+        )
+        SPAWNER_SPAWNED_TOTAL.labels("project_slot").inc()
 
 
 def release_execution_slot(project_id: str | None = None) -> None:
     """Libera slot global e por-projeto adquiridos em ``acquire_execution_slot``."""
     global _active_count  # noqa: PLW0603
+
+    from app.core.observability.metrics import SPAWNER_ACTIVE  # noqa: PLC0415
 
     _global_semaphore.release()
     if project_id and project_id in _project_semaphores:
@@ -210,6 +237,11 @@ def release_execution_slot(project_id: str | None = None) -> None:
             0, _active_by_project.get(project_id, 0) - 1
         )
     _active_count = max(0, _active_count - 1)
+    SPAWNER_ACTIVE.labels("execution").set(_active_count)
+    if project_id:
+        SPAWNER_ACTIVE.labels("project_slot").set(
+            sum(_active_by_project.values())
+        )
 
 
 def get_concurrency_metrics() -> dict[str, Any]:
@@ -320,12 +352,27 @@ async def _run_with_retry(
     last_exc: NodeProcessingError | None = None
     for attempt in range(1, attempts + 1):
         try:
-            return await _run_with_timeout(
+            # Span por TENTATIVA — uma falha + retry resulta em dois spans
+            # filhos do span de execucao, com o atributo ``attempt`` para
+            # diferenciar. Em ferramentas como Jaeger isso aparece como
+            # uma timeline visual de "tentou, falhou, esperou X, tentou de novo".
+            with start_node_span(
                 node_id=node_id,
-                coro=attempt_factory(),
-                timeout=timeout,
-                logger=logger,
-            )
+                node_type=node_type_for_event,
+                execution_id=execution_id,
+            ) as _span:
+                if attempts > 1:
+                    try:
+                        _span.set_attribute("attempt", str(attempt))
+                        _span.set_attribute("max_attempts", str(attempts))
+                    except Exception:  # noqa: BLE001
+                        pass
+                return await _run_with_timeout(
+                    node_id=node_id,
+                    coro=attempt_factory(),
+                    timeout=timeout,
+                    logger=logger,
+                )
         except NodeProcessingError as exc:
             last_exc = exc
             msg = str(exc)
@@ -831,6 +878,7 @@ async def run_workflow(
     checkpoint_results: dict[str, Any] | None = None,
     run_mode: str = "full",
     preview_max_rows: int | None = None,
+    workspace_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Entrypoint principal que orquestra a execucao dinamica de um workflow.
@@ -881,6 +929,12 @@ async def run_workflow(
     execution_context: dict[str, Any] = {
         "execution_id": execution_id,
         "workflow_id": workflow_id,
+        # Identidade de tenant para o engine_cache: processadores que
+        # criam engines via ``app.services.db.engine_cache.get_engine``
+        # devem repassar este valor para que o cache isole pools por
+        # workspace. ``None`` cai no DEFAULT_SCOPE — o que significa
+        # cache compartilhado, util em testes e em flows sem contexto.
+        "workspace_id": workspace_id,
         "triggered_by": triggered_by,
         "input_data": input_data or {},
         "vars": variable_values or {},
@@ -924,7 +978,23 @@ async def run_workflow(
     nodes = resolved_payload.get("nodes", [])
     edges = resolved_payload.get("edges", [])
 
-    with bind_context(execution_id=execution_id, workflow_id=workflow_id):
+    # ``workspace_id`` e ``workflow_id`` (= template_id no Shift) tambem entram
+    # nos contextvars de log para que TODA mensagem dentro deste run tenha
+    # esses campos — requisito de "logs estruturados com workspace/execution_id".
+    with bind_context(
+        execution_id=execution_id,
+        workflow_id=workflow_id,
+        workspace_id=workspace_id,
+    ), start_execution_span(
+        execution_id=execution_id,
+        workflow_id=workflow_id,
+        workspace_id=workspace_id,
+        triggered_by=triggered_by,
+    ):
+        # Marcador de tempo do runner — usado para ``execution_duration_seconds``.
+        # Diferente do ``started_at`` em DB porque queremos a duracao
+        # **observada pelo runner**, sem o lag entre INSERT e dispatch.
+        _exec_t0 = time.monotonic()
         logger.info(
             "workflow.start",
             node_count=len(nodes),
@@ -966,9 +1036,10 @@ async def run_workflow(
             now = datetime.now(timezone.utc)
             node_data_local = node.get("data", {}) if isinstance(node, dict) else {}
             label = node_data_local.get("label") or _get_node_type(node)
+            node_type_local = _get_node_type(node)
             node_executions.append({
                 "node_id": node_id,
-                "node_type": _get_node_type(node),
+                "node_type": node_type_local,
                 "label": str(label)[:255] if label is not None else None,
                 "status": status,
                 "duration_ms": int(duration_ms),
@@ -979,6 +1050,33 @@ async def run_workflow(
                 "started_at": started_at or now,
                 "completed_at": completed_at or now,
             })
+
+            # Metricas Prometheus por no — observamos sempre que o runner
+            # registra um evento de no (success, error, handled_error,
+            # skipped, cancelled). Skipped/cancelled nao incrementam erros;
+            # error/handled_error incrementam ``node_errors_total`` e
+            # tambem observam duracao (a observabilidade de "no que falhou
+            # rapido" e tao util quanto a do que terminou bem).
+            try:
+                err_class: str | None = None
+                if status in {"error", "handled_error"} and error_message:
+                    if isinstance(output_summary, dict):
+                        err_class = str(output_summary.get("error_type") or "Error")
+                    else:
+                        err_class = "Error"
+                # ``record_node`` decide quais series tocar a partir dos
+                # parametros nao-None. duration so quando temos timing real
+                # (``duration_ms > 0``) — eventos triviais (skipped por
+                # branch) tem duration 0 e nao agregam valor no histograma.
+                record_node(
+                    node_type=node_type_local,
+                    duration_seconds=(duration_ms / 1000.0) if duration_ms else None,
+                    rows_in=row_count_in,
+                    rows_out=row_count_out,
+                    error_class=err_class,
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
         # Controle de ramificacao condicional.
         # skipped_nodes: nos que nao devem ser executados porque todas as suas
@@ -1747,6 +1845,17 @@ async def run_workflow(
                 },
                 logger,
             )
+            # Metrica Prometheus de fim de execucao. Sempre emitida — em
+            # qualquer caminho de saida (success, failed, cancelled, aborted).
+            try:
+                record_execution(
+                    workspace_id=workspace_id,
+                    template_id=workflow_id,
+                    status=final_status,
+                    duration_seconds=time.monotonic() - _exec_t0,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("metrics.record_execution_failed")
             # Remove arquivos DuckDB temporarios desta execucao
             if execution_id:
                 try:
@@ -1757,6 +1866,26 @@ async def run_workflow(
                 except Exception as _exc:  # noqa: BLE001
                     logger.warning(
                         "execution.storage_cleanup_failed",
+                        execution_id=execution_id,
+                        error=str(_exc),
+                    )
+                # Cleanup de spillover do streaming (Prompt 1.2). Cobre os
+                # arquivos que sobreviveram a uma queue.cleanup() — defesa
+                # em profundidade caso algum caller esqueca de fechar.
+                try:
+                    from app.services.streaming import (  # noqa: PLC0415
+                        cleanup_execution_spill,
+                    )
+                    removed = cleanup_execution_spill(execution_id)
+                    if removed:
+                        logger.info(
+                            "execution.spill_cleanup",
+                            execution_id=execution_id,
+                            removed=removed,
+                        )
+                except Exception as _exc:  # noqa: BLE001
+                    logger.warning(
+                        "execution.spill_cleanup_failed",
                         execution_id=execution_id,
                         error=str(_exc),
                     )

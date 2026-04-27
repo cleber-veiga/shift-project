@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import get_db, populate_rate_limit_context
 from app.core.config import settings
 from app.core.rate_limit import limiter, _project_key_func, _user_key_func
-from app.core.security import require_permission
+from app.core.security import get_current_user as _resolve_user, require_permission
 from sqlalchemy import func as sa_func, select as sa_select
 
 from app.models.workflow import Workflow, WorkflowExecution, WorkflowExecutionLog, WorkflowNodeExecution
@@ -30,9 +30,12 @@ from app.schemas.workflow import (
     ExecutionLogEntry,
     ExecutionLogsResponse,
     ExecutionResponse,
+    ExecutionSnapshotResponse,
     ExecutionStatusResponse,
     ExecutionSummaryResponse,
     NodeExecutionResponse,
+    ReplayExecutionRequest,
+    ReplayExecutionResponse,
     ValidateExecutionResponse,
 )
 from app.orchestration.flows.dynamic_runner import ConcurrencyLimitError, get_concurrency_metrics
@@ -342,7 +345,7 @@ async def list_workflow_executions(
             WorkflowExecution.started_at,
             WorkflowExecution.completed_at,
             WorkflowExecution.error_message,
-            WorkflowExecution.definition_snapshot_hash,
+            WorkflowExecution.template_version,
             sa_func.coalesce(node_count_sq.c.node_count, 0).label("node_count"),
         )
         .select_from(
@@ -383,31 +386,32 @@ async def list_workflow_executions(
                 completed_at=row["completed_at"],
                 node_count=int(row["node_count"] or 0),
                 error_message=row["error_message"],
-                definition_snapshot_hash=row["definition_snapshot_hash"],
+                template_version=row["template_version"],
             )
         )
 
     return ExecutionListResponse(items=items, total=int(total), page=page, size=size)
 
 
-@router.get(
-    "/executions/{execution_id}/definition",
-    response_model=ExecutionDefinitionResponse,
-)
-async def get_execution_definition(
+async def _execution_or_404(
+    db: AsyncSession,
     execution_id: UUID,
-    db: AsyncSession = Depends(get_db),
-    _=Depends(require_permission("workspace", "VIEWER")),
-) -> ExecutionDefinitionResponse:
-    """Retorna o snapshot da definicao do workflow no momento da execucao.
+    current_user: Any,
+    *,
+    required_role: str = "VIEWER",
+) -> WorkflowExecution:
+    """Carrega a execution e valida acesso do usuario, mascarando cross-workspace
+    como 404.
 
-    Permite reconstruir o canvas exatamente como estava quando o workflow
-    foi executado — util para auditar resultados de execucoes antigas apos
-    edicoes no workflow.
-
-    O campo ``definition_diverged`` indica se a definicao atual do workflow
-    divergiu da que foi usada nesta execucao (comparacao de hash SHA-256).
+    Em SaaS multi-tenant, retornar 403 vaza a existencia do recurso para
+    usuarios de outro workspace ("este id existe mas voce nao pode ver").
+    Esta funcao retorna 404 nos dois casos (nao existe / nao acessivel)
+    para nao expor informacao a quem nao tem direito.
     """
+    from sqlalchemy import func as _sa_func
+    from app.core.security import authorization_service
+    from app.models.project import Project as _Project
+
     result = await db.execute(
         sa_select(WorkflowExecution).where(WorkflowExecution.id == execution_id)
     )
@@ -418,7 +422,45 @@ async def get_execution_definition(
             detail=f"Execucao '{execution_id}' nao encontrada.",
         )
 
-    # Busca definicao atual do workflow para comparar hash
+    # Resolve workspace da execucao (via project ou direto). Mesma logica do
+    # ``_resolve_workspace_id`` do authorization_service, replicada aqui para
+    # poder mascarar 403 -> 404 sem fork em ``require_permission``.
+    ws_q = (
+        sa_select(
+            _sa_func.coalesce(Workflow.workspace_id, _Project.workspace_id)
+        )
+        .select_from(Workflow)
+        .outerjoin(_Project, _Project.id == Workflow.project_id)
+        .where(Workflow.id == execution.workflow_id)
+    )
+    workspace_id = (await db.execute(ws_q)).scalar_one_or_none()
+    if workspace_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execucao '{execution_id}' nao encontrada.",
+        )
+
+    has_access = await authorization_service.has_permission(
+        db=db,
+        user_id=current_user.id,
+        scope="workspace",
+        required_role=required_role,
+        scope_id=workspace_id,
+    )
+    if not has_access:
+        # NAO retornar 403 — vazaria existencia do execution_id.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execucao '{execution_id}' nao encontrada.",
+        )
+    return execution
+
+
+async def _load_execution_with_snapshot(
+    db: AsyncSession,
+    execution: WorkflowExecution,
+) -> tuple[WorkflowExecution, str | None, bool]:
+    """Computa current_hash + diverged a partir de uma execucao ja autorizada."""
     wf_result = await db.execute(
         sa_select(Workflow.definition).where(Workflow.id == execution.workflow_id)
     )
@@ -429,20 +471,157 @@ async def get_execution_definition(
             json.dumps(current_definition, sort_keys=True, default=str).encode()
         ).hexdigest()
 
-    snapshot_hash = execution.definition_snapshot_hash
     diverged = (
-        snapshot_hash is not None
+        execution.template_version is not None
         and current_hash is not None
-        and snapshot_hash != current_hash
+        and execution.template_version != current_hash
     )
+    return execution, current_hash, diverged
 
+
+@router.get(
+    "/executions/{execution_id}/definition",
+    response_model=ExecutionDefinitionResponse,
+    summary="(Deprecado) Snapshot da definicao no contrato Sprint 4.1",
+    description=(
+        "Mantido para retro-compat com clientes que dependem dos campos "
+        "``snapshot`` / ``snapshot_hash`` / ``current_hash`` / "
+        "``definition_diverged``. Novos clientes devem usar "
+        "``GET /executions/{id}/snapshot``."
+    ),
+)
+async def get_execution_definition(
+    execution_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(require_permission("workspace", "VIEWER")),
+) -> ExecutionDefinitionResponse:
+    execution = await _execution_or_404(db, execution_id, current_user)
+    execution, current_hash, diverged = await _load_execution_with_snapshot(
+        db, execution
+    )
     return ExecutionDefinitionResponse(
         execution_id=execution.id,
         workflow_id=execution.workflow_id,
-        snapshot=execution.workflow_definition_snapshot,
-        snapshot_hash=snapshot_hash,
+        snapshot=execution.template_snapshot,
+        snapshot_hash=execution.template_version,
         current_hash=current_hash,
         definition_diverged=diverged,
+    )
+
+
+@router.get(
+    "/executions/{execution_id}/snapshot",
+    response_model=ExecutionSnapshotResponse,
+    summary="Snapshot imutavel da execucao (audit trail)",
+    description=(
+        "Devolve a definicao do workflow exatamente como foi executada — "
+        "ja renderizada (pos-Jinja2) com valores de variaveis declaradas "
+        "como ``secret`` substituidos por ``<REDACTED>``. Nunca contem "
+        "segredos em texto claro.\n\n"
+        "Acesso restrito a membros do workspace que executou o workflow. "
+        "Execucoes de outros workspaces retornam 404 (nao 403) para nao "
+        "vazar a existencia do recurso."
+    ),
+    responses={
+        200: {"description": "Snapshot retornado com hash atual para comparacao."},
+        404: {"description": "Execucao nao existe ou nao e acessivel pelo usuario."},
+    },
+)
+async def get_execution_snapshot(
+    execution_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(_resolve_user),
+) -> ExecutionSnapshotResponse:
+    execution = await _execution_or_404(db, execution_id, current_user)
+    execution, current_hash, diverged = await _load_execution_with_snapshot(
+        db, execution
+    )
+    return ExecutionSnapshotResponse(
+        execution_id=execution.id,
+        workflow_id=execution.workflow_id,
+        template_snapshot=execution.template_snapshot,
+        template_version=execution.template_version,
+        rendered_at=execution.rendered_at,
+        current_template_version=current_hash,
+        diverged=diverged,
+    )
+
+
+@router.post(
+    "/executions/{execution_id}/replay",
+    response_model=ReplayExecutionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Replay deterministico de uma execucao",
+    description=(
+        "Cria uma NOVA execucao reusando o ``template_snapshot`` exato da "
+        "execucao alvo — nao re-renderiza a definicao atual do workflow. "
+        "Util para reproduzir resultados de auditoria mesmo apos edicoes "
+        "posteriores no template.\n\n"
+        "Acesso restrito a usuarios com role ``CONSULTANT`` no workspace. "
+        "404 para usuarios de outro workspace (nao vazar existencia)."
+    ),
+    responses={
+        201: {"description": "Nova execucao criada e enfileirada."},
+        404: {"description": "Execucao original nao existe ou nao e acessivel."},
+        409: {
+            "description": (
+                "``template_snapshot`` da execucao original esta ausente "
+                "ou corrompido — replay impossivel."
+            )
+        },
+        429: {"description": "Rate limit / cota de execucoes esgotada."},
+    },
+)
+async def replay_execution(
+    execution_id: UUID,
+    payload: ReplayExecutionRequest = Body(default_factory=ReplayExecutionRequest),
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(_resolve_user),
+) -> ReplayExecutionResponse:
+    # Valida acesso primeiro: usuario sem role no workspace recebe 404.
+    await _execution_or_404(db, execution_id, current_user, required_role="CONSULTANT")
+    try:
+        result = await workflow_service.replay_execution(
+            db=db,
+            execution_id=execution_id,
+            triggered_by=payload.trigger_type,
+        )
+    except ConcurrencyLimitError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={"Retry-After": "30"},
+        ) from exc
+    except ValueError as exc:
+        # ValueErrors do replay_execution: snapshot ausente/corrompido.
+        # Distinguimos workflow inexistente (404) do snapshot quebrado (409).
+        msg = str(exc).lower()
+        if (
+            "snapshot" in msg
+            or "utilizavel" in msg
+            or "corrompido" in msg
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+
+    latest = (
+        await db.execute(
+            sa_select(WorkflowExecution.template_version).where(
+                WorkflowExecution.id == result.execution_id
+            )
+        )
+    ).scalar_one_or_none()
+
+    return ReplayExecutionResponse(
+        execution_id=result.execution_id,
+        original_execution_id=execution_id,
+        status=result.status,
+        template_version=latest,
     )
 
 

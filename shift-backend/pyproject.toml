@@ -37,6 +37,16 @@ dependencies = [
     "langgraph-checkpoint-postgres>=2.0,<3.0",
     "psycopg[binary,pool]>=3.2,<4.0",
     "langsmith>=0.1.100,<1.0",
+    # OpenTelemetry tracing (Prompt 6.2). API/SDK + OTLP HTTP exporter +
+    # instrumentacao das libs principais. Quando SHIFT_TRACING_ENABLED=false,
+    # nada e exportado — instalado de qualquer forma para que o codigo de
+    # observabilidade resolva os imports sem fallback.
+    "opentelemetry-api>=1.27,<2.0",
+    "opentelemetry-sdk>=1.27,<2.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.27,<2.0",
+    "opentelemetry-instrumentation-fastapi>=0.48b0,<1.0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.48b0,<1.0",
+    "opentelemetry-instrumentation-httpx>=0.48b0,<1.0",
 ]
 
 [project.optional-dependencies]
@@ -57,3 +67,12 @@ build-backend = "setuptools.build_meta"
 pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Markers para suites que dependem de servicos externos. Para rodar SO os
+# testes daquela suite: ``pytest -m docker`` ou ``pytest -m postgres``.
+# Para excluir: ``pytest -m "not docker"``. Sem ``-m``, todos rodam — os
+# que dependem de docker/postgres ainda fazem skip via fixture quando o
+# servico nao esta disponivel.
+markers = [
+    "docker: requer daemon Docker e a imagem shift-kernel-runtime:latest",
+    "postgres: requer Postgres real (nao SQLite) — testa triggers/DDL especificos",
+]

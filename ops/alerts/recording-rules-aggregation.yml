@@ -1,0 +1,108 @@
+# Recording rules de agregacao (Tarefa 6 hardening 6.2/6.3).
+#
+# Pre-computa visoes GLOBAIS (sem label workspace_id / template_id) das
+# metricas alta-cardinalidade para que dashboards principais sejam rapidos
+# E para que retention longa nao precise carregar 100% das series brutas.
+#
+# Como usar:
+# 1. Carregue este arquivo via ``rule_files`` do prometheus.yml.
+# 2. Ajuste dashboards Grafana pra preferir as series ``shift:*`` quando
+#    nao for preciso breakdown por tenant.
+# 3. Mantenha retention curto (7-15 dias) para as series brutas com label
+#    de tenant; as series ``shift:*`` agregadas podem ir pra long-term.
+
+groups:
+  - name: shift_aggregations
+    interval: 30s
+    rules:
+      # --- Execution health ---
+
+      # p50/p95/p99 globais — usados nos paineis principais.
+      - record: shift:execution_duration:p50:5m:global
+        expr: |
+          histogram_quantile(
+            0.50,
+            sum by (le) (rate(execution_duration_seconds_bucket[5m]))
+          )
+
+      - record: shift:execution_duration:p95:5m:global
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(execution_duration_seconds_bucket[5m]))
+          )
+
+      - record: shift:execution_duration:p99:5m:global
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(execution_duration_seconds_bucket[5m]))
+          )
+
+      # Throughput por status — drop workspace_id e template_id.
+      - record: shift:executions:rate:5m:by_status
+        expr: |
+          sum by (status) (rate(shift_executions_total[5m]))
+
+      # Taxa de erro global pos-agregacao.
+      - record: shift:executions:error_ratio:5m:global
+        expr: |
+          sum(rate(shift_executions_total{status!="completed"}[5m]))
+          /
+          clamp_min(sum(rate(shift_executions_total[5m])), 1)
+
+      # --- Node-level ---
+
+      # Top 10 tipos de no por p95 (sem workspace_id — global).
+      - record: shift:node_duration:p95:15m:by_type
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, node_type) (rate(node_duration_seconds_bucket[15m]))
+          )
+
+      # Erros de no por classe — para alertas de regressao.
+      - record: shift:node_errors:rate:5m:by_class
+        expr: |
+          sum by (error_class) (rate(node_errors_total[5m]))
+
+      # --- DB pool ---
+
+      # Soma global de checked-out — saude do pool sem distinguir tenant.
+      - record: shift:db_pool_checked_out:global
+        expr: sum(db_pool_checked_out)
+
+      - record: shift:db_pool_overflow:global
+        expr: sum(db_pool_overflow)
+
+      # --- Webhooks ---
+
+      # Taxa de delivery de webhooks (operacional).
+      - record: shift:webhook_security_blocked:rate:5m:by_reason
+        expr: |
+          sum by (reason) (rate(webhook_security_blocked_total[5m]))
+
+      - record: shift:webhook_replay_rate_limited:rate:5m
+        expr: |
+          sum(rate(webhook_replay_rate_limited_total[5m]))
+
+  # ---------------------------------------------------------------------
+  # Top-N por workspace — recording rule limita cardinalidade no dashboard.
+  # Usa ``topk`` no calculo, evita scanning de toda serie em cada query.
+  # ---------------------------------------------------------------------
+  - name: shift_top_n_workspaces
+    interval: 60s
+    rules:
+      - record: shift:workspace_volume:top10:24h
+        expr: |
+          topk(10, sum by (workspace_id) (
+            increase(shift_executions_total[24h])
+          ))
+
+      - record: shift:workspace_error_ratio:top10:5m
+        expr: |
+          topk(10,
+            sum by (workspace_id) (rate(shift_executions_total{status!="completed"}[5m]))
+            /
+            clamp_min(sum by (workspace_id) (rate(shift_executions_total[5m])), 1)
+          )

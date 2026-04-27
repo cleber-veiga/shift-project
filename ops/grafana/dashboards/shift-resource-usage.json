@@ -1,0 +1,166 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "title": "Shift — Resource Usage",
+  "uid": "shift-resource-usage",
+  "tags": ["shift"],
+  "timezone": "browser",
+  "time": {"from": "now-3h", "to": "now"},
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {"text": "Prometheus", "value": "Prometheus"}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "DB pool — checked-out vs size",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "sum by (database_type) (db_pool_checked_out)",
+          "legendFormat": "checked-out — {{database_type}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (database_type) (db_pool_size)",
+          "legendFormat": "size — {{database_type}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "DB pool — overflow",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "red", "value": 1}
+            ]
+          },
+          "custom": {"thresholdsStyle": {"mode": "line"}}
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (workspace_id, database_type) (db_pool_overflow)",
+          "legendFormat": "{{workspace_id}}/{{database_type}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Sandbox warm pool — idle vs busy",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "sum by (image) (sandbox_pool_idle)",
+          "legendFormat": "idle — {{image}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (image) (sandbox_pool_busy)",
+          "legendFormat": "busy — {{image}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Sandbox acquire — outcomes",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+      "fieldConfig": {"defaults": {"unit": "ops"}},
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(sandbox_acquire_total[5m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Sandbox acquire — wait p95",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+      "fieldConfig": {"defaults": {"unit": "ms"}},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, image) (rate(sandbox_acquire_wait_ms_bucket[5m])))",
+          "legendFormat": "p95 — {{image}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Streaming queue depth (max por execucao)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [
+        {
+          "expr": "max by (execution_id) (streaming_queue_depth)",
+          "legendFormat": "{{execution_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Spillover — chunks indo pra disco (rate)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "fieldConfig": {"defaults": {"unit": "ops"}},
+      "targets": [
+        {
+          "expr": "sum(rate(streaming_spilled_chunks_total[5m]))",
+          "legendFormat": "spilled/s",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(streaming_spill_files_active)",
+          "legendFormat": "active spill files",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Spawners ativos (slots em uso)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
+      "targets": [
+        {
+          "expr": "sum by (spawner_kind) (spawner_active)",
+          "legendFormat": "{{spawner_kind}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

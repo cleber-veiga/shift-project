@@ -84,7 +84,8 @@ def _load_duckdb_rows(
     limit: int,
 ) -> list[dict[str, Any]]:
     """Le ate ``limit`` linhas de uma tabela DuckDB e devolve dicts."""
-    conn = duckdb.connect(database_path, read_only=True)
+    # ``read_only=True`` removido — vide filter_node.
+    conn = duckdb.connect(database_path)
     try:
         table_ref = build_table_ref(
             {

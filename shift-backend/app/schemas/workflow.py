@@ -197,15 +197,49 @@ class ExtractNodeConfig(_RetryableNodeConfig):
 
 
 class SqlDatabaseNodeConfig(_RetryableNodeConfig):
-    """Configuracao explicita para extracao SQL com streaming."""
+    """Configuracao explicita para extracao SQL com streaming.
+
+    ``partition_on`` + ``partition_num`` habilitam leitura paralela em
+    ranges disjuntos de uma coluna numerica ou temporal — exigido para
+    tabelas Oracle/Postgres com 10M+ linhas. A coluna deve ser NOT NULL.
+    """
 
     type: Literal["sql_database"]
     connection_id: ConnectionRef = Field(..., description="ID do conector cadastrado na plataforma")
     query: str | None = None
     table_name: str | None = None
-    chunk_size: int = 1000
+    chunk_size: int = Field(
+        default=50_000,
+        ge=1,
+        le=1_000_000,
+        description="Linhas por fetchmany — controla o RAM por chunk.",
+    )
     max_rows: int | None = None
     output_field: str = "data"
+    partition_on: str | None = Field(
+        default=None,
+        description=(
+            "Coluna NOT NULL (numerica ou temporal) para particionamento "
+            "em ranges. Quando informado junto com ``partition_num > 1``, "
+            "abre N cursores paralelos. Sem isso, leitura single-connection."
+        ),
+    )
+    partition_num: int = Field(
+        default=1,
+        ge=1,
+        le=64,
+        description=(
+            "Numero de particoes/conexoes paralelas. Capado em pool_size + "
+            "max_overflow do engine (ver engine_cache)."
+        ),
+    )
+    streaming: bool = Field(
+        default=True,
+        description=(
+            "Quando True, usa cursor server-side (stream_results=True) e "
+            "fetchmany. Desabilite apenas para drivers nao-streamaveis."
+        ),
+    )
 
 
 class HttpRequestNodeConfig(_RetryableNodeConfig):
@@ -993,7 +1027,7 @@ class ExecutionSummaryResponse(BaseModel):
     completed_at: datetime | None = None
     node_count: int = 0
     error_message: str | None = None
-    definition_snapshot_hash: str | None = None
+    template_version: str | None = None
 
 
 class ExecutionListResponse(BaseModel):
@@ -1006,7 +1040,11 @@ class ExecutionListResponse(BaseModel):
 
 
 class ExecutionDefinitionResponse(BaseModel):
-    """Resposta do endpoint GET /executions/{id}/definition (Sprint 4.1)."""
+    """Resposta do endpoint GET /executions/{id}/definition (Sprint 4.1).
+
+    Compatibilidade com clientes que ainda consultam o caminho legado.
+    Sob o capo le os mesmos campos novos de ExecutionSnapshotResponse.
+    """
 
     execution_id: UUID
     workflow_id: UUID
@@ -1014,6 +1052,48 @@ class ExecutionDefinitionResponse(BaseModel):
     snapshot_hash: str | None
     current_hash: str | None
     definition_diverged: bool = False
+
+
+class ExecutionSnapshotResponse(BaseModel):
+    """Snapshot imutavel da definicao renderizada usada por uma execucao.
+
+    Garantia: ``snapshot`` jamais contem valores de variaveis ``secret`` em
+    texto claro — sao substituidos por ``<REDACTED>`` antes da persistencia.
+    """
+
+    execution_id: UUID
+    workflow_id: UUID
+    template_snapshot: dict[str, Any]
+    template_version: str | None
+    rendered_at: datetime
+    current_template_version: str | None = Field(
+        default=None,
+        description="SHA-256 atual da definicao do workflow para comparacao.",
+    )
+    diverged: bool = Field(
+        default=False,
+        description="True se template_version != current_template_version.",
+    )
+
+
+class ReplayExecutionRequest(BaseModel):
+    """Body opcional do POST /executions/{id}/replay.
+
+    ``trigger_type`` permite que o frontend distinga uma replay manual
+    (botao "rodar novamente") de uma replay agendada por outro processo
+    (sistema de retry, scheduler).
+    """
+
+    trigger_type: Literal["manual", "on_demand"] = "on_demand"
+
+
+class ReplayExecutionResponse(BaseModel):
+    """Resposta do endpoint POST /executions/{id}/replay."""
+
+    execution_id: UUID
+    original_execution_id: UUID
+    status: str
+    template_version: str | None
 
 
 class ExecutionLogEntry(BaseModel):

@@ -55,6 +55,25 @@ _ALLOWED_MODES = {"query", "execute", "execute_many"}
 _INTERPOLATION_PATTERN = re.compile(r"\{\s*[A-Za-z_]\w*\s*\}")
 
 
+def _infer_sql_script_conn_type(cs: str) -> str:
+    """Detecta o tipo de banco a partir do prefixo da URL — usado pelo
+    ``engine_cache`` para selecionar o perfil de pool correto."""
+    cs_lower = cs.lower()
+    if cs_lower.startswith(("postgresql", "postgres")):
+        return "postgresql"
+    if cs_lower.startswith("mysql"):
+        return "mysql"
+    if cs_lower.startswith("oracle"):
+        return "oracle"
+    if cs_lower.startswith("firebird"):
+        return "firebird"
+    if cs_lower.startswith(("mssql", "sqlserver")):
+        return "sqlserver"
+    if cs_lower.startswith("sqlite"):
+        return "sqlite"
+    return "unknown"
+
+
 class _ScriptTimeoutError(Exception):
     """Sinaliza que a execucao do script excedeu o timeout configurado."""
 
@@ -129,7 +148,14 @@ class SqlScriptProcessor(BaseNodeProcessor):
         parameters: dict[str, Any] = {str(k): v for k, v in parameters_raw.items()}
 
         try:
-            engine = sa.create_engine(str(connection_string))
+            from app.services.db.engine_cache import get_engine_from_url
+
+            cs = str(connection_string)
+            engine = get_engine_from_url(
+                context.get("workspace_id"),
+                cs,
+                _infer_sql_script_conn_type(cs),
+            )
         except Exception as exc:
             raise NodeProcessingError(
                 f"No sql_script '{node_id}': falha ao abrir conexao — {exc}"
@@ -167,7 +193,8 @@ class SqlScriptProcessor(BaseNodeProcessor):
                 context,
             )
         finally:
-            engine.dispose()
+            # Engine vem do engine_cache global — nao chamar dispose() aqui.
+            pass
 
     # ------------------------------------------------------------------
     # Modos
@@ -542,7 +569,8 @@ def _read_upstream_rows(
         return []
     table_ref = build_table_ref(reference)
     projection = ", ".join(quote_identifier(c) for c in columns)
-    conn = duckdb.connect(str(reference["database_path"]), read_only=True)
+    # ``read_only=True`` removido — vide filter_node.
+    conn = duckdb.connect(str(reference["database_path"]))
     try:
         cursor = conn.execute(f"SELECT {projection} FROM {table_ref}")
         fetched_cols = [desc[0] for desc in cursor.description]

@@ -160,13 +160,21 @@ class WorkflowExecution(Base):
     input_data: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    workflow_definition_snapshot: Mapped[dict | None] = mapped_column(
-        JSONB, nullable=True,
-        comment="Snapshot da definicao do workflow no momento do disparo (Sprint 4.1).",
+    template_snapshot: Mapped[dict] = mapped_column(
+        JSONB, nullable=False,
+        comment=(
+            "Snapshot imutavel da definicao renderizada (pos-Jinja2) com "
+            "valores de variaveis 'secret' redatados como '<REDACTED>'. "
+            "Audit trail + replay deterministico."
+        ),
     )
-    definition_snapshot_hash: Mapped[str | None] = mapped_column(
+    template_version: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True,
-        comment="SHA-256 hex do snapshot — permite comparacao rapida com a definicao atual.",
+        comment="SHA-256 hex de template_snapshot. Determinastico para mesma entrada.",
+    )
+    rendered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        comment="Timestamp do render — anterior ao inicio efetivo do runner.",
     )
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

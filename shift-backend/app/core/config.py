@@ -83,6 +83,49 @@ class Settings(BaseSettings):
     RATE_LIMIT_EXECUTE_PROJECT_MINUTE: int = 100
     RATE_LIMIT_EXECUTE_PROJECT_HOUR: int = 2000
 
+    # --- Sandbox de codigo de usuario (Prompt 2.1) ---
+    # Quando True, ``code`` / ``python_code`` nodes executam dentro de um
+    # container Docker isolado (kernel-runtime). Quando False, mantem o
+    # caminho legacy in-process com builtins restritos — APENAS para
+    # ambientes de desenvolvimento single-tenant.
+    SANDBOX_ENABLED: bool = False
+    # Imagem do container — construida a partir de ``kernel-runtime/Dockerfile``.
+    # Em CI/prod, fixar uma tag imutavel (ex: shift-kernel-runtime:2026.04.25).
+    SANDBOX_IMAGE: str = "shift-kernel-runtime:latest"
+    # Defaults aplicados quando o node nao especifica override. Workspace
+    # admins podem subir ate o cap absoluto definido em
+    # ``docker_sandbox.ABSOLUTE_CAPS``.
+    SANDBOX_DEFAULT_CPU_QUOTA: float = 1.0
+    SANDBOX_DEFAULT_MEM_LIMIT_MB: int = 512
+    SANDBOX_DEFAULT_TIMEOUT_S: int = 60
+    SANDBOX_DEFAULT_TMPFS_MB: int = 128
+    SANDBOX_DEFAULT_PIDS_LIMIT: int = 128
+    # Pool de containers warm (Prompt 2.2). Quando True, o backend mantem
+    # SANDBOX_POOL_TARGET_IDLE containers ja-iniciados e bloqueados em
+    # ``sys.stdin.read()`` para que ``acquire`` devolva quase instantaneamente
+    # (skip do create+start+import duckdb).
+    SANDBOX_POOL_ENABLED: bool = True
+    SANDBOX_POOL_TARGET_IDLE: int = 2
+    SANDBOX_POOL_MAX_SIZE: int = 8
+    SANDBOX_POOL_HEALTHCHECK_INTERVAL_S: float = 30.0
+
+    # --- Streaming entre nodes (Prompt 1.2) ---
+    # Numero maximo de chunks em RAM por queue de streaming. Acima disso, e
+    # com STREAMING_SPILL_WHEN_EXCEEDED=True, chunks excedentes vao para
+    # disco em STREAMING_SPILL_DIR.
+    STREAMING_MAX_IN_MEMORY_CHUNKS: int = 4
+    # Liga/desliga o spillover. Quando False, o producer bloqueia ao atingir
+    # STREAMING_MAX_IN_MEMORY_CHUNKS — backpressure puro, RAM constante.
+    STREAMING_SPILL_WHEN_EXCEEDED: bool = True
+    # Diretorio onde chunks excedentes sao serializados (pickle por padrao).
+    # Em producao deve apontar para tmpfs/local — nao precisa sobreviver a
+    # restart porque o cleanup roda no fim de cada execucao. Default vazio
+    # delega para ``default_spill_dir()`` (<tempdir>/shift/spill).
+    STREAMING_SPILL_DIR: str = ""
+    # Acima desse numero de chunks spilados em uma execucao, emitimos WARN
+    # com execution_id — sinal de pipeline maldimensionado.
+    STREAMING_SPILL_WARN_THRESHOLD: int = 50
+
     # --- Cache de extracoes (Sprint 4.4) ---
     # Diretorio persistente para DuckDB de entradas em cache.
     # ATENCAO: nao use /tmp — deve sobreviver a restarts.

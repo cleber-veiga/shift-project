@@ -78,6 +78,7 @@ class TruncateTableProcessor(BaseNodeProcessor):
             target_table,
             mode=mode,
             where_clause=where_clause or None,
+            workspace_id=context.get("workspace_id"),
         )
 
         # Pass-through: repassa a referencia DuckDB upstream se existir,

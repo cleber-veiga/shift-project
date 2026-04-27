@@ -103,7 +103,8 @@ def _extract_payload_rows(
     except Exception:
         return []
 
-    conn = duckdb.connect(str(reference["database_path"]), read_only=True)
+    # ``read_only=True`` removido — vide filter_node.
+    conn = duckdb.connect(str(reference["database_path"]))
     try:
         cursor = conn.execute(f"SELECT * FROM {build_table_ref(reference)}")
         columns = [desc[0] for desc in cursor.description]

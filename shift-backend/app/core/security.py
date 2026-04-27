@@ -561,6 +561,19 @@ def require_permission(scope: str, role: str):
     return dependency
 
 
+async def get_current_user(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Resolve o usuario autenticado a partir do JWT.
+
+    Util para handlers que precisam do ``current_user`` sem aplicar
+    pre-validacao de RBAC — tipicamente quando o handler quer mascarar
+    falhas de permissao como 404 (nao vazar existencia de recurso).
+    """
+    return await _resolve_current_user(request, db)
+
+
 async def _resolve_current_user(
     request: Request,
     db: AsyncSession = Depends(get_db),

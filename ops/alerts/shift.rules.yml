@@ -1,0 +1,170 @@
+# Regras de alerta Prometheus para o Shift.
+#
+# Convencoes:
+# - ``severity: page``  -> acorda alguem (PagerDuty / Opsgenie).
+# - ``severity: ticket`` -> abre incidente nao-emergencial.
+# - ``runbook_url`` aponta pra wiki interna do time — placeholder aqui.
+#
+# Recording rules pre-computam algumas series caras (taxa de erro por
+# workspace, baseline de p95) — alertas referenciam essas series para
+# nao recalcular em cada avaliacao.
+
+groups:
+  - name: shift.recording
+    interval: 30s
+    rules:
+      # Taxa de erro global em 5min (executions terminais com status != completed
+      # divididas pelo total). Filtra ``status="completed"`` no numerador
+      # invertido para sobrar errors+cancelled+aborted.
+      - record: shift:execution_error_ratio:rate5m
+        expr: |
+          sum(rate(shift_executions_total{status!="completed"}[5m]))
+          /
+          clamp_min(sum(rate(shift_executions_total[5m])), 1)
+
+      # p95 de duracao nas ultimas 5min (denominador rapido pra alerts).
+      - record: shift:execution_duration_p95:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(execution_duration_seconds_bucket[5m]))
+          )
+
+      # Baseline de p95 nas ultimas 24h — usado pra detectar regressao.
+      - record: shift:execution_duration_p95:baseline24h
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(execution_duration_seconds_bucket[24h]))
+          )
+
+      # Top 10 workspaces por volume nas ultimas 24h.
+      - record: shift:workspace_volume_top10:24h
+        expr: |
+          topk(10, sum by (workspace_id) (
+            increase(shift_executions_total[24h])
+          ))
+
+  - name: shift.alerts
+    rules:
+      # 1. Taxa de erro global > 5% por 10min.
+      - alert: ShiftExecutionErrorRateHigh
+        expr: shift:execution_error_ratio:rate5m > 0.05
+        for: 10m
+        labels:
+          severity: page
+          service: shift-backend
+        annotations:
+          summary: "Taxa de erro de execucoes acima de 5% por 10 minutos"
+          description: |
+            {{ $value | humanizePercentage }} das execucoes terminaram com status
+            diferente de ``completed`` nos ultimos 5 minutos. Investigar logs do
+            backend, alvos de DB de cliente (timeouts) e dependencias externas.
+          runbook_url: "https://wiki.example.com/runbooks/shift/execution-error-rate"
+
+      # 2. p95 de duracao 3x acima do baseline de 24h por 15min.
+      #    NOTA: ``and shift:..._24h > 0`` evita divisao por zero quando o
+      #    backend acabou de subir e ainda nao tem amostras de 24h.
+      - alert: ShiftExecutionP95Regressed
+        expr: |
+          (
+            shift:execution_duration_p95:5m
+            > 3 * shift:execution_duration_p95:baseline24h
+          )
+          and shift:execution_duration_p95:baseline24h > 0
+        for: 15m
+        labels:
+          severity: ticket
+          service: shift-backend
+        annotations:
+          summary: "p95 de execucao 3x acima do baseline ({{ $value }}s)"
+          description: |
+            p95 atual {{ $value }}s vs baseline 24h
+            {{ with query "shift:execution_duration_p95:baseline24h" }}
+            {{ . | first | value }}s{{ end }}.
+            Ver dashboards 'Execution Health' e 'Resource Usage'.
+          runbook_url: "https://wiki.example.com/runbooks/shift/duration-regressed"
+
+      # 3. OOM kills no sandbox — qualquer ocorrencia paga.
+      #    Usa increase[5m] > 0 em vez de >= 1 para tolerar rate
+      #    fracionario quando o counter foi resetado/recriado entre scrapes.
+      - alert: ShiftSandboxOOMKilled
+        expr: increase(sandbox_oom_kills_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: page
+          service: shift-backend
+        annotations:
+          summary: "Container do sandbox foi OOM-killed"
+          description: |
+            {{ $value }} OOM kill(s) registrados em containers do sandbox nos
+            ultimos 5 minutos. Verificar workflows com code_node de alto consumo
+            e considerar aumentar SANDBOX_DEFAULT_MEM_LIMIT_MB ou ajustar limites
+            por no.
+          runbook_url: "https://wiki.example.com/runbooks/shift/sandbox-oom"
+
+      # 4. db_pool_overflow > 0 sustained — pool dimensionado de menos
+      #    OU vazamento de conexoes. Nao paga (ticket) porque overflow
+      #    transitorio e normal sob spike legitimo.
+      - alert: ShiftDbPoolOverflowSustained
+        expr: max(db_pool_overflow) > 0
+        for: 5m
+        labels:
+          severity: ticket
+          service: shift-backend
+        annotations:
+          summary: "Overflow do pool de DB sustained > 5min"
+          description: |
+            Workspace {{ $labels.workspace_id }} / db {{ $labels.database_type }}
+            esta operando alem de pool_size por mais de 5 minutos
+            (overflow={{ $value }}). Avaliar perfil de pool ou checar leak.
+          runbook_url: "https://wiki.example.com/runbooks/shift/db-pool-overflow"
+
+      # 5. Queue de streaming saturada (depth >= maxsize) — usa o gauge
+      #    cumulativo emitido pelo BoundedChunkQueue. Threshold 4 = default
+      #    do STREAMING_MAX_IN_MEMORY_CHUNKS; ajuste se mudar a config.
+      - alert: ShiftStreamingQueueSaturated
+        expr: max(streaming_queue_depth) >= 4
+        for: 10m
+        labels:
+          severity: ticket
+          service: shift-backend
+        annotations:
+          summary: "Queue de streaming cheia > 10min — producer/consumer desbalanceados"
+          description: |
+            Execucao {{ $labels.execution_id }}: queue de chunks em RAM cheia
+            por mais de 10 minutos. Consumidor (load node) provavelmente mais
+            lento que producer (sql_database). Considerar reduzir partition_num
+            ou aumentar concorrencia do load.
+          runbook_url: "https://wiki.example.com/runbooks/shift/queue-saturated"
+
+      # Bonus 1: spawner saturado — slot global sustained perto do max.
+      - alert: ShiftExecutionSlotsSaturated
+        expr: spawner_active{spawner_kind="execution"} >= 10
+        for: 10m
+        labels:
+          severity: ticket
+          service: shift-backend
+        annotations:
+          summary: "Slots globais de execucao saturados por 10min"
+          description: |
+            Todos os {{ $value }} slots de execucao globais estao em uso por
+            mais de 10 minutos — novas execucoes vao para fila. Avaliar
+            escalar SHIFT_MAX_CONCURRENT_EXECUTIONS ou diagnostico de execucoes
+            travadas.
+          runbook_url: "https://wiki.example.com/runbooks/shift/execution-slots"
+
+      # Bonus 2: pool warm de sandbox vazio — aponta cold path 100%.
+      - alert: ShiftSandboxPoolEmpty
+        expr: max(sandbox_pool_idle) == 0 and max(sandbox_pool_busy) > 0
+        for: 5m
+        labels:
+          severity: ticket
+          service: shift-backend
+        annotations:
+          summary: "Pool de sandbox vazio com containers em uso"
+          description: |
+            Pool warm para imagem {{ $labels.image }} esta vazio enquanto
+            ha {{ $value }} containers em uso — toda nova chamada paga
+            cold-create (~1-3s). Avaliar SANDBOX_POOL_TARGET_IDLE.
+          runbook_url: "https://wiki.example.com/runbooks/shift/sandbox-pool-empty"

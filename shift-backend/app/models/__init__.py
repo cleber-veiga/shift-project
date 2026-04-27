@@ -34,6 +34,12 @@ from .workflow import (
     WorkflowNodeExecution,
     WorkflowVersion,
 )
+from .webhook_subscription import (
+    SUPPORTED_EVENTS,
+    WebhookDeadLetter,
+    WebhookDelivery,
+    WebhookSubscription,
+)
 from .workflow_definition_event import WorkflowDefinitionEvent
 from .workspace import (
     Workspace,
@@ -68,7 +74,11 @@ __all__ = [
     "Project",
     "ProjectMember",
     "ProjectRole",
+    "SUPPORTED_EVENTS",
     "User",
+    "WebhookDeadLetter",
+    "WebhookDelivery",
+    "WebhookSubscription",
     "WebhookTestCapture",
     "Workflow",
     "WorkflowCheckpoint",

@@ -22,6 +22,11 @@ from app.core.config import settings
 
 
 def _build_processors(log_format: str) -> list[Any]:
+    # Imports tardios — observabilidade puxa OpenTelemetry quando habilitada;
+    # ambos os modulos abaixo sao leves e seguros de carregar antes do tracer.
+    from app.core.observability.log_sanitizer import sanitize_processor
+    from app.core.observability.trace_logging import add_trace_context
+
     shared: list[Any] = [
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_logger_name,
@@ -29,6 +34,14 @@ def _build_processors(log_format: str) -> list[Any]:
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
+        # Sanitizacao de segredos — primeiro pra que regras nao casem
+        # acidentalmente em campos novos que serao adicionados depois.
+        sanitize_processor,
+        # Trace context — DEPOIS do sanitize por defesa em camadas: trace_id
+        # nao e secret, mas garantimos que nao seja confundido com hex de
+        # token por um padrao mal-configurado em sanitize. ANTES do renderer
+        # JSON: precisa estar no event_dict antes da serializacao final.
+        add_trace_context,
     ]
     if log_format == "json":
         shared.append(structlog.processors.JSONRenderer())

@@ -249,6 +249,7 @@ class LoadService:
         batch_size: int = 1000,
         unique_columns: list[str] | None = None,
         load_strategy: str = "append_fast",
+        workspace_id: str | None = None,
     ) -> LoadResult:
         """
         Insere dados na tabela destino.
@@ -326,7 +327,7 @@ class LoadService:
                 f"Tabela de destino: {target_table}"
             )
 
-        engine = _create_engine(connection_string, conn_type)
+        engine = _create_engine(connection_string, conn_type, workspace_id=workspace_id)
         try:
             # Introspeccao dos tipos da tabela destino
             col_type_map = _introspect_columns(engine, target_table)
@@ -489,7 +490,9 @@ class LoadService:
             return result
 
         finally:
-            engine.dispose()
+            # Engine eh compartilhado pelo engine_cache — NAO chamar dispose()
+            # aqui (fecharia conexoes ainda em uso por outras requests).
+            pass
 
     def insert_composite(
         self,
@@ -498,6 +501,8 @@ class LoadService:
         blueprint: dict[str, Any],
         field_mapping: dict[str, str],
         rows: list[dict[str, Any]],
+        *,
+        workspace_id: str | None = None,
     ) -> CompositeResult:
         """
         Insercao composta em multiplas tabelas relacionadas, em UMA transacao.
@@ -540,7 +545,7 @@ class LoadService:
                 duration_ms=int((_time.monotonic() - started_at) * 1000),
             )
 
-        engine = _create_engine(connection_string, conn_type)
+        engine = _create_engine(connection_string, conn_type, workspace_id=workspace_id)
         try:
             meta = sa.MetaData()
             tables_by_alias: dict[str, sa.Table] = {}
@@ -725,7 +730,9 @@ class LoadService:
                 error_message=error_msg or f"{type(exc).__name__}: {str(exc)[:300]}",
             )
         finally:
-            engine.dispose()
+            # Engine eh compartilhado pelo engine_cache — NAO chamar dispose()
+            # aqui (fecharia conexoes ainda em uso por outras requests).
+            pass
 
     def truncate(
         self,
@@ -735,11 +742,12 @@ class LoadService:
         *,
         mode: str = "truncate",
         where_clause: str | None = None,
+        workspace_id: str | None = None,
     ) -> TruncateResult:
         """Limpa (TRUNCATE ou DELETE) uma tabela de destino."""
         _validate_table_name(target_table)
 
-        engine = _create_engine(connection_string, conn_type)
+        engine = _create_engine(connection_string, conn_type, workspace_id=workspace_id)
         try:
             with engine.begin() as db_conn:
                 if mode == "delete":
@@ -763,7 +771,9 @@ class LoadService:
                 rows_affected=rows_affected,
             )
         finally:
-            engine.dispose()
+            # Engine eh compartilhado pelo engine_cache — NAO chamar dispose()
+            # aqui (fecharia conexoes ainda em uso por outras requests).
+            pass
 
     def insert_from_source(
         self,
@@ -874,17 +884,35 @@ def _validate_table_name(name: str) -> None:
         raise ValueError(f"Nome de tabela invalido: '{name}'")
 
 
-def _create_engine(connection_string: str, conn_type: str) -> sa.Engine:
+def _create_engine(
+    connection_string: str,
+    conn_type: str,
+    *,
+    workspace_id: str | None = None,
+) -> sa.Engine:
+    """Devolve um engine cacheado pelo ``engine_cache`` global.
+
+    O engine retornado pode ser compartilhado entre callers — NAO chame
+    ``dispose()`` no caller. O cache aplica perfis de pool por tipo de
+    banco (Oracle: pool_size=5, PostgreSQL: 10, etc.) e isola pools por
+    workspace.
+
+    ``workspace_id`` deve vir do contexto da execucao (``context["workspace_id"]``).
+    Quando ``None``, o cache cai em ``DEFAULT_SCOPE`` — isso ainda dedupe
+    chamadas com a mesma URL no processo, mas perde o isolamento por
+    tenant. Sempre passe o valor real em codigo de producao.
+    """
+    from app.services.db.engine_cache import get_engine_from_url
+
     connect_args: dict[str, Any] = {}
     if conn_type == "sqlserver":
         connect_args["TrustServerCertificate"] = "yes"
 
-    return sa.create_engine(
+    return get_engine_from_url(
+        workspace_id,
         connection_string,
-        pool_pre_ping=False,
-        pool_size=1,
-        max_overflow=0,
-        connect_args=connect_args,
+        conn_type,
+        connect_args=connect_args or None,
     )
 
 
@@ -1348,7 +1376,10 @@ def _read_source(
             if "///" in source_connection
             else ":memory:"
         )
-        conn = _duckdb.connect(db_path, read_only=True)
+        # ``read_only=True`` removido — DuckDB nao tolera mistura de modes
+        # para o mesmo arquivo no mesmo processo. Default RW e seguro para
+        # leitura. Ver discussao no docstring do filter_node.
+        conn = _duckdb.connect(db_path)
         try:
             result = conn.execute(query)
             columns = [desc[0] for desc in result.description]

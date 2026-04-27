@@ -1,0 +1,17 @@
+# Provider de dashboards: aponta o Grafana para o diretorio de JSONs
+# montado em /etc/grafana/dashboards. Sem isso, dashboards nao aparecem
+# automaticamente apos restart.
+
+apiVersion: 1
+
+providers:
+  - name: shift
+    orgId: 1
+    folder: Shift
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

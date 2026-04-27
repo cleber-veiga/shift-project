@@ -1,0 +1,44 @@
+# Prometheus scrape config exemplo para o Shift backend.
+#
+# - Scrape a cada 15s (suficiente para os Histograms granulares; baixar
+#   para 5s gera muitos samples sem ganho real).
+# - Carrega regras de alerta de ./alerts/.
+#
+# Ajuste ``targets`` quando empacotar o backend em outro host.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts/*.yml
+
+scrape_configs:
+  - job_name: shift-backend
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - host.docker.internal:8000
+        labels:
+          service: shift-backend
+          env: local
+    # Mitigacao de cardinalidade (Tarefa 6 hardening 6.2/6.3) — drop o
+    # label ``workspace_id`` em metricas onde top-N agregado e suficiente.
+    # As metricas com workspace_id mantidas: execution_duration_seconds,
+    # shift_executions_total, db_pool_*. Para detalhe por workspace nestas
+    # use as recording rules pre-agregadas em recording-rules-aggregation.yml.
+    metric_relabel_configs:
+      # Em deploy >1k workspaces, descomente para reduzir a cardinalidade
+      # de node_* metricas. Veja ops/prometheus/README.md para criterio.
+      # - source_labels: [__name__]
+      #   regex: '^node_(duration_seconds_bucket|rows_processed|errors_total).*'
+      #   action: labeldrop
+      #   replacement: 'workspace_id'
+
+  # Quando houver shift-compute (worker separado), adicionar aqui:
+  # - job_name: shift-compute
+  #   metrics_path: /metrics
+  #   static_configs:
+  #     - targets: [host.docker.internal:8001]
+  #       labels:
+  #         service: shift-compute

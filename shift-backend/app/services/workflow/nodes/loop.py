@@ -316,7 +316,15 @@ def _read_duckdb_rows(
 ) -> list[dict[str, Any]]:
     """Le todas as linhas (ate max_iterations) do DuckDB em chunks."""
     table_ref = build_table_ref(reference)
-    conn = duckdb.connect(str(reference["database_path"]), read_only=True)
+    # ``read_only=True`` removido — DuckDB nao permite mistura de configs
+    # de acesso (read-only vs read-write) ao mesmo arquivo no mesmo
+    # processo. Quando um node a jusante (ex: filter) precisava criar
+    # tabela RW no mesmo path, batia com:
+    # ``ConnectionException: Can't open a connection to same database
+    # file with a different configuration than existing connections``.
+    # Single-process Shift nao ganha protecao com read_only — default RW
+    # le igual sem o conflito.
+    conn = duckdb.connect(str(reference["database_path"]))
     try:
         count_row = conn.execute(f"SELECT COUNT(*) FROM {table_ref}").fetchone()
         total = int(count_row[0]) if count_row else 0

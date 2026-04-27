@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
+from jinja2 import StrictUndefined, TemplateError
+from jinja2.sandbox import SandboxedEnvironment
 from sqlalchemy import func as sa_func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -76,6 +78,108 @@ def _substitute_vars_in_definition(
         return obj
 
     return _walk(copy.deepcopy(definition))
+
+
+# ---------------------------------------------------------------------------
+# Render Jinja2 sanitizado para snapshot imutavel
+# ---------------------------------------------------------------------------
+
+REDACTED_PLACEHOLDER = "<REDACTED>"
+
+# SandboxedEnvironment bloqueia atributos sensiveis (__subclasses__, etc.)
+# em strings controladas pelo usuario do workflow. ``StrictUndefined``
+# transforma referencias a variaveis ausentes em erro — preferimos falhar
+# alto durante o render do snapshot a deixar passar uma string mal formada
+# silenciosamente. ``autoescape`` fica desligado: nao geramos HTML.
+_jinja_env = SandboxedEnvironment(
+    autoescape=False,
+    undefined=StrictUndefined,
+    keep_trailing_newline=True,
+)
+
+
+def _looks_like_jinja(value: str) -> bool:
+    """Heuristica barata: evita compilar Jinja em strings que claramente nao
+    contem expressoes (acelera o walk no caso comum)."""
+    return ("{{" in value and "}}" in value) or ("{%" in value)
+
+
+def _render_jinja_string(template_str: str, jinja_vars: dict[str, Any]) -> str:
+    """Renderiza ``template_str`` com Jinja2 expondo ``vars`` como namespace.
+
+    Retorna a string original em caso de erro de sintaxe — o snapshot deve
+    ser um diagnostico fiel e nao deve falhar a execucao por causa de uma
+    string que parece template mas nao e.
+    """
+    if not _looks_like_jinja(template_str):
+        return template_str
+    try:
+        template = _jinja_env.from_string(template_str)
+        return template.render(vars=jinja_vars)
+    except TemplateError:
+        return template_str
+
+
+def _render_definition_with_jinja(
+    definition: dict[str, Any],
+    jinja_vars: dict[str, Any],
+) -> dict[str, Any]:
+    """Aplica Jinja2 a todas as strings da definicao usando ``jinja_vars``.
+
+    Usado para gerar o ``template_snapshot`` antes da persistencia.
+    """
+
+    def _walk(obj: Any) -> Any:
+        if isinstance(obj, str):
+            return _render_jinja_string(obj, jinja_vars)
+        if isinstance(obj, dict):
+            return {k: _walk(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_walk(item) for item in obj]
+        return obj
+
+    return _walk(copy.deepcopy(definition))
+
+
+def _build_template_snapshot(
+    definition: dict[str, Any],
+    resolved_vars: dict[str, Any],
+    secret_names: set[str],
+) -> tuple[dict[str, Any], str]:
+    """Constroi o snapshot imutavel + hash deterministico.
+
+    O bloco ``vars`` exposto ao Jinja2 substitui qualquer valor cujo nome
+    esteja em ``secret_names`` por ``<REDACTED>`` ANTES do render — assim
+    o snapshot resultante jamais contem o segredo em texto claro, mesmo
+    quando aparece embutido em strings (ex: ``"Bearer {{ vars.api_key }}"``).
+    """
+    safe_vars: dict[str, Any] = {}
+    for name, value in resolved_vars.items():
+        safe_vars[name] = REDACTED_PLACEHOLDER if name in secret_names else value
+    # Inclui as proprias declaracoes ``secret`` que nao foram fornecidas
+    # (ex: required=False sem valor) tambem como REDACTED — uma string
+    # ``{{ vars.x }}`` precisa renderizar como ``<REDACTED>`` mesmo se o
+    # usuario nao informou valor.
+    for name in secret_names:
+        safe_vars.setdefault(name, REDACTED_PLACEHOLDER)
+
+    rendered = _render_definition_with_jinja(definition, safe_vars)
+    serialized = json.dumps(rendered, sort_keys=True, default=str)
+    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return rendered, digest
+
+
+def _collect_secret_names(var_decls: list[dict[str, Any]]) -> set[str]:
+    """Nomes de variaveis declaradas com ``type == 'secret'``."""
+    names: set[str] = set()
+    for raw in var_decls or []:
+        if not isinstance(raw, dict):
+            continue
+        if raw.get("type") == "secret":
+            name = raw.get("name")
+            if isinstance(name, str) and name:
+                names.add(name)
+    return names
 
 
 def _coerce_variable_value(name: str, declared_type: str, value: Any) -> Any:
@@ -431,25 +535,32 @@ class WorkflowExecutionService:
             )
 
             # Mascara segredos antes de persistir em input_data (secrets nao ficam em claro no DB)
-            secret_names = {
-                d.get("name") for d in var_decls if isinstance(d, dict) and d.get("type") == "secret"
-            }
+            secret_names = _collect_secret_names(full_var_decls)
             masked_vars: dict[str, Any] = {
                 k: "***" if k in secret_names else v for k, v in resolved_vars.items()
             }
 
-            _snapshot_hash = hashlib.sha256(
-                json.dumps(definition_for_exec, sort_keys=True, default=str).encode()
-            ).hexdigest()
+            # Snapshot imutavel: renderiza a definicao original (NAO a versao
+            # ja substituida com valores reais — essa contem secrets em claro)
+            # via Jinja2 com variaveis sanitizadas, calcula hash deterministico
+            # e persiste antes mesmo de invocar o runner. Garante audit trail
+            # mesmo se o runner falhar imediatamente.
+            template_snapshot, template_version = _build_template_snapshot(
+                definition=workflow.definition,
+                resolved_vars=resolved_vars,
+                secret_names=secret_names,
+            )
+            rendered_at = datetime.now(timezone.utc)
 
             execution = WorkflowExecution(
                 workflow_id=workflow.id,
                 status="RUNNING",
                 triggered_by=triggered_by,
-                started_at=datetime.now(timezone.utc),
+                started_at=rendered_at,
                 input_data={"variable_values": masked_vars} if masked_vars else None,
-                workflow_definition_snapshot=definition_for_exec,
-                definition_snapshot_hash=_snapshot_hash,
+                template_snapshot=template_snapshot,
+                template_version=template_version,
+                rendered_at=rendered_at,
             )
             db.add(execution)
             await db.flush()
@@ -478,6 +589,7 @@ class WorkflowExecutionService:
                 max_execution_time_seconds=wf_timeout,
                 retry_from_execution_id=retry_from_execution_id,
                 run_mode=run_mode,
+                workspace_id=workspace_id,
             )
 
             if wait:
@@ -555,6 +667,129 @@ class WorkflowExecutionService:
             retry_from_execution_id=retry_from_execution_id,
             run_mode=run_mode,
         )
+
+    async def replay_execution(
+        self,
+        db: AsyncSession,
+        execution_id: UUID,
+        *,
+        triggered_by: str = "replay",
+    ) -> ExecutionResponse:
+        """Re-executa um workflow usando o ``template_snapshot`` antigo.
+
+        Crucialmente, a definicao usada e o snapshot persistido (com secrets
+        ja como ``<REDACTED>``) — NAO a definicao atual do workflow. Isso
+        garante replay deterministico mesmo apos edicoes no template.
+
+        O hash do snapshot original e copiado como ``template_version`` da
+        nova execucao, e ``rendered_at`` reflete o momento desta replay
+        (e nao do snapshot original — quem precisar do timestamp original
+        consulta a execucao de origem).
+        """
+        result = await db.execute(
+            select(WorkflowExecution).where(WorkflowExecution.id == execution_id)
+        )
+        source = result.scalar_one_or_none()
+        if source is None:
+            raise ValueError(f"Execucao '{execution_id}' nao encontrada.")
+
+        snapshot = source.template_snapshot
+        if not isinstance(snapshot, dict) or not snapshot:
+            raise ValueError(
+                f"Execucao '{execution_id}' nao possui template_snapshot utilizavel."
+            )
+
+        wf_result = await db.execute(
+            select(Workflow).where(Workflow.id == source.workflow_id)
+        )
+        workflow = wf_result.scalar_one_or_none()
+        if workflow is None:
+            raise ValueError(
+                f"Workflow '{source.workflow_id}' nao existe mais; "
+                "replay so e possivel enquanto o workflow estiver ativo."
+            )
+
+        project_id_str = str(workflow.project_id) if workflow.project_id else None
+        await acquire_execution_slot(project_id_str)
+        _release_slot_here = True
+        try:
+            workspace_id = workflow.workspace_id
+            if workspace_id is None and workflow.project_id is not None:
+                proj_result = await db.execute(
+                    select(Project.workspace_id).where(Project.id == workflow.project_id)
+                )
+                workspace_id = proj_result.scalar_one_or_none()
+
+            # Resolve conexoes a partir do snapshot. Os connection_id ja
+            # estao expandidos no snapshot (Jinja substituiu UUIDs reais);
+            # o que pode mudar e a connection_string, que sempre e relida
+            # do cofre via connection_service.
+            resolved_connections = await connection_service.resolve_for_workflow(
+                db,
+                snapshot,
+                project_id=workflow.project_id,
+                workspace_id=workspace_id,
+            )
+
+            rendered_at = datetime.now(timezone.utc)
+            execution = WorkflowExecution(
+                workflow_id=workflow.id,
+                status="RUNNING",
+                triggered_by=triggered_by,
+                started_at=rendered_at,
+                input_data=source.input_data,
+                template_snapshot=snapshot,
+                template_version=source.template_version,
+                rendered_at=rendered_at,
+            )
+            db.add(execution)
+            await db.flush()
+            new_execution_id = execution.id
+            new_status = execution.status
+            await db.commit()
+
+            raw_timeout = snapshot.get("max_execution_time_seconds")
+            wf_timeout = int(raw_timeout) if raw_timeout is not None else None
+
+            run_coro = self._run_and_persist(
+                execution_id=new_execution_id,
+                workflow_id=workflow.id,
+                workflow_definition=snapshot,
+                triggered_by=triggered_by,
+                input_data=source.input_data or {},
+                resolved_connections=resolved_connections,
+                variable_values=None,
+                event_sink=None,
+                mode="production" if workflow.status == "published" else "test",
+                target_node_id=None,
+                max_execution_time_seconds=wf_timeout,
+                retry_from_execution_id=None,
+                run_mode="full",
+                workspace_id=workspace_id,
+            )
+
+            _p = project_id_str
+
+            async def _bg_run_with_slot_release() -> None:
+                try:
+                    await run_coro
+                finally:
+                    release_execution_slot(_p)
+
+            task = asyncio.create_task(
+                _bg_run_with_slot_release(),
+                name=f"workflow-replay-{new_execution_id}",
+            )
+            await execution_registry.register(new_execution_id, task)
+            _release_slot_here = False
+
+            return ExecutionResponse(
+                execution_id=new_execution_id,
+                status=new_status,
+            )
+        finally:
+            if _release_slot_here:
+                release_execution_slot(project_id_str)
 
     async def validate_workflow(
         self,
@@ -707,6 +942,7 @@ class WorkflowExecutionService:
         max_execution_time_seconds: int | None = None,
         retry_from_execution_id: UUID | None = None,
         run_mode: str = "full",
+        workspace_id: UUID | str | None = None,
     ) -> None:
         """
         Roda o workflow e persiste o estado final em uma sessao propria —
@@ -775,6 +1011,7 @@ class WorkflowExecutionService:
                         if run_mode == "preview"
                         else None
                     ),
+                    workspace_id=str(workspace_id) if workspace_id is not None else None,
                 )
                 if effective_timeout and effective_timeout > 0:
                     result = await asyncio.wait_for(run_coro, timeout=float(effective_timeout))
@@ -875,6 +1112,107 @@ class WorkflowExecutionService:
                     )
 
             await session.commit()
+
+            # Enfileira webhook deliveries para subscriptions ativas do
+            # workspace dono do workflow. Falhas aqui sao isoladas — o
+            # estado da execucao ja foi persistido acima e nao queremos
+            # que problema de subscription quebre o run.
+            try:
+                await self._enqueue_terminal_webhooks(session, execution)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "execution.webhook_enqueue_failed",
+                    execution_id=str(execution_id),
+                )
+
+    @staticmethod
+    async def _enqueue_terminal_webhooks(
+        session: AsyncSession,
+        execution: WorkflowExecution,
+    ) -> None:
+        """Cria deliveries de webhook quando a execucao chega num estado
+        terminal interessante (COMPLETED / FAILED / CANCELLED).
+
+        Resolve o ``workspace_id`` a partir do workflow (que pode estar
+        ligado a project ou direto a workspace) e delega para o
+        ``webhook_dispatch_service`` — ele filtra subscriptions ativas
+        com o evento assinado e cria as linhas em ``webhook_deliveries``.
+        ``ABORTED`` nao dispara webhook (e um sinal de cancelamento por
+        no condicional, nao pra o cliente importar).
+        """
+        # Mapeia status interno do runner → nome publico do evento.
+        status_to_event = {
+            "COMPLETED": "execution.completed",
+            "FAILED": "execution.failed",
+            "CANCELLED": "execution.cancelled",
+        }
+        event = status_to_event.get(execution.status)
+        if event is None:
+            return
+
+        # Resolve workspace_id via workflow → (workspace_id direto OU project.workspace_id).
+        wf = await session.get(Workflow, execution.workflow_id)
+        if wf is None:
+            return
+        workspace_id: UUID | None = wf.workspace_id
+        if workspace_id is None and wf.project_id is not None:
+            project = await session.get(Project, wf.project_id)
+            workspace_id = project.workspace_id if project is not None else None
+        if workspace_id is None:
+            return
+
+        # Computa contadores agregados a partir dos node_executions ja gravados.
+        rows_processed = await session.execute(
+            select(
+                sa_func.coalesce(sa_func.sum(WorkflowNodeExecution.row_count_in), 0),
+                sa_func.coalesce(sa_func.sum(WorkflowNodeExecution.row_count_out), 0),
+            ).where(WorkflowNodeExecution.execution_id == execution.id)
+        )
+        rows_in, rows_out = rows_processed.one()
+
+        # Payload publico — mantemos pequeno e estavel. Cliente pode buscar
+        # detalhes via API se quiser. ``snapshot_url`` e gerado pela rota
+        # publica de leitura de snapshot (caso o caller tenha auth via key).
+        payload: dict[str, Any] = {
+            "event": event,
+            "execution_id": str(execution.id),
+            "workspace_id": str(workspace_id),
+            "template_id": str(execution.workflow_id),
+            "status": execution.status.lower(),
+            "started_at": execution.started_at.isoformat()
+            if execution.started_at is not None else None,
+            "ended_at": execution.completed_at.isoformat()
+            if execution.completed_at is not None else None,
+            "rows_processed": {
+                "in": int(rows_in or 0),
+                "out": int(rows_out or 0),
+            },
+            "snapshot_url": (
+                f"/api/v1/workflows/executions/{execution.id}/snapshot"
+            ),
+        }
+        if execution.error_message:
+            payload["error_message"] = execution.error_message[:500]
+
+        # Import tardio — evita ciclo entre workflow_service e webhook_dispatch_service.
+        from app.services.webhook_dispatch_service import (  # noqa: PLC0415
+            webhook_dispatch_service,
+        )
+        count = await webhook_dispatch_service.enqueue_for_event(
+            session,
+            workspace_id=workspace_id,
+            event=event,
+            payload=payload,
+            execution_id=execution.id,
+        )
+        if count:
+            await session.commit()
+            logger.info(
+                "execution.webhooks_enqueued",
+                execution_id=str(execution.id),
+                event=event,
+                count=count,
+            )
 
     @staticmethod
     def _build_node_execution_record(

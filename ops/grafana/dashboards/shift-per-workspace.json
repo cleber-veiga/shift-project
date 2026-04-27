@@ -1,0 +1,110 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "title": "Shift — Per Workspace",
+  "uid": "shift-per-workspace",
+  "tags": ["shift"],
+  "timezone": "browser",
+  "time": {"from": "now-24h", "to": "now"},
+  "refresh": "1m",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {"text": "Prometheus", "value": "Prometheus"}
+      },
+      {
+        "name": "workspace",
+        "type": "query",
+        "label": "Workspace",
+        "datasource": {"type": "prometheus", "uid": "${datasource}"},
+        "query": "label_values(shift_executions_total, workspace_id)",
+        "includeAll": true,
+        "multi": false,
+        "current": {"text": "All", "value": "$__all"},
+        "refresh": 2
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Top 10 workspaces — volume (24h)",
+      "type": "table",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "topk(10, sum by (workspace_id) (increase(shift_executions_total[24h])))",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Top 10 workspaces — latencia media (1h)",
+      "type": "table",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "targets": [
+        {
+          "expr": "topk(10, sum by (workspace_id) (rate(execution_duration_seconds_sum[1h])) / clamp_min(sum by (workspace_id) (rate(execution_duration_seconds_count[1h])), 1))",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Erro por workspace (5min)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 10},
+      "fieldConfig": {"defaults": {"unit": "percentunit"}},
+      "targets": [
+        {
+          "expr": "sum by (workspace_id) (rate(shift_executions_total{status!=\"completed\"}[5m])) / clamp_min(sum by (workspace_id) (rate(shift_executions_total[5m])), 1)",
+          "legendFormat": "{{workspace_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Workspace selecionado — duracao p95",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 19},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, template_id) (rate(execution_duration_seconds_bucket{workspace_id=~\"$workspace\"}[15m])))",
+          "legendFormat": "{{template_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Workspace selecionado — execucoes por status (1h)",
+      "type": "barchart",
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 19},
+      "targets": [
+        {
+          "expr": "sum by (status) (increase(shift_executions_total{workspace_id=~\"$workspace\"}[1h]))",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

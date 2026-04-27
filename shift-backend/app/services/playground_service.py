@@ -107,6 +107,7 @@ class PlaygroundService:
                 "default_schema": conn.username.upper()
                 if conn.type == ConnectionType.oracle.value
                 else None,
+                "workspace_id": conn.workspace_id,
             }
 
         try:
@@ -199,7 +200,7 @@ class PlaygroundService:
         else:
             url = connection_service.build_connection_string(conn)
             worker = self._execute_sync  # type: ignore[assignment]
-            args = (url, query, max_rows)  # type: ignore[assignment]
+            args = (url, query, max_rows, conn.type, conn.workspace_id)  # type: ignore[assignment]
 
         try:
             result = await asyncio.wait_for(
@@ -222,32 +223,31 @@ class PlaygroundService:
         url: str,
         query: str,
         max_rows: int,
+        conn_type: str,
+        workspace_id: UUID | None,
     ) -> PlaygroundQueryResponse:
-        engine: sa.Engine | None = None
-        try:
-            engine = sa.create_engine(
-                url, pool_pre_ping=False, pool_size=1, max_overflow=0
-            )
-            start = time.perf_counter_ns()
-            with engine.connect() as db_conn:
-                result = db_conn.execute(sa.text(query))
-                columns = list(result.keys())
-                rows_raw = result.fetchmany(max_rows + 1)
+        from app.services.db.engine_cache import get_engine_from_url
 
-            elapsed_ms = (time.perf_counter_ns() - start) // 1_000_000
-            truncated = len(rows_raw) > max_rows
-            rows = [list(_serialize_row(r)) for r in rows_raw[:max_rows]]
+        # Engine compartilhado entre execucoes do mesmo playground/conexao —
+        # nao chamar dispose() aqui.
+        engine = get_engine_from_url(workspace_id, url, conn_type)
+        start = time.perf_counter_ns()
+        with engine.connect() as db_conn:
+            result = db_conn.execute(sa.text(query))
+            columns = list(result.keys())
+            rows_raw = result.fetchmany(max_rows + 1)
 
-            return PlaygroundQueryResponse(
-                columns=columns,
-                rows=rows,
-                row_count=len(rows),
-                truncated=truncated,
-                execution_time_ms=elapsed_ms,
-            )
-        finally:
-            if engine is not None:
-                engine.dispose()
+        elapsed_ms = (time.perf_counter_ns() - start) // 1_000_000
+        truncated = len(rows_raw) > max_rows
+        rows = [list(_serialize_row(r)) for r in rows_raw[:max_rows]]
+
+        return PlaygroundQueryResponse(
+            columns=columns,
+            rows=rows,
+            row_count=len(rows),
+            truncated=truncated,
+            execution_time_ms=elapsed_ms,
+        )
 
     @staticmethod
     def _execute_firebird_sync(
@@ -315,13 +315,14 @@ class PlaygroundService:
         include_schemas: list[str] | None = None,
         conn_type: str = "",
         default_schema: str | None = None,
+        workspace_id: UUID | None = None,
     ) -> SchemaResponse:
+        from app.services.db.engine_cache import get_engine_from_url
+
         is_oracle = conn_type == ConnectionType.oracle.value
         engine: sa.Engine | None = None
         try:
-            engine = sa.create_engine(
-                url, pool_pre_ping=False, pool_size=1, max_overflow=0
-            )
+            engine = get_engine_from_url(workspace_id, url, conn_type or "unknown")
             inspector = sa.inspect(engine)
             tables: list[SchemaTable] = []
 
@@ -407,8 +408,8 @@ class PlaygroundService:
 
             return SchemaResponse(tables=tables)
         finally:
-            if engine is not None:
-                engine.dispose()
+            # Engine compartilhado pelo engine_cache — nao chamar dispose().
+            pass
 
     @staticmethod
     def _schema_firebird_sync(conn: Connection) -> SchemaResponse:

@@ -26,8 +26,8 @@ export interface ExecutionSummary {
   completed_at: string | null
   node_count: number
   error_message: string | null
-  /** SHA-256 do snapshot da definicao no momento da execucao (Sprint 4.1). */
-  definition_snapshot_hash: string | null
+  /** SHA-256 do template_snapshot imutavel da execucao. */
+  template_version: string | null
 }
 
 export interface ExecutionListResponse {
@@ -75,8 +75,8 @@ export interface ExecutionDetail {
   completed_at: string | null
   nodes: NodeExecution[]
   input_data?: { variable_values?: Record<string, unknown> } | null
-  /** SHA-256 do snapshot da definicao — presente quando a execucao tem snapshot (Sprint 4.1). */
-  definition_snapshot_hash?: string | null
+  /** SHA-256 do template_snapshot da execucao. */
+  template_version?: string | null
 }
 
 export interface ListExecutionsParams {

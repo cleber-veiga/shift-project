@@ -32,6 +32,7 @@ from app.api.v1.organizations import router as organizations_router
 from app.api.v1.projects import router as projects_router
 from app.api.v1.webhooks import router as webhook_router
 from app.api.v1.webhooks_admin import router as webhook_admin_router
+from app.api.v1.webhook_subscriptions import router as webhook_subscriptions_router
 from app.api.v1.workflows import router as workflow_router
 from app.api.v1.playground import router as playground_router
 from app.api.v1.saved_queries import router as saved_queries_router
@@ -41,6 +42,7 @@ from app.api.v1.workflow_build import router as workflow_build_router
 from app.api.v1.workspaces import router as workspaces_router
 from app.core.logging import get_logger
 from app.core.middleware import RequestIDMiddleware
+from app.core.observability import init_tracing
 from app.core.rate_limit import limiter
 from app.db.session import async_session_factory, engine
 from app.services import webhook_service
@@ -48,6 +50,7 @@ from app.services.agent.graph.checkpointer import close_checkpointer
 from app.services.agent.safety.expiration_job import register_agent_expiration_job
 from app.core.config import settings
 from app.services.scheduler_service import bootstrap_schedules, register_checkpoint_cleanup_job, register_extract_cache_cleanup_job, register_storage_cleanup_job, scheduler
+from app.services.webhook_dispatch_service import register_dispatch_job as register_webhook_dispatch_job
 from app.services.workflow_service import cleanup_orphaned_executions
 from app.api.v1.admin_storage import router as admin_storage_router
 from app.api.v1.extract_cache import router as extract_cache_router
@@ -92,6 +95,7 @@ async def lifespan(app: FastAPI):
     register_storage_cleanup_job()
     register_checkpoint_cleanup_job()
     register_extract_cache_cleanup_job()
+    register_webhook_dispatch_job(scheduler)
     if settings.AGENT_ENABLED:
         register_agent_expiration_job(
             scheduler,
@@ -104,6 +108,24 @@ async def lifespan(app: FastAPI):
         _build_session_cleanup_loop(), name="build-session-cleanup"
     )
     start_memory_monitor()
+    # Seed das gauges db_pool_* — garante que /metrics ja exiba as series
+    # mesmo antes da primeira execucao usar engines do cache.
+    from app.services.db.engine_cache import refresh_metrics as _seed_metrics
+    _seed_metrics()
+    # Pre-warm do pool de sandbox quando habilitado (Prompt 2.2). Falha
+    # silenciosamente quando docker daemon nao esta acessivel — code_node
+    # entao usa cold path.
+    try:
+        from app.services.sandbox import init_default_pool
+        _sandbox_pool = init_default_pool()
+        if _sandbox_pool is not None:
+            logger.info(
+                "sandbox.pool.prewarmed",
+                idle=_sandbox_pool.idle_count,
+                target=_sandbox_pool._target_idle,  # type: ignore[attr-defined]
+            )
+    except Exception as _exc:  # noqa: BLE001
+        logger.warning("sandbox.pool.startup_failed", error=str(_exc))
     logger.info("scheduler.started")
     try:
         yield
@@ -115,6 +137,13 @@ async def lifespan(app: FastAPI):
         with contextlib.suppress(asyncio.CancelledError):
             await cleanup_task
         await stop_memory_monitor()
+        # Mata containers warm — sem isso, eles ficariam vivos ate o daemon
+        # docker fazer GC. Bloqueia o shutdown ate todos morrerem.
+        try:
+            from app.services.sandbox import stop_all_pools
+            stop_all_pools()
+        except Exception as _exc:  # noqa: BLE001
+            logger.warning("sandbox.pool.stop_failed", error=str(_exc))
         scheduler.shutdown(wait=True)
         logger.info("scheduler.stopped")
         await close_checkpointer()
@@ -153,11 +182,27 @@ app.add_middleware(
 # Instrumenta latencia, throughput, in-progress e tamanhos de request/response
 # por rota. Endpoint /metrics (scrape pelo Prometheus) e excluido das metricas
 # para nao poluir com auto-scrape.
-Instrumentator(
+_instrumentator = Instrumentator(
     should_group_status_codes=True,
     should_ignore_untemplated=True,
     excluded_handlers=["/metrics", "/health"],
-).instrument(app).expose(app, endpoint="/metrics", tags=["sistema"])
+)
+# Antes de cada coleta, sincroniza as gauges db_pool_* com o estado atual
+# dos pools no engine_cache (size / checked_out / overflow por workspace e
+# tipo de banco). Atualizar no scrape evita ter que mexer nas gauges em
+# todo get_engine.
+from app.services.db.engine_cache import (  # noqa: E402 — boot-time only
+    register_metric_callbacks,
+)
+register_metric_callbacks(_instrumentator)
+_instrumentator.instrument(app).expose(app, endpoint="/metrics", tags=["sistema"])
+
+# --- OpenTelemetry tracing ---
+# Inicializa apos instanciar `app` (precisa do FastAPI para instrumentar
+# request handlers) e depois do Instrumentator para que /metrics nao
+# entre como span. Quando ``SHIFT_TRACING_ENABLED`` esta off, init_tracing
+# vira no-op — zero overhead em dev.
+init_tracing(app)
 
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(connections_router, prefix="/api/v1")
@@ -172,6 +217,7 @@ app.include_router(workspaces_router, prefix="/api/v1")
 app.include_router(projects_router, prefix="/api/v1")
 app.include_router(webhook_router, prefix="/api/v1")
 app.include_router(webhook_admin_router, prefix="/api/v1")
+app.include_router(webhook_subscriptions_router, prefix="/api/v1")
 app.include_router(workflow_router, prefix="/api/v1")
 # IMPORTANTE: workflow_versions_router precisa vir antes do workflow_crud_router
 # porque define rotas literais como `/workflows/callable` que colidem com o

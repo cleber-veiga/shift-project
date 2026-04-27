@@ -1,0 +1,24 @@
+Shift kernel-runtime
+====================
+
+This directory contains a Docker-based sandbox runtime used by Shift to
+execute user-supplied Python code from `code_node` workflows in isolation
+from the host and from other tenants.
+
+Adapted from Flowfile project (https://github.com/Edwardvaneechoud/Flowfile),
+MIT License (see LICENSE in this directory).
+
+Differences from the upstream Flowfile kernel
+---------------------------------------------
+- The Flowfile kernel is a long-running FastAPI service with a persistent
+  notebook-style namespace, artifact store, and disk-recovery layer. Shift
+  uses *ephemeral* containers — one per code-node execution — with
+  communication only via stdin (code) and a mounted /output volume (the
+  result file). No FastAPI, no server, no persistent namespace. This
+  trades the notebook UX for a much smaller attack surface.
+- Polars-centric I/O is replaced with DuckDB-centric I/O: input arrives as
+  a Parquet file at /input/table.parquet, output is written as
+  /output/result.parquet.
+- The shift-backend wraps each container launch with hard limits
+  (CPU/memory cgroups, timeout, network=none, read-only rootfs) and
+  forbids capabilities, privileged mode, and host mounts.

@@ -126,6 +126,7 @@ class CompositeInsertProcessor(BaseNodeProcessor):
                 blueprint,
                 string_mapping,
                 rows,
+                workspace_id=context.get("workspace_id"),
             )
         except ValueError as exc:
             # Blueprint malformado ou dialeto nao suportado — falha funcional.
@@ -239,7 +240,8 @@ def _read_rows_from_duckdb(
     table_ref = build_table_ref(reference)
     projection = ", ".join(_quote_identifier(c) for c in upstream_columns)
 
-    conn = duckdb.connect(str(reference["database_path"]), read_only=True)
+    # ``read_only=True`` removido — vide filter_node.
+    conn = duckdb.connect(str(reference["database_path"]))
     try:
         cursor = conn.execute(f"SELECT {projection} FROM {table_ref}")
         columns = [desc[0] for desc in cursor.description]

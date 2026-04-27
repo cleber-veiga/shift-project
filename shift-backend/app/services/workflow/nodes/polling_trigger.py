@@ -11,8 +11,26 @@ from typing import Any
 
 import sqlalchemy as sa
 
+from app.services.db.engine_cache import get_engine_from_url
 from app.services.workflow.nodes import BaseNodeProcessor, register_processor
 from app.services.workflow.nodes.exceptions import NodeProcessingSkipped
+
+
+def _infer_conn_type(cs: str) -> str:
+    cs_lower = cs.lower()
+    if cs_lower.startswith("postgresql") or cs_lower.startswith("postgres"):
+        return "postgresql"
+    if cs_lower.startswith("mysql"):
+        return "mysql"
+    if cs_lower.startswith("oracle"):
+        return "oracle"
+    if cs_lower.startswith("firebird"):
+        return "firebird"
+    if cs_lower.startswith("mssql") or cs_lower.startswith("sqlserver"):
+        return "sqlserver"
+    if cs_lower.startswith("sqlite"):
+        return "sqlite"
+    return "unknown"
 
 
 @register_processor("polling")
@@ -28,7 +46,6 @@ class PollingTriggerProcessor(BaseNodeProcessor):
         config: dict[str, Any],
         context: dict[str, Any],
     ) -> dict[str, Any]:
-        _ = context
         connection_string = config.get("connection_string")
         query = config.get("query")
 
@@ -37,17 +54,18 @@ class PollingTriggerProcessor(BaseNodeProcessor):
                 f"No polling '{node_id}': connection_string e query sao obrigatorios."
             )
 
-        # O processor roda em thread separada (asyncio.to_thread), entao
-        # um engine sincrono simples ja atende a verificacao de polling.
-        engine = sa.create_engine(connection_string)
-        try:
-            with engine.connect() as conn:
-                result = conn.execute(sa.text(query))
-                rows: list[dict[str, Any]] = [
-                    dict(row) for row in result.mappings().all()
-                ]
-        finally:
-            engine.dispose()
+        # Engine compartilhado pelo cache global — NAO chamar dispose() aqui;
+        # o pool e reusado pelas proximas execucoes do mesmo workflow.
+        engine = get_engine_from_url(
+            context.get("workspace_id"),
+            str(connection_string),
+            _infer_conn_type(str(connection_string)),
+        )
+        with engine.connect() as conn:
+            result = conn.execute(sa.text(query))
+            rows: list[dict[str, Any]] = [
+                dict(row) for row in result.mappings().all()
+            ]
 
         if not rows:
             raise NodeProcessingSkipped(
