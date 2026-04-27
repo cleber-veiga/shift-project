@@ -1,10 +1,13 @@
-# Prometheus scrape config exemplo para o Shift backend.
+# Prometheus scrape config para o stack Docker Compose do Shift.
 #
 # - Scrape a cada 15s (suficiente para os Histograms granulares; baixar
 #   para 5s gera muitos samples sem ganho real).
-# - Carrega regras de alerta de ./alerts/.
+# - Carrega regras de alerta de /etc/prometheus/alerts/, montado a partir
+#   de ops/alerts/ no host.
+# - Targets usam nomes de service do compose (rede shift-net, DNS interno).
 #
-# Ajuste ``targets`` quando empacotar o backend em outro host.
+# Para rodar fora do compose (ex: backend local em host.docker.internal),
+# editar os ``targets`` abaixo. Nunca expor :9090 em producao.
 
 global:
   scrape_interval: 15s
@@ -18,27 +21,34 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets:
-          - host.docker.internal:8000
+          - shift-backend:8000
         labels:
           service: shift-backend
           env: local
-    # Mitigacao de cardinalidade (Tarefa 6 hardening 6.2/6.3) — drop o
-    # label ``workspace_id`` em metricas onde top-N agregado e suficiente.
-    # As metricas com workspace_id mantidas: execution_duration_seconds,
-    # shift_executions_total, db_pool_*. Para detalhe por workspace nestas
-    # use as recording rules pre-agregadas em recording-rules-aggregation.yml.
+    # Mitigacao de cardinalidade — drop label ``workspace_id`` em
+    # metricas onde top-N agregado e suficiente. As metricas com
+    # workspace_id mantidas: execution_duration_seconds,
+    # shift_executions_total, db_pool_*. Para detalhe por workspace
+    # use as recording rules em recording-rules-aggregation.yml.
     metric_relabel_configs:
-      # Em deploy >1k workspaces, descomente para reduzir a cardinalidade
-      # de node_* metricas. Veja ops/prometheus/README.md para criterio.
+      # Em deploy >1k workspaces, descomente para reduzir cardinalidade.
       # - source_labels: [__name__]
       #   regex: '^node_(duration_seconds_bucket|rows_processed|errors_total).*'
       #   action: labeldrop
       #   replacement: 'workspace_id'
 
-  # Quando houver shift-compute (worker separado), adicionar aqui:
-  # - job_name: shift-compute
-  #   metrics_path: /metrics
-  #   static_configs:
-  #     - targets: [host.docker.internal:8001]
-  #       labels:
-  #         service: shift-compute
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: tempo
+    static_configs:
+      - targets: ['tempo:3200']
+        labels:
+          service: tempo
+
+  - job_name: otel-collector
+    static_configs:
+      - targets: ['otel-collector:8888']
+        labels:
+          service: otel-collector

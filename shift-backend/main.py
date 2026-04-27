@@ -59,6 +59,35 @@ from app.services.memory_monitor import start_memory_monitor, stop_memory_monito
 logger = get_logger(__name__)
 
 
+def _print_startup_banner() -> None:
+    """Imprime banner ASCII no boot. Pulado quando LOG_FORMAT=json para
+    nao poluir log aggregators (Loki, Datadog, etc) com linhas nao-JSON.
+    """
+    if settings.LOG_FORMAT != "console":
+        return
+
+    cyan = "\033[36m"
+    bold = "\033[1m"
+    dim = "\033[2m"
+    reset = "\033[0m"
+
+    banner = f"""
+{cyan}{bold}
+███████╗██╗  ██╗██╗███████╗████████╗
+██╔════╝██║  ██║██║██╔════╝╚══██╔══╝
+███████╗███████║██║█████╗     ██║
+╚════██║██╔══██║██║██╔══╝     ██║
+███████║██║  ██║██║██║        ██║
+╚══════╝╚═╝  ╚═╝╚═╝╚═╝        ╚═╝
+{reset}{dim}  Plataforma de integracao, migracao e automacao de dados
+  Backend v0.1.0{reset}
+"""
+    print(banner, flush=True)
+
+
+_print_startup_banner()
+
+
 async def _build_session_cleanup_loop(interval_seconds: float = 300.0) -> None:
     """Remove build sessions expiradas em loop."""
     while True:

@@ -454,7 +454,8 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
             <Bell className="size-4" />
           </button>
 
-          <AIPanelToggle />
+          {/* Agente de IA temporariamente oculto. Para reativar, descomente: */}
+          {/* <AIPanelToggle /> */}
 
           <div ref={userMenuRef} className="relative">
             <button

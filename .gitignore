@@ -1,0 +1,24 @@
+# Variaveis de ambiente — NUNCA commitar segredos.
+# Cobre raiz e sub-apps (shift-backend/.env, shift-frontend/.env.local, etc).
+.env
+.env.local
+.env.*.local
+**/.env
+**/.env.local
+!**/.env.example
+
+# IDE / editores
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker compose state
+docker-compose.local.yml
+
+# Build / cache local
+.cache/

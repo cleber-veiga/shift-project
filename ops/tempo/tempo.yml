@@ -1,0 +1,55 @@
+# Configuracao do Grafana Tempo (single-binary mode, storage local).
+#
+# Decisao: Tempo em vez de Jaeger porque a integracao com Grafana e nativa
+# (datasource padrao, "trace to logs/metrics" funciona sem deeplinks
+# customizados). Para UI dedicada de traces use Grafana → Explore → Tempo.
+#
+# Storage: backend=local, retencao 24h. Suficiente para dev/staging single-
+# host. Em producao trocar por S3/GCS + retencao alinhada com SLO de
+# investigacao (tipicamente 7-14 dias).
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+  log_level: info
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 24h
+    compacted_block_retention: 1h
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+# Metricas internas do Tempo — uteis pra debug "por que tracing parou".
+metrics_generator:
+  registry:
+    external_labels:
+      source: tempo
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+        send_exemplars: true
+
+overrides:
+  defaults:
+    metrics_generator:
+      processors: [service-graphs, span-metrics]

@@ -1,0 +1,54 @@
+# Reduz contexto enviado pro Docker daemon — build mais rapido + imagem
+# menor + evita vazamento de venv/.env pro layer.
+
+# Virtualenvs
+venv/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Egg/distribute artefacts
+*.egg-info/
+*.egg
+build/
+dist/
+
+# Tests
+tests/__pycache__/
+.coverage
+htmlcov/
+
+# Dados locais (nao deve entrar na imagem)
+shift_data/
+workflow_uploads/
+*.duckdb
+*.duckdb.wal
+
+# IDE
+.vscode/
+.idea/
+
+# Git / OS
+.git/
+.gitignore
+.DS_Store
+
+# Variaveis sensiveis
+.env
+.env.*
+!.env.example
+
+# PowerShell scripts de dev local (Windows)
+start.ps1
+stop.ps1
+
+# Docs (incluir so se necessario em runtime)
+docs/

@@ -1,0 +1,72 @@
+# Override automatico para desenvolvimento.
+#
+# Carregado por padrao quando voce roda `docker compose up` na raiz.
+# Sobrescreve o docker-compose.yml com:
+#   - bind mount do codigo (hot-reload)
+#   - uvicorn --reload no backend
+#   - next dev no frontend
+#   - LOG_LEVEL=DEBUG, WEBHOOK permitindo hosts privados
+#
+# Pra rodar SEM o override (ex: simular staging):
+#   docker compose -f docker-compose.yml up
+#
+# IMPORTANTE: este arquivo NAO deve ser usado em prod.
+
+services:
+
+  shift-backend:
+    # Bind mount do codigo + venv preserved da imagem.
+    # O volume anonimo /opt/venv impede que o bind mount apague o venv.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - shift_checkpoints:/var/lib/shift/checkpoints
+      - shift_extract_cache:/var/lib/shift/extract-cache
+      - shift_uploads:/var/lib/shift/uploads
+      - streaming_spill:/tmp/streaming-spill
+      - ./shift-backend:/app
+    environment:
+      LOG_FORMAT: console
+      LOG_LEVEL: DEBUG
+      # Em dev permitimos webhooks pra hosts privados (RFC1918, loopback).
+      # Em prod NUNCA habilite — anti-SSRF do url_validator depende disso.
+      WEBHOOK_ALLOW_INSECURE_HOSTS: "true"
+      # SSE/HTTP keep-alive longo facilita debug de execucoes lentas.
+      UVICORN_TIMEOUT_KEEP_ALIVE: "120"
+    # uvicorn em modo reload. NAO use --workers em dev (reload nao funciona).
+    command:
+      - sh
+      - -c
+      - |
+        alembic upgrade head && \
+        exec uvicorn main:app \
+          --host 0.0.0.0 \
+          --port 8000 \
+          --reload \
+          --reload-dir /app
+
+  shift-frontend:
+    # Em dev usamos `next dev` com bind mount.
+    build:
+      context: ./shift-frontend
+      target: deps   # para de build no stage com node_modules instalados
+    volumes:
+      - ./shift-frontend:/app
+      # Preserva node_modules do stage 'deps' contra o bind mount.
+      - /app/node_modules
+      - /app/.next
+    environment:
+      NODE_ENV: development
+      WATCHPACK_POLLING: "true"  # necessario em alguns Docker Desktop/WSL2
+    command: ["pnpm", "dev"]
+
+  prometheus:
+    # Em dev expomos :9090 normalmente; em prod-like comentar.
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+
+  otel-collector:
+    # Em dev expomos OTLP pra host — util pra apontar SDKs locais
+    # rodando fora do compose pra testar o pipeline.
+    ports:
+      - "4317:4317"
+      - "4318:4318"

@@ -497,7 +497,14 @@
       "Bash(python -c \"from app.services.scheduler_service import _on_job_executed, _HEARTBEAT_JOB_IDS; print\\('heartbeat ids:', _HEARTBEAT_JOB_IDS\\); from main import app; print\\('app loaded ok'\\)\")",
       "Bash(python -m pytest tests/test_loop_node.py tests/test_filter_node.py tests/test_sql_script_node.py tests/test_bulk_composite_parameter_value.py tests/test_code_node.py tests/test_composite_insert_node.py tests/test_dead_letter_service.py tests/test_sub_workflow.py --no-header -q -m \"not docker and not postgres\")",
       "Bash(python -m pytest tests/test_loop_node.py tests/test_filter_node.py tests/test_sql_script_node.py tests/test_code_node.py tests/test_composite_insert_node.py tests/test_dead_letter_service.py tests/test_sub_workflow.py --no-header -q -m \"not docker and not postgres\")",
-      "Bash(python -m pytest tests/test_dead_letter_service.py --no-header -q -m \"not docker and not postgres\")"
+      "Bash(python -m pytest tests/test_dead_letter_service.py --no-header -q -m \"not docker and not postgres\")",
+      "Bash(docker compose *)",
+      "Bash(SECRET_KEY=test ENCRYPTION_KEY=test docker compose config --quiet)",
+      "Bash(SECRET_KEY=test ENCRYPTION_KEY=test docker compose -f docker-compose.yml config --quiet)",
+      "Bash(SECRET_KEY=test ENCRYPTION_KEY=test docker compose config --services)",
+      "Bash(DATABASE_URL='postgresql+asyncpg://u:p@h:5432/d?sslmode=require' SECRET_KEY=test ENCRYPTION_KEY=test docker compose config --quiet)",
+      "Bash(DATABASE_URL='postgresql+asyncpg://u:p@h:5432/d' SECRET_KEY=test ENCRYPTION_KEY=test docker compose config --services)",
+      "Bash(DATABASE_URL='postgresql+asyncpg://u:p@h:5432/d' SECRET_KEY=test ENCRYPTION_KEY=test docker compose config)"
     ]
   }
 }

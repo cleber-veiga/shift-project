@@ -15,3 +15,27 @@ datasources:
     jsonData:
       httpMethod: POST
       timeInterval: "15s"
+      # Liga exemplars a traces no Tempo. Quando shift-backend gerar
+      # exemplars (Histogram com OTel context), aparece um botao
+      # "Trace" inline no painel de metricas.
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      httpMethod: GET
+      tracesToLogsV2:
+        datasourceUid: prometheus
+        spanStartTimeShift: '-1h'
+        spanEndTimeShift: '1h'
+      tracesToMetrics:
+        datasourceUid: prometheus
+      serviceMap:
+        datasourceUid: prometheus
+      nodeGraph:
+        enabled: true

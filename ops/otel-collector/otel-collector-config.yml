@@ -1,0 +1,44 @@
+# Configuracao do OpenTelemetry Collector — recebe spans do shift-backend
+# (OTLP/HTTP em :4318, OTLP/gRPC em :4317) e exporta para o Tempo.
+#
+# Pipeline:
+#   shift-backend --(OTLP)--> otel-collector --(OTLP/gRPC)--> tempo
+#
+# memory_limiter protege o collector contra spikes (drop oldest spans em
+# vez de OOM kill).
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch:
+    send_batch_size: 512
+    timeout: 10s
+
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  # Em dev e util ver os spans no log do collector — comente em prod.
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/tempo, debug]
