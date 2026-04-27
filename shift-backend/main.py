@@ -49,7 +49,7 @@ from app.services import webhook_service
 from app.services.agent.graph.checkpointer import close_checkpointer
 from app.services.agent.safety.expiration_job import register_agent_expiration_job
 from app.core.config import settings
-from app.services.scheduler_service import bootstrap_schedules, register_checkpoint_cleanup_job, register_extract_cache_cleanup_job, register_storage_cleanup_job, scheduler
+from app.services.scheduler_service import bootstrap_schedules, register_checkpoint_cleanup_job, register_extract_cache_cleanup_job, register_storage_cleanup_job, register_workflow_uploads_cleanup_job, scheduler
 from app.services.webhook_dispatch_service import register_dispatch_job as register_webhook_dispatch_job
 from app.services.workflow_service import cleanup_orphaned_executions
 from app.api.v1.admin_storage import router as admin_storage_router
@@ -124,6 +124,7 @@ async def lifespan(app: FastAPI):
     register_storage_cleanup_job()
     register_checkpoint_cleanup_job()
     register_extract_cache_cleanup_job()
+    register_workflow_uploads_cleanup_job()
     register_webhook_dispatch_job(scheduler)
     if settings.AGENT_ENABLED:
         register_agent_expiration_job(

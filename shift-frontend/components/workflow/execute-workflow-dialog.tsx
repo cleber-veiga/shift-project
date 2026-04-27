@@ -430,7 +430,12 @@ export function ExecuteWorkflowDialog({
       const result = await uploadWorkflowFile(workflowId, file, (pct) => {
         setUploadProgress((prev) => ({ ...prev, [varName]: pct }))
       })
-      setValue(varName, result.file_id)
+      // Salva como URI shift-upload://<id>. Esse formato e reconhecido por
+      // nos como csv_input_node que resolvem a URI pra path absoluto via
+      // workflow_file_upload_service. Backend tambem aceita UUID puro como
+      // fallback (defesa em profundidade), mas usar o scheme deixa a intencao
+      // explicita no payload e nos logs.
+      setValue(varName, `shift-upload://${result.file_id}`)
     } catch (e: unknown) {
       setFieldErrors((prev) => ({
         ...prev,

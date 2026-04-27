@@ -129,11 +129,23 @@ scheduler.add_listener(_on_job_max_instances, EVENT_JOB_MAX_INSTANCES)
 # ---------------------------------------------------------------------------
 
 async def _run_duckdb_storage_cleanup() -> None:
-    """Remove diretorios DuckDB de execucoes finalizadas ha mais de 24h.
+    """Remove diretorios temporarios do Shift orfaos ou expirados.
+
+    Cobertura (todos sob ``<tempdir>/shift/``):
+        - ``executions/<exec_id>/`` — DuckDBs por execucao. Apaga se a
+          execucao nao existe no DB (orfao) OU se status final + age>24h.
+        - ``spill/<exec_id>/`` — chunks de streaming spillover. Apaga se
+          orfao (mesmo criterio acima) OU age>6h.
+        - ``sandbox-results/<*>/`` — outputs de code_node. Apaga age>2h.
+        - ``dlt/`` — pipelines temporarios do dlt. Apaga age>2h por arquivo.
+        - ``code_node/`` — workdirs antigos. Apaga age>2h.
 
     Roda a cada hora via APScheduler. Loga cada remocao e ignora erros
-    individuais para garantir que o job nunca trave o scheduler.
+    individuais para garantir que o job nunca trave o scheduler. Em
+    backends de dev (restart frequente), tambem roda 5 min apos o boot
+    via ``register_storage_cleanup_job`` (next_run_time inicial).
     """
+    import shutil
     import tempfile
     from datetime import datetime, timedelta, timezone
     from pathlib import Path
@@ -144,71 +156,174 @@ async def _run_duckdb_storage_cleanup() -> None:
     from app.db.session import async_session_factory
     from app.models.workflow import WorkflowExecution
 
-    base = Path(tempfile.gettempdir()) / "shift" / "executions"
-    if not base.exists():
+    shift_tmp = Path(tempfile.gettempdir()) / "shift"
+    if not shift_tmp.exists():
         return
 
     _FINAL_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED", "ABORTED", "CRASHED"})
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-    removed = 0
+    now = datetime.now(timezone.utc)
+    cutoff_24h = now - timedelta(hours=24)
+    cutoff_6h = now - timedelta(hours=6)
+    cutoff_2h = now - timedelta(hours=2)
 
-    async with async_session_factory() as session:
-        for entry in base.iterdir():
+    removed = 0
+    freed_bytes = 0
+
+    def _dir_age_seconds(path: Path) -> float:
+        try:
+            return (now.timestamp() - path.stat().st_mtime)
+        except OSError:
+            return 0.0
+
+    def _dir_size(path: Path) -> int:
+        total = 0
+        try:
+            for child in path.rglob("*"):
+                try:
+                    if child.is_file():
+                        total += child.stat().st_size
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        return total
+
+    def _safe_rmtree(path: Path, *, label: str) -> None:
+        nonlocal removed, freed_bytes
+        try:
+            size = _dir_size(path) if path.is_dir() else (
+                path.stat().st_size if path.exists() else 0
+            )
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            elif path.exists():
+                path.unlink(missing_ok=True)
+            removed += 1
+            freed_bytes += size
+            logger.info(
+                "storage.gc.removed",
+                kind=label,
+                path=str(path),
+                size_bytes=size,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "storage.gc.entry_failed",
+                kind=label,
+                path=str(path),
+                error=str(exc),
+            )
+
+    # ── 1. executions/ — varredura DB-aware ────────────────────────────
+    executions_dir = shift_tmp / "executions"
+    if executions_dir.exists():
+        async with async_session_factory() as session:
+            for entry in executions_dir.iterdir():
+                if not entry.is_dir():
+                    continue
+                try:
+                    exec_id = UUID(entry.name)
+                except ValueError:
+                    # Diretorio com nome nao-UUID (ex: test rodado com
+                    # uuid4 fresh sem persistir no DB). Idade > 2h ja
+                    # serve pra apagar — execucao test nao deveria
+                    # sobreviver mais que isso.
+                    if _dir_age_seconds(entry) > 7200:
+                        _safe_rmtree(entry, label="executions.non_uuid")
+                    continue
+
+                try:
+                    row = (
+                        await session.execute(
+                            select(WorkflowExecution).where(
+                                WorkflowExecution.id == exec_id
+                            )
+                        )
+                    ).scalar_one_or_none()
+
+                    should_delete = False
+                    reason = ""
+                    if row is None:
+                        # Orfao no DB — provavelmente test ou execution
+                        # cancelada antes de persistir. Apaga.
+                        should_delete = True
+                        reason = "orphan"
+                    elif row.status in _FINAL_STATUSES:
+                        completed_at = row.completed_at
+                        if completed_at is not None:
+                            if completed_at.tzinfo is None:
+                                completed_at = completed_at.replace(tzinfo=timezone.utc)
+                            if completed_at < cutoff_24h:
+                                should_delete = True
+                                reason = "final_aged"
+
+                    if should_delete:
+                        _safe_rmtree(entry, label=f"executions.{reason}")
+
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "storage.gc.entry_failed",
+                        path=str(entry),
+                        error=str(exc),
+                    )
+
+    # ── 2. spill/ — chunks de streaming sem cleanup ───────────────────
+    spill_dir = shift_tmp / "spill"
+    if spill_dir.exists():
+        for entry in spill_dir.iterdir():
             if not entry.is_dir():
                 continue
-            try:
-                exec_id = UUID(entry.name)
-            except ValueError:
-                continue
+            # Spill so existe durante execucao. Idade > 6h significa que
+            # alguem morreu sem cleanup do producer — seguro apagar.
+            if _dir_age_seconds(entry) > 21600:
+                _safe_rmtree(entry, label="spill.aged")
 
-            try:
-                row = (
-                    await session.execute(
-                        select(WorkflowExecution).where(WorkflowExecution.id == exec_id)
-                    )
-                ).scalar_one_or_none()
+    # ── 3. sandbox-results/ — outputs efemeros de code_node ───────────
+    sandbox_results = shift_tmp / "sandbox-results"
+    if sandbox_results.exists():
+        for entry in sandbox_results.iterdir():
+            if _dir_age_seconds(entry) > 7200:
+                _safe_rmtree(entry, label="sandbox-results.aged")
 
-                should_delete = False
-                if row is None:
-                    should_delete = True
-                elif row.status in _FINAL_STATUSES:
-                    completed_at = row.completed_at
-                    if completed_at is not None:
-                        if completed_at.tzinfo is None:
-                            completed_at = completed_at.replace(tzinfo=timezone.utc)
-                        if completed_at < cutoff:
-                            should_delete = True
+    # ── 4. dlt/ — pipelines temporarios do dlt ────────────────────────
+    dlt_dir = shift_tmp / "dlt"
+    if dlt_dir.exists():
+        for entry in dlt_dir.iterdir():
+            if _dir_age_seconds(entry) > 7200:
+                _safe_rmtree(entry, label="dlt.aged")
 
-                if should_delete:
-                    import shutil
-                    shutil.rmtree(entry, ignore_errors=True)
-                    logger.info(
-                        "storage.gc.removed",
-                        execution_id=str(exec_id),
-                        path=str(entry),
-                    )
-                    removed += 1
-
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "storage.gc.entry_failed",
-                    path=str(entry),
-                    error=str(exc),
-                )
+    # ── 5. code_node/ — workdirs antigos ───────────────────────────────
+    code_node_dir = shift_tmp / "code_node"
+    if code_node_dir.exists():
+        for entry in code_node_dir.iterdir():
+            if _dir_age_seconds(entry) > 7200:
+                _safe_rmtree(entry, label="code_node.aged")
 
     if removed:
-        logger.info("storage.gc.completed", removed=removed)
+        logger.info(
+            "storage.gc.completed",
+            removed=removed,
+            freed_mb=round(freed_bytes / (1024 * 1024), 2),
+        )
 
 
 def register_storage_cleanup_job() -> None:
-    """Registra job APScheduler de limpeza de armazenamento DuckDB (1h)."""
+    """Registra job de limpeza de armazenamento temporario.
+
+    Roda 5 minutos apos o startup (cobre cenario de dev com restarts
+    frequentes onde o interval de 1h nunca chega a disparar) e depois
+    a cada 1h.
+    """
+    from datetime import datetime, timedelta, timezone  # noqa: PLC0415
+
     scheduler.add_job(
         _run_duckdb_storage_cleanup,
         trigger="interval",
         hours=1,
         id="shift_storage_cleanup",
         replace_existing=True,
-        name="Limpeza de armazenamento DuckDB",
+        name="Limpeza de armazenamento temporario",
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=5),
     )
     logger.info("storage.gc.job_registered")
 
@@ -259,6 +374,48 @@ def register_extract_cache_cleanup_job() -> None:
         name="Limpeza de cache de extracoes expiradas",
     )
     logger.info("extract_cache.gc.job_registered")
+
+
+async def _run_workflow_uploads_cleanup() -> None:
+    """Remove arquivos uploadados nao acessados ha mais de TTL_DAYS."""
+    try:
+        from app.services.workflow_file_upload_service import (  # noqa: PLC0415
+            workflow_file_upload_service,
+        )
+        result = workflow_file_upload_service.cleanup_expired(
+            ttl_days=settings.WORKFLOW_UPLOAD_TTL_DAYS,
+        )
+        if result["removed_files"] > 0:
+            logger.info(
+                "uploads.cleanup.completed",
+                removed_files=result["removed_files"],
+                freed_mb=result["freed_bytes"] // (1024 * 1024),
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("uploads.cleanup.failed")
+
+
+def register_workflow_uploads_cleanup_job() -> None:
+    """Registra job APScheduler de limpeza de uploads expirados.
+
+    Roda 1x por dia em ``settings.WORKFLOW_UPLOAD_CLEANUP_HOUR_UTC`` (UTC).
+    Cron e nao interval — garante horario fixo, evitando jitter de
+    horario de pico se o backend reiniciar varias vezes.
+    """
+    from apscheduler.triggers.cron import CronTrigger  # noqa: PLC0415
+
+    scheduler.add_job(
+        _run_workflow_uploads_cleanup,
+        trigger=CronTrigger(hour=settings.WORKFLOW_UPLOAD_CLEANUP_HOUR_UTC, minute=0),
+        id="shift_workflow_uploads_cleanup",
+        replace_existing=True,
+        name="Limpeza de uploads de workflow expirados",
+    )
+    logger.info(
+        "uploads.cleanup.job_registered",
+        hour_utc=settings.WORKFLOW_UPLOAD_CLEANUP_HOUR_UTC,
+        ttl_days=settings.WORKFLOW_UPLOAD_TTL_DAYS,
+    )
 
 
 def _job_id(workflow_id: UUID | str) -> str:

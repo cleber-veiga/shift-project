@@ -63,3 +63,7 @@ logs/
 
 # Build artifacts
 *.spec
+
+
+# Uploads
+workflow_uploads/

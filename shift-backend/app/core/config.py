@@ -139,10 +139,25 @@ class Settings(BaseSettings):
     # Em producao, apontar para o dominio publico (atras do proxy/tunel).
     EXTERNAL_BASE_URL: str | None = None
 
-    # --- Upload de arquivos para variaveis de workflow ---
+    # --- Upload de arquivos para nos e variaveis de workflow ---
     # Diretorio local onde os arquivos uploadados sao armazenados.
-    # Em producao substitua por um bucket S3/MinIO.
+    # Em producao substitua por um bucket S3/MinIO — todo o consumo
+    # passa por workflow_file_upload_service.resolve_url(), entao
+    # trocar storage e cirurgico (so muda o service).
     WORKFLOW_UPLOAD_DIR: str = "workflow_uploads"
+    # Tamanho maximo aceito por arquivo individual (MB).
+    WORKFLOW_UPLOAD_MAX_FILE_MB: int = 500
+    # Quota agregada por projeto (MB). Calculada somando ``size_bytes``
+    # de todos os uploads dos workflows do mesmo project_id. Excedeu,
+    # POST /uploads retorna 429.
+    WORKFLOW_UPLOAD_QUOTA_PER_PROJECT_MB: int = 5120
+    # Time-to-live de uploads (dias). Cleanup job remove arquivos com
+    # last_accessed_at < now - TTL_DAYS. Cada execucao que usa o arquivo
+    # faz ``touch()`` antes da leitura — protege arquivo em uso.
+    WORKFLOW_UPLOAD_TTL_DAYS: int = 30
+    # Hora UTC em que o cleanup job roda (0-23). Default 03h pra fugir
+    # de pico de execucoes em horario comercial.
+    WORKFLOW_UPLOAD_CLEANUP_HOUR_UTC: int = 3
 
     # --- AI / LLM (SQL Assistant) ---
     # Identificador LiteLLM do modelo. Prefixo define o provider:

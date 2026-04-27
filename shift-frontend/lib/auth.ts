@@ -1617,6 +1617,106 @@ export async function updateWorkflow(
   })
 }
 
+// ─── Workflow file uploads ────────────────────────────────────────────────────
+
+export type WorkflowUpload = {
+  file_id: string
+  original_filename: string
+  size_bytes: number
+  sha256: string
+  created_at: string
+  last_accessed_at: string
+}
+
+export type WorkflowUploadResult = {
+  file_id: string
+  url: string
+  size_bytes: number
+  original_filename: string
+  sha256: string
+  deduped: boolean
+}
+
+export async function listWorkflowUploads(
+  workflowId: string,
+): Promise<WorkflowUpload[]> {
+  return authorizedRequest<WorkflowUpload[]>(
+    `/workflows/${workflowId}/uploads`,
+    { method: "GET" },
+  )
+}
+
+export async function uploadWorkflowFile(
+  workflowId: string,
+  file: File,
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<WorkflowUploadResult> {
+  const session = getStoredSession()
+  if (!session) throw new Error("Sessao expirada.")
+
+  // Usa XHR (e nao fetch) porque fetch nao expoe progress de upload
+  // de forma confiavel em todos os browsers em 2026.
+  return new Promise<WorkflowUploadResult>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open("POST", `${getApiBaseUrl()}/workflows/${workflowId}/uploads`)
+    xhr.setRequestHeader("Authorization", `Bearer ${session.accessToken}`)
+
+    if (onProgress) {
+      xhr.upload.addEventListener("progress", (e) => {
+        if (e.lengthComputable) onProgress(e.loaded, e.total)
+      })
+    }
+
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve(JSON.parse(xhr.responseText) as WorkflowUploadResult)
+        } catch (err) {
+          reject(new Error(`Resposta invalida: ${(err as Error).message}`))
+        }
+      } else {
+        let detail = "Falha no upload."
+        try {
+          const body = JSON.parse(xhr.responseText) as { detail?: string }
+          if (body.detail) detail = body.detail
+        } catch {
+          // ignora
+        }
+        reject(new Error(detail))
+      }
+    })
+    xhr.addEventListener("error", () => reject(new Error("Erro de rede no upload.")))
+    xhr.addEventListener("abort", () => reject(new Error("Upload cancelado.")))
+
+    const form = new FormData()
+    form.append("file", file)
+    xhr.send(form)
+  })
+}
+
+export async function deleteWorkflowUpload(
+  workflowId: string,
+  fileId: string,
+): Promise<void> {
+  await authorizedRequest<void>(
+    `/workflows/${workflowId}/uploads/${fileId}`,
+    { method: "DELETE" },
+  )
+}
+
+export async function listExcelSheets(
+  workflowId: string,
+  fileRef: string,
+): Promise<{ sheets: string[] }> {
+  return authorizedRequest<{ sheets: string[] }>(
+    `/workflows/${workflowId}/excel/sheets`,
+    {
+      method: "POST",
+      body: JSON.stringify({ file_ref: fileRef }),
+    },
+  )
+}
+
 export async function deleteWorkflow(workflowId: string): Promise<void> {
   return authorizedRequest<void>(`/workflows/${workflowId}`, {
     method: "DELETE",

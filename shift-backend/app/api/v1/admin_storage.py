@@ -66,3 +66,33 @@ def _dir_size(path: Path) -> int:
     except OSError:
         pass
     return total
+
+
+@router.post("/storage/cleanup")
+async def trigger_storage_cleanup(
+    _=Depends(require_permission("workspace", "ADMIN")),
+) -> dict[str, Any]:
+    """Forca a execucao imediata do job de limpeza de armazenamento.
+
+    Util quando o tempdir cresceu inesperadamente (ex: dev com muitos
+    restarts onde o job de hora em hora nunca disparou). Roda o mesmo
+    cleanup que o scheduler executa, mas de forma sincrona, e retorna
+    o tamanho total atual do ``<tempdir>/shift/``.
+    """
+    from app.services.scheduler_service import (  # noqa: PLC0415
+        _run_duckdb_storage_cleanup,
+    )
+
+    base = Path(tempfile.gettempdir()) / "shift"
+    size_before = _dir_size(base) if base.exists() else 0
+
+    await _run_duckdb_storage_cleanup()
+
+    size_after = _dir_size(base) if base.exists() else 0
+    freed = size_before - size_after
+
+    return {
+        "before_mb": round(size_before / (1024 * 1024), 2),
+        "after_mb": round(size_after / (1024 * 1024), 2),
+        "freed_mb": round(freed / (1024 * 1024), 2),
+    }

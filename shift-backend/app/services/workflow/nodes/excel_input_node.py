@@ -30,6 +30,10 @@ import httpx
 from app.core.config import settings
 from app.data_pipelines.duckdb_storage import JsonlStreamer
 from app.services.workflow.nodes import BaseNodeProcessor, register_processor
+from app.services.workflow.nodes._input_helpers import (
+    resolve_upload_url,
+    validate_against_input_model,
+)
 from app.services.workflow.nodes.exceptions import NodeProcessingError
 
 _REMOTE_PREFIXES = ("http://", "https://")
@@ -66,6 +70,10 @@ class ExcelInputNodeProcessor(BaseNodeProcessor):
             raise NodeProcessingError(
                 f"No excel_input '{node_id}': 'url' e obrigatorio."
             )
+        # Resolve URI shift-upload://<file_id> (ou UUID puro de variavel
+        # file_upload) para path absoluto local antes de qualquer outra
+        # validacao — assim o erro de upload tem prioridade.
+        url = resolve_upload_url(node_id, str(url), context)
         if header_row < 0:
             raise NodeProcessingError(
                 f"No excel_input '{node_id}': 'header_row' deve ser >= 0."
@@ -96,12 +104,32 @@ class ExcelInputNodeProcessor(BaseNodeProcessor):
                 f"No excel_input '{node_id}': planilha nao continha linhas de dados."
             )
 
+        # Valida contra InputModel vinculado, se existir. Faz isso APOS
+        # a leitura porque os headers reais sao descobertos no streaming.
+        input_model_id = resolved_config.get("input_model_id")
+        if input_model_id:
+            actual_columns = reference.get("_columns") or []
+            validate_against_input_model(
+                node_id=node_id,
+                input_model_id=str(input_model_id),
+                actual_columns=actual_columns,
+                # Excel: passa sheet_name pra que o helper case com a
+                # sheet homonima do modelo (modelos Excel podem ter N
+                # sheets). None = primeira sheet do arquivo, valida
+                # contra primeira sheet do modelo.
+                sheet_name=str(sheet_name) if isinstance(sheet_name, str) else None,
+            )
+
         return {
             "node_id": node_id,
             "status": "completed",
             "row_count": reference.get("_row_count", 0),
             "output_field": output_field,
-            output_field: {k: v for k, v in reference.items() if k != "_row_count"},
+            output_field: {
+                k: v
+                for k, v in reference.items()
+                if k not in ("_row_count", "_columns")
+            },
         }
 
 
@@ -249,7 +277,13 @@ def _stream_excel_to_duckdb(
     if streamer.reference is None:
         return None
 
-    return {**streamer.reference, "_row_count": streamer.row_count}
+    return {
+        **streamer.reference,
+        "_row_count": streamer.row_count,
+        # Capturado dentro do loop pra permitir validacao contra InputModel
+        # apos o streaming. None se nenhum cabecalho foi processado.
+        "_columns": list(headers) if headers else [],
+    }
 
 
 def _serialize_cell(value: Any) -> Any:

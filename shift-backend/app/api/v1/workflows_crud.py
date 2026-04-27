@@ -10,6 +10,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,6 +50,7 @@ def _collect_referenced_vars(definition: dict[str, Any] | None) -> set[str]:
     return found
 
 from app.api.dependencies import get_current_user, get_db
+from app.core.config import settings
 from app.core.security import authorization_service, require_permission
 from app.models import Project, User
 from app.models.workflow import Workflow, WorkflowVersion
@@ -681,14 +683,31 @@ async def update_workflow_variables(
 
 
 # ---------------------------------------------------------------------------
-# Upload de arquivos para variaveis file_upload
+# Upload de arquivos para nos e variaveis file_upload
 # ---------------------------------------------------------------------------
 
 _ALLOWED_UPLOAD_EXTENSIONS = frozenset({
     ".csv", ".tsv", ".xlsx", ".xls", ".json", ".parquet", ".txt",
 })
 
-_MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+
+async def _resolve_project_workflow_ids(
+    db: AsyncSession, workflow: Workflow
+) -> list[str]:
+    """Lista workflow_ids que compartilham o mesmo project_id (ou
+    workspace_id se project for None) — usado pra somar quota do
+    projeto no upload service."""
+    if workflow.project_id is not None:
+        stmt = select(Workflow.id).where(Workflow.project_id == workflow.project_id)
+    elif workflow.workspace_id is not None:
+        stmt = select(Workflow.id).where(
+            Workflow.workspace_id == workflow.workspace_id,
+            Workflow.project_id.is_(None),
+        )
+    else:
+        return [str(workflow.id)]
+    rows = (await db.execute(stmt)).scalars().all()
+    return [str(r) for r in rows]
 
 
 @router.post(
@@ -701,12 +720,21 @@ async def upload_workflow_file(
     db: AsyncSession = Depends(get_db),
     _=Depends(require_permission("workspace", "CONSULTANT")),
 ) -> dict:
-    """Faz upload de um arquivo para uso em variaveis do tipo file_upload.
+    """Faz upload de um arquivo pra uso em nos (csv_input, excel_input)
+    e variaveis ``file_upload``.
 
-    Retorna `{file_id, url}` onde `url` e o path interno que deve ser
-    passado como `variable_values.{nome_variavel}` ao executar o workflow.
+    Retorna ``{file_id, url, size_bytes, original_filename, sha256, deduped}``.
+    O nome ``url`` e o path interno do arquivo no host. Para referenciar
+    em config de no, prefira o URI scheme ``shift-upload://<file_id>`` —
+    desacopla a definicao do workflow da localizacao fisica do arquivo.
 
-    Extensoes aceitas: .csv .tsv .xlsx .xls .json .parquet .txt (max 50 MB).
+    Limites:
+        - Extensao deve estar em {.csv .tsv .xlsx .xls .json .parquet .txt}.
+        - Arquivo individual: ``settings.WORKFLOW_UPLOAD_MAX_FILE_MB``.
+        - Quota agregada por projeto: ``settings.WORKFLOW_UPLOAD_QUOTA_PER_PROJECT_MB``.
+
+    Dedup: se o mesmo conteudo (sha256) ja existe neste workflow, devolve
+    o file_id existente sem regravar — ``deduped: true`` na resposta.
     """
     workflow = await workflow_crud_service.get(db, workflow_id)
     if workflow is None:
@@ -724,11 +752,32 @@ async def upload_workflow_file(
             detail=f"Extensao '{ext}' nao permitida. Aceitas: {sorted(_ALLOWED_UPLOAD_EXTENSIONS)}",
         )
 
+    max_bytes = settings.WORKFLOW_UPLOAD_MAX_FILE_MB * 1024 * 1024
     content = await file.read()
-    if len(content) > _MAX_UPLOAD_BYTES:
+    if len(content) > max_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"Arquivo excede o limite de {_MAX_UPLOAD_BYTES // (1024*1024)} MB.",
+            detail=(
+                f"Arquivo excede o limite de "
+                f"{settings.WORKFLOW_UPLOAD_MAX_FILE_MB} MB."
+            ),
+        )
+
+    # Quota por projeto — soma uploads de todos workflows do mesmo project_id
+    quota_bytes = settings.WORKFLOW_UPLOAD_QUOTA_PER_PROJECT_MB * 1024 * 1024
+    project_workflow_ids = await _resolve_project_workflow_ids(db, workflow)
+    used_bytes = workflow_file_upload_service.get_quota_used_for_workflows(
+        project_workflow_ids
+    )
+    if used_bytes + len(content) > quota_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Quota do projeto excedida ("
+                f"{settings.WORKFLOW_UPLOAD_QUOTA_PER_PROJECT_MB} MB). "
+                f"Em uso: {used_bytes // (1024*1024)} MB, "
+                f"este arquivo: {len(content) // (1024*1024)} MB."
+            ),
         )
 
     result = workflow_file_upload_service.save(
@@ -737,3 +786,203 @@ async def upload_workflow_file(
         content=content,
     )
     return result
+
+
+@router.get("/workflows/{workflow_id}/uploads")
+async def list_workflow_files(
+    workflow_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_permission("workspace", "CONSULTANT")),
+) -> list[dict]:
+    """Lista arquivos uploadados deste workflow.
+
+    Retorna lista ordenada por ``created_at`` desc com:
+    ``[{file_id, original_filename, size_bytes, created_at,
+    last_accessed_at, sha256}]``. Path absoluto NAO e exposto.
+    """
+    workflow = await workflow_crud_service.get(db, workflow_id)
+    if workflow is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_id}' nao encontrado.",
+        )
+
+    files = workflow_file_upload_service.list_files(str(workflow_id))
+    # Remove path absoluto (vazamento desnecessario; UI usa shift-upload://)
+    public = [
+        {
+            "file_id": f["file_id"],
+            "original_filename": f.get("original_filename"),
+            "size_bytes": f.get("size_bytes", 0),
+            "sha256": f.get("sha256"),
+            "created_at": f.get("created_at"),
+            "last_accessed_at": f.get("last_accessed_at"),
+        }
+        for f in files
+    ]
+    public.sort(key=lambda f: f.get("created_at") or "", reverse=True)
+    return public
+
+
+# ---------------------------------------------------------------------------
+# Inspecao de arquivos Excel (lista de sheets)
+# ---------------------------------------------------------------------------
+
+
+class ExcelSheetsRequest(BaseModel):
+    """Body do endpoint de inspecao de sheets."""
+
+    file_ref: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Referencia ao arquivo Excel: pode ser shift-upload://<file_id>, "
+            "UUID puro, http(s)://, ou path local."
+        ),
+    )
+
+
+class ExcelSheetsResponse(BaseModel):
+    sheets: list[str]
+
+
+@router.post(
+    "/workflows/{workflow_id}/excel/sheets",
+    response_model=ExcelSheetsResponse,
+)
+async def list_excel_sheets(
+    workflow_id: UUID,
+    body: ExcelSheetsRequest,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_permission("workspace", "CONSULTANT")),
+) -> ExcelSheetsResponse:
+    """Abre o arquivo Excel referenciado e devolve os nomes das sheets.
+
+    Usado pelo frontend pra popular o dropdown 'Nome da Aba' do nó
+    excel_input — UX bem melhor que digitar o nome a mao.
+
+    Resolucao do file_ref:
+        - ``shift-upload://<id>`` ou UUID puro -> resolve via
+          workflow_file_upload_service.
+        - ``http://`` / ``https://`` -> baixa em tempfile e abre.
+        - path local -> abre direto.
+
+    Auth: mesmo escopo do upload (CONSULTANT do workspace dono do
+    workflow).
+
+    Performance: usa openpyxl read_only — abre o arquivo, le a lista
+    de sheets do .xlsx (1 entrada do ZIP), fecha. Sem iterar linhas.
+    """
+    workflow = await workflow_crud_service.get(db, workflow_id)
+    if workflow is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_id}' nao encontrado.",
+        )
+
+    # Resolve referencia → path local (download se necessario)
+    from app.services.workflow.nodes._input_helpers import resolve_upload_url  # noqa: PLC0415
+
+    try:
+        resolved = resolve_upload_url(
+            f"excel-sheets-inspection",
+            body.file_ref,
+            {"workflow_id": str(workflow_id)},
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        )
+
+    # Se for URL remota, baixa em tempfile.
+    from pathlib import Path  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+
+    cleanup_path: Path | None = None
+    if resolved.lower().startswith(("http://", "https://")):
+        import httpx  # noqa: PLC0415
+
+        suffix = ".xlsx" if resolved.lower().endswith(".xlsx") else ".xls"
+        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+        cleanup_path = Path(tmp.name)
+        tmp.close()
+        try:
+            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+                with client.stream("GET", resolved) as resp:
+                    resp.raise_for_status()
+                    with cleanup_path.open("wb") as fh:
+                        for chunk in resp.iter_bytes(chunk_size=1 << 20):
+                            fh.write(chunk)
+        except Exception as exc:
+            cleanup_path.unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Falha ao baixar arquivo: {exc}",
+            )
+        local_path = cleanup_path
+    else:
+        local_path = Path(resolved)
+        if not local_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Arquivo nao encontrado.",
+            )
+
+    try:
+        try:
+            import openpyxl  # noqa: PLC0415
+        except ImportError:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="openpyxl nao instalado no backend.",
+            )
+        try:
+            wb = openpyxl.load_workbook(
+                str(local_path), read_only=True, data_only=False
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Nao foi possivel abrir o arquivo Excel: {exc}",
+            )
+        try:
+            sheets = list(wb.sheetnames)
+        finally:
+            wb.close()
+    finally:
+        if cleanup_path is not None:
+            cleanup_path.unlink(missing_ok=True)
+
+    return ExcelSheetsResponse(sheets=sheets)
+
+
+@router.delete(
+    "/workflows/{workflow_id}/uploads/{file_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_workflow_file(
+    workflow_id: UUID,
+    file_id: str,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_permission("workspace", "CONSULTANT")),
+) -> None:
+    """Remove um arquivo uploadado. 404 se file_id nao existir.
+
+    AVISO: workflows que referenciem ``shift-upload://<file_id>`` em
+    configuracao de nos vao falhar na proxima execucao com mensagem
+    clara. Nao ha verificacao de uso aqui — caller assume a remocao.
+    """
+    workflow = await workflow_crud_service.get(db, workflow_id)
+    if workflow is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_id}' nao encontrado.",
+        )
+
+    removed = workflow_file_upload_service.delete(str(workflow_id), file_id)
+    if not removed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Arquivo '{file_id}' nao encontrado.",
+        )

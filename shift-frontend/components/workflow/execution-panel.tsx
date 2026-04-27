@@ -71,12 +71,16 @@ interface ExecutionPanelProps {
   isRunning: boolean
   onAbort: () => void
   onClose: () => void
+  /** Quando true, o painel ganha padding-left igual a largura da sidebar
+      da Biblioteca de Nos pra nao ser sobreposto por ela. */
+  libraryOpen?: boolean
 }
 
 const MIN_HEIGHT = 120
 const MAX_HEIGHT = 700
+const LIBRARY_WIDTH = 380
 
-export function ExecutionPanel({ events, isRunning, onAbort, onClose }: ExecutionPanelProps) {
+export function ExecutionPanel({ events, isRunning, onAbort, onClose, libraryOpen }: ExecutionPanelProps) {
   const nodeStates = buildNodeStates(events)
 
   // ── Resize drag ──────────────────────────────────────────────────────────
@@ -136,7 +140,13 @@ export function ExecutionPanel({ events, isRunning, onAbort, onClose }: Executio
     | undefined
 
   return (
-    <div className="flex shrink-0 flex-col border-t border-border bg-card" style={{ height }}>
+    <div
+      className="flex shrink-0 flex-col border-t border-border bg-card transition-[padding] duration-300 ease-out"
+      style={{
+        height,
+        paddingLeft: libraryOpen ? LIBRARY_WIDTH : 0,
+      }}
+    >
       {/* ── Resize handle ── */}
       <div
         onMouseDown={onResizeMouseDown}

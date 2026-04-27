@@ -66,19 +66,24 @@ function escapeSql(s: string): string {
 }
 
 // SQL-level transforms — still needed to recompute expression for the backend.
+//
+// IMPORTANTE: REGEXP_REPLACE em DuckDB substitui apenas a PRIMEIRA ocorrencia
+// quando o flag 'g' nao e passado. Todos os transforms baseados em regex
+// abaixo precisam do quarto argumento 'g' pra remover/substituir TODAS as
+// ocorrencias. Sem ele, "12.345.678/0001-90" -> only_digits vira "12345.678/0001-90".
 const TRANSFORMS: TransformDef[] = [
   { id: "upper",          label: "Maiúsculo",        apply: (e) => `UPPER(${e})` },
   { id: "lower",          label: "Minúsculo",        apply: (e) => `LOWER(${e})` },
   { id: "trim",           label: "Sem espaços",      apply: (e) => `TRIM(${e})` },
-  { id: "remove_special", label: "Remover especiais", apply: (e) => `REGEXP_REPLACE(${e}, '[^A-Za-z0-9 ]', '')` },
-  { id: "only_digits",    label: "Somente dígitos",  apply: (e) => `REGEXP_REPLACE(${e}, '[^0-9]', '')` },
+  { id: "remove_special", label: "Remover especiais", apply: (e) => `REGEXP_REPLACE(${e}, '[^A-Za-z0-9 ]', '', 'g')` },
+  { id: "only_digits",    label: "Somente dígitos",  apply: (e) => `REGEXP_REPLACE(${e}, '[^0-9]', '', 'g')` },
   {
     id: "remove_chars", label: "Remover caracteres", hasParams: true,
     paramDefs: [{ key: "chars", label: "Caracteres", placeholder: "ex: ( ) - / ." }],
     apply: (e, p) => {
       const chars = p?.chars ?? ""
       if (!chars) return e
-      return `REGEXP_REPLACE(${e}, '[${escapeSql(escapeRegexClass(chars))}]', '')`
+      return `REGEXP_REPLACE(${e}, '[${escapeSql(escapeRegexClass(chars))}]', '', 'g')`
     },
   },
   {

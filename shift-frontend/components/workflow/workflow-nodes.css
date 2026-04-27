@@ -447,26 +447,24 @@
   --tone-glow: rgba(236, 72, 153, 0.35);
 }
 
-/* ---- Drawer shell ----------------------------------------------- */
+/* ---- Drawer shell — sidebar full-height ------------------------- */
+/* Usa tokens do design system (var(--card), var(--border)) em vez de
+   slate hardcoded — bate com o resto do app (canvas toolbar, node config
+   modal, etc) e respeita troca de tema sem precisar de regras .dark. */
 .lib-drawer {
   position: absolute;
-  top: 12px;
-  bottom: 12px;
-  left: 12px;
+  top: 0;
+  bottom: 0;
+  left: 0;
   z-index: 25;
   display: flex;
   flex-direction: column;
   width: 380px;
-  max-width: calc(100vw - 24px);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.96));
-  backdrop-filter: blur(18px) saturate(1.1);
-  -webkit-backdrop-filter: blur(18px) saturate(1.1);
-  border: 1px solid rgba(15, 23, 42, 0.08);
-  border-radius: 14px;
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.9) inset,
-    0 18px 48px -18px rgba(15, 23, 42, 0.25),
-    0 4px 12px -6px rgba(15, 23, 42, 0.1);
+  max-width: 100vw;
+  background: var(--card);
+  color: var(--card-foreground);
+  border-right: 1px solid var(--border);
+  box-shadow: 8px 0 24px -8px rgb(0 0 0 / 0.18);
   overflow: hidden;
   transform: translateX(-110%);
   transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s ease;
@@ -480,15 +478,6 @@
   pointer-events: auto;
 }
 
-.dark .lib-drawer {
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.98), rgba(15, 23, 42, 0.92));
-  border-color: rgba(148, 163, 184, 0.12);
-  box-shadow:
-    0 1px 0 rgba(148, 163, 184, 0.04) inset,
-    0 18px 48px -18px rgba(0, 0, 0, 0.6),
-    0 4px 12px -6px rgba(0, 0, 0, 0.3);
-}
-
 /* ---- FAB (button to open library when closed) --------------------- */
 .lib-fab {
   display: inline-flex;
@@ -496,30 +485,20 @@
   gap: 6px;
   height: 34px;
   padding: 0 12px;
-  border-radius: 10px;
-  border: 1px solid rgba(15, 23, 42, 0.1);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  color: rgb(30, 41, 59);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--card-foreground);
   font-size: 12px;
   font-weight: 600;
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.9) inset,
-    0 6px 18px -8px rgba(15, 23, 42, 0.25);
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06), 0 2px 6px -2px rgb(0 0 0 / 0.08);
+  transition: background-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
   cursor: pointer;
 }
 .lib-fab:hover {
+  background: var(--accent);
   transform: translateY(-1px);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.9) inset,
-    0 10px 22px -8px rgba(15, 23, 42, 0.3);
-}
-.dark .lib-fab {
-  background: linear-gradient(180deg, rgba(30, 41, 59, 0.94), rgba(15, 23, 42, 0.9));
-  border-color: rgba(148, 163, 184, 0.18);
-  color: rgb(226, 232, 240);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.08), 0 6px 14px -4px rgb(0 0 0 / 0.12);
 }
 
 /* ---- Centered tab pill group (Editor / Execuções) ---------------- */
@@ -529,18 +508,10 @@
   gap: 2px;
   height: 34px;
   padding: 3px;
-  border-radius: 10px;
-  border: 1px solid rgba(15, 23, 42, 0.1);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.92));
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.9) inset,
-    0 6px 18px -8px rgba(15, 23, 42, 0.25);
-}
-.dark .workflow-tab-pill-group {
-  background: linear-gradient(180deg, rgba(30, 41, 59, 0.94), rgba(15, 23, 42, 0.9));
-  border-color: rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
 }
 .workflow-tab-pill {
   display: inline-flex;
@@ -548,38 +519,23 @@
   gap: 6px;
   height: 26px;
   padding: 0 12px;
-  border-radius: 7px;
+  border-radius: 6px;
   font-size: 12px;
   font-weight: 600;
-  color: rgb(100, 116, 139);
+  color: var(--muted-foreground);
   background: transparent;
   border: 0;
   cursor: pointer;
   transition: color 0.15s ease, background-color 0.15s ease;
 }
 .workflow-tab-pill:hover {
-  color: rgb(30, 41, 59);
-}
-.dark .workflow-tab-pill {
-  color: rgb(148, 163, 184);
-}
-.dark .workflow-tab-pill:hover {
-  color: rgb(226, 232, 240);
+  color: var(--foreground);
+  background: var(--accent);
 }
 .workflow-tab-pill--active {
-  color: rgb(30, 41, 59);
-  background: #ffffff;
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.95) inset,
-    0 1px 2px rgba(15, 23, 42, 0.08),
-    0 2px 6px -2px rgba(15, 23, 42, 0.12);
-}
-.dark .workflow-tab-pill--active {
-  color: rgb(226, 232, 240);
-  background: rgba(51, 65, 85, 0.85);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.05) inset,
-    0 1px 2px rgba(0, 0, 0, 0.35);
+  color: var(--foreground);
+  background: var(--accent);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
 }
 
 /* ---- Header ------------------------------------------------------ */
@@ -588,12 +544,8 @@
   align-items: center;
   gap: 10px;
   padding: 14px 16px 12px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.6));
-}
-.dark .lib-header {
-  border-bottom-color: rgba(148, 163, 184, 0.1);
-  background: linear-gradient(180deg, rgba(15, 23, 42, 0.7), rgba(15, 23, 42, 0.4));
+  border-bottom: 1px solid var(--border);
+  background: transparent;
 }
 
 .lib-header-badge {
@@ -603,28 +555,22 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(180deg, #1e293b, #0f172a);
-  color: #fff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.15), 0 0 0 1px rgba(255, 255, 255, 0.06) inset;
-}
-.dark .lib-header-badge {
-  background: linear-gradient(180deg, #334155, #1e293b);
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 .lib-header-title {
   font-size: 13px;
   font-weight: 600;
-  color: #0f172a;
+  color: var(--foreground);
   line-height: 1;
 }
-.dark .lib-header-title { color: #f1f5f9; }
 
 .lib-header-sub {
   font-size: 10.5px;
-  color: #64748b;
+  color: var(--muted-foreground);
   margin-top: 3px;
 }
-.dark .lib-header-sub { color: #94a3b8; }
 
 .lib-close {
   width: 28px;
@@ -633,27 +579,21 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #64748b;
+  color: var(--muted-foreground);
   background: transparent;
   transition: background 0.12s, color 0.12s;
 }
 .lib-close:hover {
-  background: rgba(15, 23, 42, 0.06);
-  color: #0f172a;
-}
-.dark .lib-close { color: #94a3b8; }
-.dark .lib-close:hover {
-  background: rgba(148, 163, 184, 0.12);
-  color: #f1f5f9;
+  background: var(--accent);
+  color: var(--foreground);
 }
 
 .lib-layout-toggle {
   display: inline-flex;
   padding: 2px;
   border-radius: 8px;
-  background: rgba(15, 23, 42, 0.05);
+  background: var(--muted);
 }
-.dark .lib-layout-toggle { background: rgba(148, 163, 184, 0.12); }
 
 .lib-layout-toggle button {
   width: 24px;
@@ -662,20 +602,14 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #64748b;
+  color: var(--muted-foreground);
   transition: background 0.12s, color 0.12s;
 }
-.dark .lib-layout-toggle button { color: #94a3b8; }
 
 .lib-layout-toggle button.active {
-  background: #ffffff;
-  color: #0f172a;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
-}
-.dark .lib-layout-toggle button.active {
-  background: #334155;
-  color: #f1f5f9;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.06);
 }
 
 /* ---- Search ------------------------------------------------------ */
@@ -685,23 +619,14 @@
   gap: 8px;
   margin: 12px 16px 10px;
   padding: 9px 11px;
-  background: #ffffff;
-  border: 1px solid rgba(15, 23, 42, 0.1);
-  border-radius: 11px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  background: var(--background);
+  border: 1px solid var(--border);
+  border-radius: 8px;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 .lib-search:focus-within {
-  border-color: #64748b;
-  box-shadow: 0 0 0 3px rgba(100, 116, 139, 0.12);
-}
-.dark .lib-search {
-  background: rgba(30, 41, 59, 0.7);
-  border-color: rgba(148, 163, 184, 0.15);
-}
-.dark .lib-search:focus-within {
-  border-color: rgba(148, 163, 184, 0.4);
-  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.1);
+  border-color: var(--ring, var(--primary));
+  box-shadow: 0 0 0 3px rgb(from var(--primary) r g b / 0.15);
 }
 
 .lib-search input {
@@ -709,11 +634,9 @@
   background: transparent;
   outline: none;
   font-size: 13px;
-  color: #0f172a;
+  color: var(--foreground);
 }
-.lib-search input::placeholder { color: #94a3b8; }
-.dark .lib-search input { color: #f1f5f9; }
-.dark .lib-search input::placeholder { color: #64748b; }
+.lib-search input::placeholder { color: var(--muted-foreground); }
 
 /* ---- Group filter chips ----------------------------------------- */
 .lib-groups {
@@ -721,9 +644,8 @@
   flex-wrap: wrap;
   gap: 5px;
   padding: 0 16px 12px;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+  border-bottom: 1px solid var(--border);
 }
-.dark .lib-groups { border-bottom-color: rgba(148, 163, 184, 0.1); }
 
 .lib-group-chip {
   display: inline-flex;

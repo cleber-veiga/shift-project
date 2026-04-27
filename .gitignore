@@ -22,3 +22,7 @@ docker-compose.local.yml
 
 # Build / cache local
 .cache/
+
+
+# Exemplos
+samples/

@@ -1856,8 +1856,13 @@ async def run_workflow(
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("metrics.record_execution_failed")
-            # Remove arquivos DuckDB temporarios desta execucao
-            if execution_id:
+            # Remove arquivos DuckDB temporarios desta execucao.
+            # Pulado em mode="test" porque o frontend ainda precisa
+            # chamar /nodes/duckdb-preview pra renderizar a aba "Tabela"
+            # depois que o stream SSE termina. Esses arquivos sao limpos
+            # depois pelo job ``cleanup_orphaned_executions`` no proximo
+            # boot do backend, OU pelo cleanup do tempdir do SO.
+            if execution_id and mode != "test":
                 try:
                     from app.data_pipelines.duckdb_storage import (  # noqa: PLC0415
                         cleanup_execution_storage,

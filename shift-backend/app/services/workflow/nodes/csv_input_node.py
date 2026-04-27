@@ -30,6 +30,10 @@ from app.data_pipelines.duckdb_storage import (
     sanitize_name,
 )
 from app.services.workflow.nodes import BaseNodeProcessor, register_processor
+from app.services.workflow.nodes._input_helpers import (
+    resolve_upload_url,
+    validate_against_input_model,
+)
 from app.services.workflow.nodes.exceptions import NodeProcessingError
 
 # Encodings aceitos para evitar injecao de parametros arbitrarios no SQL
@@ -71,6 +75,9 @@ class CsvInputNodeProcessor(BaseNodeProcessor):
             raise NodeProcessingError(
                 f"No csv_input '{node_id}': 'url' e obrigatorio."
             )
+        # Resolve URI shift-upload://<file_id> antes da validacao de
+        # delimitador/encoding pra que erros de upload tenham prioridade.
+        url = resolve_upload_url(node_id, str(url), context)
         if len(delimiter) != 1:
             raise NodeProcessingError(
                 f"No csv_input '{node_id}': 'delimiter' deve ser um unico caractere."
@@ -118,6 +125,21 @@ class CsvInputNodeProcessor(BaseNodeProcessor):
             row_count = conn.execute(
                 f"SELECT COUNT(*) FROM {output_ref}"
             ).fetchone()[0]
+
+            # Valida contra InputModel vinculado, se existir.
+            input_model_id = resolved_config.get("input_model_id")
+            if input_model_id:
+                actual_columns = [
+                    row[0]
+                    for row in conn.execute(
+                        f"DESCRIBE {output_ref}"
+                    ).fetchall()
+                ]
+                validate_against_input_model(
+                    node_id=node_id,
+                    input_model_id=str(input_model_id),
+                    actual_columns=actual_columns,
+                )
         except NodeProcessingError:
             raise
         except Exception as exc:

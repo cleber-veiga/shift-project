@@ -1194,6 +1194,10 @@ function WorkflowEditorInner({
           </div>
         </div>
 
+        {/* Editor body wrapper — relative pra ancorar a sidebar da Biblioteca
+            de Nos (full-height) sobre canvas + execution panel. */}
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+
         {/* Main area: canvas + config panel */}
         <div className={cn(
           "flex min-h-0 flex-1 overflow-hidden",
@@ -1201,7 +1205,10 @@ function WorkflowEditorInner({
         )}>
           {/* Canvas */}
           <div className="relative flex-1" ref={reactFlowWrapper}>
-            {/* Canvas mode toggle — pan (hand) vs select (multi-selection) */}
+            {/* Canvas mode toggle + Biblioteca — toolbar superior esquerdo.
+                Pan, Select, e Biblioteca agrupados pra UX consistente
+                (Figma/n8n-style). Biblioteca abre o sidebar; quando aberto,
+                o botao some pra evitar redundancia visual. */}
             <div className="absolute left-3 top-3 z-20 flex flex-col overflow-hidden rounded-md border border-border bg-card shadow-sm">
               <button
                 type="button"
@@ -1232,27 +1239,25 @@ function WorkflowEditorInner({
               >
                 <MousePointer2 className="size-4" />
               </button>
+              {!showLibrary && (
+                <>
+                  <div className="h-px bg-border" />
+                  <button
+                    type="button"
+                    onClick={() => setShowLibrary(true)}
+                    aria-label="Abrir biblioteca de nós"
+                    title="Abrir biblioteca de nós"
+                    className="flex size-9 items-center justify-center text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    <LayoutGrid className="size-4" />
+                  </button>
+                </>
+              )}
             </div>
 
-            {/* Node library — full-height sidebar */}
-            <NodeLibrary open={showLibrary} onClose={() => setShowLibrary(false)} />
-
-            {/* FAB to open library (hidden when open) */}
-            {!showLibrary && (
-              <button
-                type="button"
-                onClick={() => setShowLibrary(true)}
-                className="lib-fab absolute bottom-3 left-3 z-20"
-                aria-label="Abrir biblioteca de nós"
-                title="Abrir biblioteca de nós"
-              >
-                <LayoutGrid className="size-4" />
-                <span>Biblioteca</span>
-              </button>
-            )}
-
-            {/* Agent stream status — floating discreet indicator */}
-            {workflowId !== "new" && !isLoading && (
+            {/* Agent stream status — temporariamente oculto enquanto o Agente
+                fica desativado em producao. Pra reativar: remover este {false &&}. */}
+            {false && workflowId !== "new" && !isLoading && (
               <div
                 className="absolute bottom-3 right-14 z-20 flex h-[34px] items-center gap-1.5 rounded-[10px] border border-slate-900/10 bg-white/95 px-2.5 text-[11px] font-medium text-slate-600 shadow-[0_1px_0_rgba(255,255,255,0.9)_inset,0_6px_18px_-8px_rgba(15,23,42,0.25)] backdrop-blur dark:border-slate-400/20 dark:bg-slate-800/90 dark:text-slate-300"
                 title={
@@ -1344,6 +1349,23 @@ function WorkflowEditorInner({
             <ExecutionsTab workflowId={workflowId} active={activeTab === "executions"} />
           </div>
         )}
+
+        {/* Execution log panel — fica DENTRO do wrapper relative pra que a
+            sidebar da Biblioteca consiga sobrepor/empurrar quando aberta. */}
+        {showExecPanel && (
+          <ExecutionPanel
+            events={execEvents}
+            isRunning={isExecuting}
+            onAbort={handleAbortExecution}
+            onClose={() => setShowExecPanel(false)}
+            libraryOpen={showLibrary}
+          />
+        )}
+
+        {/* Node library — sidebar full-height cobrindo canvas + execution panel */}
+        <NodeLibrary open={showLibrary} onClose={() => setShowLibrary(false)} />
+
+        </div>{/* /editor body wrapper */}
 
         {/* Node config modal (3-column: INPUT | PARAMS | OUTPUT) */}
         {currentSelectedNode && (
@@ -1494,15 +1516,6 @@ function WorkflowEditorInner({
           />
         )}
 
-        {/* Execution log panel */}
-        {showExecPanel && (
-          <ExecutionPanel
-            events={execEvents}
-            isRunning={isExecuting}
-            onAbort={handleAbortExecution}
-            onClose={() => setShowExecPanel(false)}
-          />
-        )}
       </div>
     </NodeExecutionContext.Provider>
     </NodeActionsContext.Provider>

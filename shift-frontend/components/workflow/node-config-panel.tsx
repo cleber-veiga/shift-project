@@ -29,6 +29,9 @@ import type { WebhookCapture } from "@/lib/api/webhooks"
 import type { WorkflowIOSchema } from "@/lib/api/workflow-versions"
 import { migrateLegacySqlParameter } from "@/lib/workflow/parameter-value"
 import { ValueInput } from "@/components/workflow/value-input/ValueInput"
+import { FilePickerInput } from "@/components/workflow/file-picker-input"
+import { InputModelPicker } from "@/components/workflow/input-model-picker"
+import { ExcelNodeConfig } from "@/components/workflow/excel-node-config"
 
 interface NodeConfigPanelProps {
   node: Node
@@ -359,15 +362,21 @@ function renderNodeSpecificFields({
       return (
         <div className="space-y-4">
 
-          <ConfigField label="URL / Caminho">
-            <ValueInput
-              value={migrateLegacySqlParameter((data.url as string) ?? "")}
-              onChange={(pv) => update("url", pv.mode === "fixed" ? pv.value : pv.template)}
-              upstreamFields={[]}
-              allowTransforms={false}
-              allowVariables={true}
+          <ConfigField label="Arquivo CSV">
+            <FilePickerInput
+              value={(data.url as string) ?? ""}
+              onChange={(next) => update("url", next)}
+              workflowId={workflowId}
+              accept=".csv,.tsv,.txt"
               placeholder="https://... ou /path/to/file.csv"
-              size="sm"
+            />
+          </ConfigField>
+          <ConfigField label="Modelo de entrada (opcional)">
+            <InputModelPicker
+              workflowId={workflowId}
+              value={(data.input_model_id as string | null | undefined) ?? null}
+              onChange={(next) => update("input_model_id", next)}
+              fileType="csv"
             />
           </ConfigField>
           <ConfigField label="Delimitador">
@@ -399,24 +408,11 @@ function renderNodeSpecificFields({
       return (
         <div className="space-y-4">
 
-          <ConfigField label="URL / Caminho">
-            <ValueInput
-              value={migrateLegacySqlParameter((data.url as string) ?? "")}
-              onChange={(pv) => update("url", pv.mode === "fixed" ? pv.value : pv.template)}
-              upstreamFields={[]}
-              allowTransforms={false}
-              allowVariables={true}
-              placeholder="https://... ou /path/to/file.xlsx"
-              size="sm"
-            />
-          </ConfigField>
-          <ConfigField label="Nome da Aba">
-            <TextInput
-              value={(data.sheet_name as string) ?? ""}
-              onChange={(v) => update("sheet_name", v)}
-              placeholder="Sheet1 (vazio = primeira aba)"
-            />
-          </ConfigField>
+          <ExcelNodeConfig
+            workflowId={workflowId}
+            data={data}
+            update={update}
+          />
           <CacheSection
             nodeType="excel_input"
             data={data}

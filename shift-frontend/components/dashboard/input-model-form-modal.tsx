@@ -42,6 +42,61 @@ function emptySheet(name = "Planilha1"): InputModelSheet {
   return { name, columns: [emptyColumn()] }
 }
 
+// Tipos validos conforme backend (app/schemas/input_model.py:ColumnType).
+const VALID_COLUMN_TYPES: ReadonlyArray<InputModelColumnType> = [
+  "text", "number", "integer", "date", "datetime", "boolean",
+]
+
+// Mapa de tipos legados — modelos criados em versoes anteriores podiam
+// ter "string", "decimal", etc. Normalizamos no carregamento pra que o
+// PUT subsequente passe pelo Pydantic estrito do backend.
+const LEGACY_TYPE_MAP: Record<string, InputModelColumnType> = {
+  string: "text",
+  varchar: "text",
+  char: "text",
+  decimal: "number",
+  float: "number",
+  double: "number",
+  numeric: "number",
+  int: "integer",
+  bigint: "integer",
+  timestamp: "datetime",
+  bool: "boolean",
+}
+
+function normalizeColumnType(t: unknown): InputModelColumnType {
+  const raw = String(t ?? "").toLowerCase()
+  if (VALID_COLUMN_TYPES.includes(raw as InputModelColumnType)) {
+    return raw as InputModelColumnType
+  }
+  return LEGACY_TYPE_MAP[raw] ?? "text"
+}
+
+function normalizeSheet(s: InputModelSheet): InputModelSheet {
+  return {
+    ...s,
+    columns: (s.columns ?? []).map((c) => ({
+      ...c,
+      type: normalizeColumnType(c.type),
+    })),
+  }
+}
+
+// Normaliza file_type vindo do backend (defesa contra letras maiusculas,
+// espacos ou valores legados). Default seguro: "excel".
+const VALID_FILE_TYPES: ReadonlyArray<InputModelFileType> = ["excel", "csv", "data"]
+
+function normalizeFileType(t: unknown): InputModelFileType {
+  const raw = String(t ?? "").trim().toLowerCase()
+  if (VALID_FILE_TYPES.includes(raw as InputModelFileType)) {
+    return raw as InputModelFileType
+  }
+  // Aliases legados
+  if (raw === "xlsx" || raw === "xls") return "excel"
+  if (raw === "internal" || raw === "table") return "data"
+  return "excel"
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function InputModelFormModal({ open, onOpenChange, editing, workspaceId, onSaved }: Props) {
@@ -63,9 +118,9 @@ export function InputModelFormModal({ open, onOpenChange, editing, workspaceId, 
     if (editing) {
       setName(editing.name)
       setDescription(editing.description ?? "")
-      setFileType(editing.file_type)
+      setFileType(normalizeFileType(editing.file_type))
       const s = editing.schema_def?.sheets
-      setSheets(s?.length ? s : [emptySheet()])
+      setSheets(s?.length ? s.map(normalizeSheet) : [emptySheet()])
       setActiveSheet(0)
     } else {
       setName("")
@@ -168,10 +223,15 @@ export function InputModelFormModal({ open, onOpenChange, editing, workspaceId, 
       }
     }
 
-    // Clean up: remove unnamed columns
+    // Clean up: remove unnamed columns + normaliza tipo de cada coluna.
+    // A normalizacao na carga ja deveria cobrir, mas fazemos aqui tambem
+    // como defesa final — garante que mesmo state corrompido (hot reload
+    // antigo, edicao manual no devtools, etc) NUNCA envia tipo invalido.
     const cleanSheets = sheets.map((s) => ({
       ...s,
-      columns: s.columns.filter((c) => c.name.trim()),
+      columns: s.columns
+        .filter((c) => c.name.trim())
+        .map((c) => ({ ...c, type: normalizeColumnType(c.type) })),
     }))
 
     setSaving(true)
@@ -237,17 +297,30 @@ export function InputModelFormModal({ open, onOpenChange, editing, workspaceId, 
               />
             </div>
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Tipo</label>
-              <Select value={fileType} onValueChange={(v) => setFileType(v as InputModelFileType)}>
-                <SelectTrigger className="h-9 w-full bg-background">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="excel">Excel (.xlsx)</SelectItem>
-                  <SelectItem value="csv">CSV</SelectItem>
-                  <SelectItem value="data">Dados (tabela interna)</SelectItem>
-                </SelectContent>
-              </Select>
+              <label className="text-xs font-medium text-muted-foreground">
+                Tipo
+                {editing && (
+                  <span
+                    className="ml-1 text-[10px] font-normal text-muted-foreground/70"
+                    title="O tipo nao pode ser alterado apos a criacao para preservar a integridade dos dados ja cadastrados."
+                  >
+                    (bloqueado)
+                  </span>
+                )}
+              </label>
+              {/* Select HTML nativo — Radix Select tem quirks com disabled +
+                  Portal (items nao montam, label nao resolve). Native sempre
+                  funciona e visualmente fica igual com as classes do shadcn. */}
+              <select
+                value={fileType}
+                onChange={(e) => setFileType(e.target.value as InputModelFileType)}
+                disabled={editing != null}
+                className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-3 text-sm shadow-xs outline-none focus:ring-1 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <option value="excel">Excel (.xlsx)</option>
+                <option value="csv">CSV</option>
+                <option value="data">Dados (tabela interna)</option>
+              </select>
             </div>
           </div>
 
@@ -337,9 +410,12 @@ export function InputModelFormModal({ open, onOpenChange, editing, workspaceId, 
                   placeholder="nome_coluna"
                   className="h-8 rounded-md border border-input bg-background px-2 text-xs outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
                 />
-                <Select value={col.type} onValueChange={(v) => updateColumn(activeSheet, ci, { type: v as InputModelColumnType })}>
+                <Select
+                  value={normalizeColumnType(col.type)}
+                  onValueChange={(v) => updateColumn(activeSheet, ci, { type: v as InputModelColumnType })}
+                >
                   <SelectTrigger className="h-8 text-xs bg-background">
-                    <SelectValue />
+                    <SelectValue placeholder="Tipo…" />
                   </SelectTrigger>
                   <SelectContent>
                     {COLUMN_TYPES.map((t) => (
