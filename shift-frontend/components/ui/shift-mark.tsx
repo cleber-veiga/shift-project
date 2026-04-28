@@ -34,6 +34,10 @@ const ARC = {
 
 const DOT_STOPS = [0, 0.2, 0.4, 0.6, 0.8, 1] as const
 
+// Arredonda para 4 casas decimais para evitar hydration mismatch
+// (a precisão de ponto flutuante varia entre o runtime de Node e do browser).
+const round4 = (n: number) => Math.round(n * 10000) / 10000
+
 function arcPoint(t: number) {
   const { startX, startY, endX, endY, cp1x, cp1y, cp2x, cp2y } = ARC
   const x =
@@ -46,7 +50,7 @@ function arcPoint(t: number) {
     3 * Math.pow(1 - t, 2) * t * cp1y +
     3 * (1 - t) * t * t * cp2y +
     t * t * t * endY
-  return { x, y }
+  return { x: round4(x), y: round4(y) }
 }
 
 type ShiftMarkProps = Omit<SVGProps<SVGSVGElement>, "size"> & {
@@ -116,8 +120,8 @@ export function ShiftMark({
 
       {DOT_STOPS.map((t) => {
         const { x, y } = arcPoint(t)
-        const r = 0.7 + Math.sin(t * Math.PI * 0.85) * 0.6
-        const opacity = 0.35 + Math.sin(t * Math.PI * 0.85) * 0.5
+        const r = round4(0.7 + Math.sin(t * Math.PI * 0.85) * 0.6)
+        const opacity = round4(0.35 + Math.sin(t * Math.PI * 0.85) * 0.5)
         return <circle key={t} cx={x} cy={y} r={r} fill={palette.accent} opacity={opacity} />
       })}
 
@@ -138,7 +142,7 @@ export function ShiftMark({
         x="32"
         y="49.5"
         textAnchor="middle"
-        fontFamily='"Viasoft Regular", "Inter Tight", system-ui, sans-serif'
+        fontFamily='"Viasoft Regular", var(--font-sans, system-ui), sans-serif'
         fontSize="32"
         fontWeight={400}
         fill={palette.letter}
@@ -223,10 +227,10 @@ export function ShiftWordmark({
       t * t * t * arcEndY
     const weight = 0.5 + Math.sin(t * Math.PI * 0.85) * 0.6
     return {
-      x,
-      y,
-      r: 1.6 + weight * 1.4,
-      opacity: 0.35 + Math.sin(t * Math.PI * 0.85) * 0.5,
+      x: round4(x),
+      y: round4(y),
+      r: round4(1.6 + weight * 1.4),
+      opacity: round4(0.35 + Math.sin(t * Math.PI * 0.85) * 0.5),
     }
   })
 
@@ -283,7 +287,7 @@ export function ShiftWordmark({
         x={W / 2}
         y={baseY}
         textAnchor="middle"
-        fontFamily='"Viasoft Regular", "Inter Tight", system-ui, sans-serif'
+        fontFamily='"Viasoft Regular", var(--font-sans, system-ui), sans-serif'
         fontSize="64"
         fontWeight={400}
         fill={ink}
@@ -297,7 +301,7 @@ export function ShiftWordmark({
           x={W / 2}
           y={baseY + 32}
           textAnchor="middle"
-          fontFamily='"JetBrains Mono", ui-monospace, monospace'
+          fontFamily='var(--font-mono, "JetBrains Mono", ui-monospace), monospace'
           fontSize="9"
           fontWeight={500}
           fill={ink}

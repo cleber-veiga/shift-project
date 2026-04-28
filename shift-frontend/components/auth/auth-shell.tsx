@@ -1,5 +1,7 @@
+"use client"
+
 import type { CSSProperties, ReactNode } from "react"
-import { Fragment } from "react"
+import { Fragment, useEffect, useRef } from "react"
 import Link from "next/link"
 import { ShiftWordmark } from "@/components/ui/shift-mark"
 
@@ -10,8 +12,8 @@ const PAPER = "#fdfcf7"
 const PAPER_INSET = "#f5f4ee"
 const BORDER_PAPER = "#ece9dd"
 
-const monoFamily = '"JetBrains Mono", ui-monospace, monospace'
-const sansFamily = '"Inter Tight", system-ui, sans-serif'
+const monoFamily = 'var(--font-mono, "JetBrains Mono", ui-monospace, monospace)'
+const sansFamily = 'var(--font-sans, "Inter Tight", system-ui, sans-serif)'
 
 type AuthShellProps = {
   heroEyebrow: string
@@ -21,6 +23,60 @@ type AuthShellProps = {
   children: ReactNode
 }
 
+// ============================================================
+// V2 COMET — RAF-driven, ref-based DOM updates
+//
+// Bypassa React state inteiramente para a animação. Uma única passagem
+// de RAF atualiza inline-style direto no DOM via refs. Sem dependência
+// de batching/scheduling do React, sem matchMedia que possa bloquear.
+// ============================================================
+
+const TOTAL_MS = 4400
+const TRAIL_COUNT = 14
+const round4 = (n: number) => Math.round(n * 10000) / 10000
+const clamp01 = (v: number) => Math.max(0, Math.min(1, v))
+const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3)
+const easeInOutCubic = (t: number) =>
+  t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
+
+type RevealOpts = { y?: number; x?: number; scale?: number }
+
+function revealStyle(progress: number, start: number, end: number, opts: RevealOpts = {}) {
+  const t = clamp01((progress - start) / (end - start))
+  const eased = easeOutCubic(t)
+  const yOff = opts.y == null ? 16 : opts.y
+  const xOff = opts.x ?? 0
+  const scale = opts.scale != null ? 1 - (1 - opts.scale) * (1 - eased) : 1
+  return {
+    opacity: round4(eased),
+    transform: `translate(${round4(xOff * (1 - eased))}px, ${round4(yOff * (1 - eased))}px) scale(${round4(scale)})`,
+  }
+}
+
+function cometAt(t: number) {
+  const p0x = 245, p0y = 50
+  const cp1x = 245, cp1y = 480
+  const cp2x = 450, cp2y = 180
+  const p3x = 970, p3y = 540
+  const x =
+    Math.pow(1 - t, 3) * p0x +
+    3 * Math.pow(1 - t, 2) * t * cp1x +
+    3 * (1 - t) * t * t * cp2x +
+    t * t * t * p3x
+  const y =
+    Math.pow(1 - t, 3) * p0y +
+    3 * Math.pow(1 - t, 2) * t * cp1y +
+    3 * (1 - t) * t * t * cp2y +
+    t * t * t * p3y
+  return { x: round4(x), y: round4(y) }
+}
+
+function applyReveal(el: HTMLElement | null, s: { opacity: number; transform: string }) {
+  if (!el) return
+  el.style.opacity = String(s.opacity)
+  el.style.transform = s.transform
+}
+
 export function AuthShell({
   heroEyebrow,
   heroTitle,
@@ -28,6 +84,99 @@ export function AuthShell({
   heroSupport,
   children,
 }: AuthShellProps) {
+  const headerRef = useRef<HTMLElement>(null)
+  const eyebrowRef = useRef<HTMLDivElement>(null)
+  const titleRef = useRef<HTMLHeadingElement>(null)
+  const bodyRef = useRef<HTMLParagraphElement>(null)
+  const statsRef = useRef<HTMLDivElement>(null)
+  const cardRef = useRef<HTMLDivElement>(null)
+  const footerRef = useRef<HTMLElement>(null)
+  const cometRef = useRef<SVGSVGElement>(null)
+  const trailRefs = useRef<Array<SVGCircleElement | null>>([])
+  const headHaloRef = useRef<SVGCircleElement>(null)
+  const headOuterRef = useRef<SVGCircleElement>(null)
+  const headInnerRef = useRef<SVGCircleElement>(null)
+
+  useEffect(() => {
+    let startTs: number | null = null
+    let rafId = 0
+
+    const tick = (ts: number) => {
+      if (startTs == null) startTs = ts
+      const elapsed = ts - startTs
+      const p = Math.min(1, elapsed / TOTAL_MS)
+
+      // Cascata de reveals
+      applyReveal(headerRef.current, revealStyle(p, 0.04, 0.16))
+      applyReveal(footerRef.current, revealStyle(p, 0.04, 0.14))
+      applyReveal(eyebrowRef.current, revealStyle(p, 0.22, 0.30))
+      applyReveal(titleRef.current, revealStyle(p, 0.26, 0.40))
+      applyReveal(bodyRef.current, revealStyle(p, 0.36, 0.48))
+      applyReveal(statsRef.current, revealStyle(p, 0.44, 0.54))
+      applyReveal(cardRef.current, revealStyle(p, 0.52, 0.66, { scale: 0.95 }))
+
+      // Cometa: ativo entre 0.18 e 0.92
+      const COMET_START = 0.18
+      const COMET_END = 0.92
+      const cometVisible = p > COMET_START && p < COMET_END
+      if (cometRef.current) {
+        cometRef.current.style.display = cometVisible ? "block" : "none"
+      }
+      if (cometVisible) {
+        const tt = clamp01((p - COMET_START) / (COMET_END - COMET_START))
+        const eased = easeInOutCubic(tt)
+        const { x, y } = cometAt(eased)
+        const fadeIn = Math.min(1, tt * 8)
+        const fadeOut = tt > 0.9 ? Math.min(1, (1 - tt) * 10) : 1
+        const op = round4(fadeIn * fadeOut)
+
+        // Atualiza cabeças (halo + outer + inner)
+        const headPos = String(x)
+        const headPosY = String(y)
+        if (headHaloRef.current) {
+          headHaloRef.current.setAttribute("cx", headPos)
+          headHaloRef.current.setAttribute("cy", headPosY)
+          headHaloRef.current.setAttribute("opacity", String(op))
+        }
+        if (headOuterRef.current) {
+          headOuterRef.current.setAttribute("cx", headPos)
+          headOuterRef.current.setAttribute("cy", headPosY)
+          headOuterRef.current.setAttribute("opacity", String(op))
+        }
+        if (headInnerRef.current) {
+          headInnerRef.current.setAttribute("cx", headPos)
+          headInnerRef.current.setAttribute("cy", headPosY)
+          headInnerRef.current.setAttribute("opacity", String(op))
+        }
+
+        // Trail: cada círculo é uma posição defasada
+        for (let i = 0; i < TRAIL_COUNT; i++) {
+          const el = trailRefs.current[i]
+          if (!el) continue
+          const lag = (i + 1) * 0.025
+          const ttt = Math.max(0, eased - lag)
+          const pos = cometAt(ttt)
+          const trailOp = round4(((1 - i / TRAIL_COUNT) * 0.6) * op)
+          el.setAttribute("cx", String(pos.x))
+          el.setAttribute("cy", String(pos.y))
+          el.setAttribute("opacity", String(trailOp))
+        }
+      }
+
+      if (p < 1) {
+        rafId = requestAnimationFrame(tick)
+      }
+    }
+    rafId = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(rafId)
+  }, [])
+
+  // Estilo inicial (antes do RAF rodar): tudo invisível com offset
+  const initialHidden: CSSProperties = {
+    opacity: 0,
+    transform: "translate(0px, 16px) scale(1)",
+  }
+
   return (
     <main
       style={{
@@ -78,11 +227,21 @@ export function AuthShell({
           flexDirection: "column",
         }}
       >
+        <AuthCometSvg
+          cometRef={cometRef}
+          trailRefs={trailRefs}
+          headHaloRef={headHaloRef}
+          headOuterRef={headOuterRef}
+          headInnerRef={headInnerRef}
+        />
+
         <header
+          ref={headerRef}
           style={{
             display: "flex",
             alignItems: "center",
             marginBottom: 24,
+            ...initialHidden,
           }}
         >
           <Link href="/login" style={{ display: "inline-flex", textDecoration: "none" }}>
@@ -98,10 +257,10 @@ export function AuthShell({
             gap: 64,
             alignItems: "center",
           }}
-          className="auth-shell-grid"
         >
           <section style={{ display: "flex", flexDirection: "column", justifyContent: "center" }}>
             <div
+              ref={eyebrowRef}
               style={{
                 fontFamily: monoFamily,
                 fontSize: 11,
@@ -112,6 +271,7 @@ export function AuthShell({
                 display: "flex",
                 alignItems: "center",
                 gap: 8,
+                ...initialHidden,
               }}
             >
               <span style={{ display: "inline-block", width: 24, height: 1, background: "#6b7280" }} />
@@ -119,6 +279,7 @@ export function AuthShell({
             </div>
 
             <h1
+              ref={titleRef}
               style={{
                 margin: 0,
                 fontSize: "clamp(48px, 6vw, 80px)",
@@ -127,30 +288,53 @@ export function AuthShell({
                 lineHeight: 0.95,
                 maxWidth: 580,
                 color: INK,
+                ...initialHidden,
               }}
             >
               {heroTitle}
             </h1>
 
             <p
+              ref={bodyRef}
               style={{
                 margin: "32px 0 0",
                 fontSize: 18,
                 lineHeight: 1.5,
                 color: "#4b5563",
                 maxWidth: 460,
+                ...initialHidden,
               }}
             >
               {heroBody}
             </p>
 
-            {heroSupport ? <div style={{ marginTop: 48 }}>{heroSupport}</div> : null}
+            {heroSupport ? (
+              <div
+                ref={statsRef}
+                style={{
+                  marginTop: 48,
+                  ...initialHidden,
+                }}
+              >
+                {heroSupport}
+              </div>
+            ) : null}
           </section>
 
-          <section style={{ display: "flex", justifyContent: "center" }}>{children}</section>
+          <div
+            ref={cardRef}
+            style={{
+              display: "flex",
+              justifyContent: "center",
+              ...initialHidden,
+            }}
+          >
+            {children}
+          </div>
         </div>
 
         <footer
+          ref={footerRef}
           style={{
             marginTop: 48,
             paddingTop: 16,
@@ -159,12 +343,76 @@ export function AuthShell({
             justifyContent: "space-between",
             fontSize: 12,
             color: "#6b7280",
+            ...initialHidden,
           }}
         >
           <span>© {new Date().getFullYear()} Shift · Viasoft</span>
         </footer>
       </div>
     </main>
+  )
+}
+
+type AuthCometSvgProps = {
+  cometRef: React.RefObject<SVGSVGElement | null>
+  trailRefs: React.RefObject<Array<SVGCircleElement | null>>
+  headHaloRef: React.RefObject<SVGCircleElement | null>
+  headOuterRef: React.RefObject<SVGCircleElement | null>
+  headInnerRef: React.RefObject<SVGCircleElement | null>
+}
+
+function AuthCometSvg({
+  cometRef,
+  trailRefs,
+  headHaloRef,
+  headOuterRef,
+  headInnerRef,
+}: AuthCometSvgProps) {
+  return (
+    <svg
+      ref={cometRef}
+      aria-hidden
+      width="100%"
+      height="100%"
+      viewBox="0 0 1280 800"
+      preserveAspectRatio="xMidYMid meet"
+      style={{
+        position: "absolute",
+        inset: 0,
+        pointerEvents: "none",
+        zIndex: 2,
+        display: "none",
+      }}
+    >
+      <defs>
+        <radialGradient id="auth-comet-glow">
+          <stop offset="0%" stopColor="white" stopOpacity="1" />
+          <stop offset="40%" stopColor={ACCENT} stopOpacity="0.9" />
+          <stop offset="100%" stopColor={ACCENT} stopOpacity="0" />
+        </radialGradient>
+      </defs>
+
+      {Array.from({ length: TRAIL_COUNT }).map((_, i) => {
+        const r = round4(2 + (1 - i / TRAIL_COUNT) * 2.5)
+        return (
+          <circle
+            key={i}
+            ref={(el) => {
+              trailRefs.current[i] = el
+            }}
+            cx="0"
+            cy="0"
+            r={r}
+            fill={ACCENT}
+            opacity="0"
+          />
+        )
+      })}
+
+      <circle ref={headHaloRef} cx="0" cy="0" r="22" fill="url(#auth-comet-glow)" opacity="0" />
+      <circle ref={headOuterRef} cx="0" cy="0" r="5" fill="white" opacity="0" />
+      <circle ref={headInnerRef} cx="0" cy="0" r="2.5" fill="white" opacity="0" />
+    </svg>
   )
 }
 

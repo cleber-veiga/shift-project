@@ -1,26 +1,30 @@
 import type { Metadata } from "next"
-import { Geist, Geist_Mono } from "next/font/google"
+import { Inter_Tight, JetBrains_Mono } from "next/font/google"
 import { ThemeProvider } from "@/components/theme-provider"
 import { UiPreferencesProvider } from "@/lib/context/ui-preferences-context"
 import { ToastProvider } from "@/lib/context/toast-context"
 import "./globals.css"
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const interTight = Inter_Tight({
+  variable: "--font-inter-tight",
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700", "800"],
+  display: "swap",
 })
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const jetbrainsMono = JetBrains_Mono({
+  variable: "--font-jetbrains-mono",
   subsets: ["latin"],
+  weight: ["400", "500", "700"],
+  display: "swap",
 })
 
 export const metadata: Metadata = {
   title: {
-    default: "Shift Frontend",
-    template: "%s | Shift Frontend",
+    default: "Shift",
+    template: "%s | Shift",
   },
-  description: "Fluxos iniciais de autenticacao da plataforma Shift.",
+  description: "Plataforma de workflows de ETL — orquestre extração, transformação e carga entre sistemas.",
 }
 
 export default function RootLayout({
@@ -31,7 +35,7 @@ export default function RootLayout({
   return (
     <html lang="pt-BR" suppressHydrationWarning>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} min-h-screen`}
+        className={`${interTight.variable} ${jetbrainsMono.variable} min-h-screen`}
       >
         <ThemeProvider
           attribute="class"

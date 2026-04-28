@@ -60,6 +60,37 @@ nomeado `shift_secrets` (montado em `/shift-secrets`).
   em produção sem antes ter feito backup das connections — a
   `ENCRYPTION_KEY` é a única coisa que decifra as senhas armazenadas.
 
+### Quando você troca de ambiente apontando para o mesmo banco
+
+Caso clássico: você tinha o **compose principal** rodando com `.env` na raiz,
+salvou conexões, e depois começou a usar o **tester-package** (ou um
+servidor novo) apontando para o **mesmo Postgres**. Sintoma típico:
+
+> Senha da conexão 'X' não pode ser descriptografada. Verifique se
+> ENCRYPTION_KEY no .env não mudou desde que a conexão foi salva.
+
+A `ENCRYPTION_KEY` é como a "senha mestre" das credenciais armazenadas.
+Cada ambiente Docker tem o **próprio volume `shift_secrets`** (mesmo
+nome, projetos Docker diferentes), então o segundo ambiente gera uma
+chave nova e perde acesso ao que o primeiro criptografou.
+
+**Solução: migrar a chave entre ambientes.**
+
+1. Pegue o valor de `ENCRYPTION_KEY` do `.env` do ambiente original
+   (ou do `secrets.env` no volume, se foi auto-gerado lá):
+   ```bash
+   docker compose exec shift-backend cat /shift-secrets/secrets.env
+   ```
+2. Cole no `.env` do ambiente novo. Cole também `SECRET_KEY` para
+   manter tokens JWT já emitidos válidos.
+3. `docker compose down && docker compose up -d`.
+
+Env var vence o volume — o backend passa a usar a chave migrada e as
+conexões antigas voltam a funcionar.
+
+**Alternativa**: editar cada conexão na UI e reinformar a senha. Útil
+se for poucas conexões; trabalhoso se for muitas.
+
 ## Segredos embutidos na imagem
 
 `LLM_API_KEY`, `GOOGLE_CLIENT_ID`, `RESEND_API_KEY`, `LANGSMITH_API_KEY` e

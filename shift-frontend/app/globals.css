@@ -14,65 +14,94 @@
 
 :root {
   --ui-scale: 1;
-  --background: oklch(0.978 0.006 95);
-  --foreground: oklch(0.215 0.018 255);
-  --card: oklch(0.995 0.003 95);
-  --card-foreground: oklch(0.215 0.018 255);
-  --popover: oklch(0.995 0.003 95);
-  --popover-foreground: oklch(0.215 0.018 255);
-  --primary: oklch(0.4 0.08 255);
-  --primary-foreground: oklch(0.985 0.004 95);
-  --secondary: oklch(0.952 0.008 95);
-  --secondary-foreground: oklch(0.255 0.02 255);
-  --muted: oklch(0.962 0.008 95);
-  --muted-foreground: oklch(0.5 0.016 255);
-  --accent: oklch(0.938 0.018 235);
-  --accent-foreground: oklch(0.255 0.02 255);
-  --destructive: oklch(0.55 0.22 27);
-  --destructive-foreground: oklch(0.985 0 0);
-  --success: oklch(0.55 0.2 145);
-  --success-foreground: oklch(0.985 0 0);
-  --warning: oklch(0.7 0.18 80);
-  --warning-foreground: oklch(0.145 0 0);
-  --info: oklch(0.55 0.18 250);
-  --info-foreground: oklch(0.985 0 0);
-  --border: oklch(0.89 0.01 95);
-  --input: oklch(0.925 0.01 95);
-  --ring: oklch(0.62 0.06 250);
+
+  /* Shift Sistema visual — Foundation */
+  --shift-ink: #0e1220;
+  --shift-cream: #f5f4ee;
+  --shift-paper: #fdfcf7;
+  --shift-paper-inset: #f5f4ee;
+  --shift-border-paper: #ece9dd;
+
+  /* Shift Sistema visual — Accent indigo */
+  --shift-accent: #6366f1;
+  --shift-accent-light: #a5b4fc;
+  --shift-accent-deep: #4f46e5;
+
+  /* Shift Sistema visual — Functional */
+  --shift-success: #10b981;
+  --shift-warning: #f59e0b;
+  --shift-error: #ef4444;
+
+  /* Shift Sistema visual — Neutrals */
+  --shift-gray-50: #f9fafb;
+  --shift-gray-100: #f3f4f6;
+  --shift-gray-200: #e5e7eb;
+  --shift-gray-300: #d1d5db;
+  --shift-gray-400: #9ca3af;
+  --shift-gray-500: #6b7280;
+  --shift-gray-600: #4b5563;
+  --shift-gray-700: #374151;
+
+  /* Tailwind tokens — light surface (cream-dominant) */
+  --background: var(--shift-cream);
+  --foreground: var(--shift-ink);
+  --card: var(--shift-paper);
+  --card-foreground: var(--shift-ink);
+  --popover: var(--shift-paper);
+  --popover-foreground: var(--shift-ink);
+  --primary: var(--shift-accent);
+  --primary-foreground: #ffffff;
+  --secondary: var(--shift-border-paper);
+  --secondary-foreground: var(--shift-ink);
+  --muted: var(--shift-gray-100);
+  --muted-foreground: var(--shift-gray-500);
+  --accent: var(--shift-gray-100);
+  --accent-foreground: var(--shift-ink);
+  --destructive: var(--shift-error);
+  --destructive-foreground: #ffffff;
+  --success: var(--shift-success);
+  --success-foreground: #ffffff;
+  --warning: var(--shift-warning);
+  --warning-foreground: var(--shift-ink);
+  --info: var(--shift-accent);
+  --info-foreground: #ffffff;
+  --border: var(--shift-border-paper);
+  --input: var(--shift-gray-200);
+  --ring: var(--shift-accent);
   --radius: 0.5rem;
 }
 
 .dark {
-  --background: oklch(0.15 0.012 255);
-  --foreground: oklch(0.958 0.006 95);
-  --card: oklch(0.185 0.014 255);
-  --card-foreground: oklch(0.958 0.006 95);
-  --popover: oklch(0.185 0.014 255);
-  --popover-foreground: oklch(0.958 0.006 95);
-  --primary: oklch(0.76 0.08 245);
-  --primary-foreground: oklch(0.17 0.014 255);
-  --secondary: oklch(0.245 0.014 255);
-  --secondary-foreground: oklch(0.958 0.006 95);
-  --muted: oklch(0.225 0.012 255);
-  --muted-foreground: oklch(0.72 0.012 95);
-  --accent: oklch(0.28 0.02 240);
-  --accent-foreground: oklch(0.958 0.006 95);
-  --destructive: oklch(0.55 0.22 27);
-  --destructive-foreground: oklch(0.985 0 0);
-  --success: oklch(0.65 0.2 145);
-  --success-foreground: oklch(0.985 0 0);
-  --warning: oklch(0.75 0.18 80);
-  --warning-foreground: oklch(0.098 0 0);
-  --info: oklch(0.65 0.18 250);
-  --info-foreground: oklch(0.985 0 0);
-  --border: oklch(0.3 0.012 255);
-  --input: oklch(0.24 0.012 255);
-  --ring: oklch(0.68 0.06 245);
+  --background: var(--shift-ink);
+  --foreground: var(--shift-cream);
+  --card: #171b2c;
+  --card-foreground: var(--shift-cream);
+  --popover: #171b2c;
+  --popover-foreground: var(--shift-cream);
+  --primary: var(--shift-accent-light);
+  --primary-foreground: var(--shift-ink);
+  --secondary: #1d2238;
+  --secondary-foreground: var(--shift-cream);
+  --muted: #1d2238;
+  --muted-foreground: var(--shift-gray-400);
+  --accent: #232841;
+  --accent-foreground: var(--shift-cream);
+  --destructive: var(--shift-error);
+  --destructive-foreground: #ffffff;
+  --success: var(--shift-success);
+  --success-foreground: var(--shift-ink);
+  --warning: var(--shift-warning);
+  --warning-foreground: var(--shift-ink);
+  --info: var(--shift-accent-light);
+  --info-foreground: var(--shift-ink);
+  --border: #2a2f47;
+  --input: #1f2540;
+  --ring: var(--shift-accent-light);
 }
 
 @theme inline {
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-inter-tight), "Inter Tight", system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), "JetBrains Mono", ui-monospace, monospace;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -120,9 +149,10 @@
 
   body {
     @apply bg-background text-foreground font-sans antialiased;
+    letter-spacing: -0.005em;
     background-image:
-      radial-gradient(circle at top left, color-mix(in oklab, var(--primary) 9%, transparent), transparent 26%),
-      radial-gradient(circle at top right, color-mix(in oklab, var(--accent) 22%, transparent), transparent 22%);
+      radial-gradient(circle at top left, color-mix(in oklab, var(--primary) 6%, transparent), transparent 32%),
+      radial-gradient(circle at top right, color-mix(in oklab, var(--accent) 16%, transparent), transparent 28%);
   }
 
   a {
@@ -163,77 +193,61 @@
       linear-gradient(180deg, color-mix(in oklab, var(--card) 82%, transparent), transparent);
   }
 
-  .morph-loader {
-    position: relative;
-    display: inline-block;
-    width: 1.15rem;
-    height: 1.15rem;
-    border-radius: 0.2rem;
-    background: linear-gradient(135deg, color-mix(in oklab, var(--foreground) 90%, transparent), color-mix(in oklab, var(--primary) 82%, transparent));
-    box-shadow:
-      0 0 0 1px color-mix(in oklab, var(--foreground) 20%, transparent),
-      0 8px 20px color-mix(in oklab, var(--foreground) 22%, transparent);
-    animation: morph-loader 1.5s infinite cubic-bezier(0.62, 0.08, 0.38, 0.92);
+  /* Compat com classes legadas do antigo MorphLoader. O novo loader usa
+     currentColor — `morph-muted` apenas força a cor para o token de texto
+     muted (mesma intenção do CSS antigo). */
+  .morph-muted {
+    color: var(--muted-foreground);
   }
 
-  .morph-loader::before {
-    content: "";
-    position: absolute;
-    inset: -40%;
-    border-radius: 9999px;
-    background: radial-gradient(circle, color-mix(in oklab, var(--foreground) 22%, transparent) 0%, transparent 68%);
-    filter: blur(5px);
-    opacity: 0.45;
-    z-index: -1;
-    animation: morph-aura 1.5s infinite cubic-bezier(0.62, 0.08, 0.38, 0.92);
+  /* Skeleton placeholder com shimmer indigo (mesmo ritmo da V6 Shimmer Bar) */
+  .shift-skeleton {
+    display: block;
+    background:
+      linear-gradient(
+        90deg,
+        var(--shift-gray-200, #e5e7eb) 0%,
+        var(--shift-gray-100, #f3f4f6) 50%,
+        var(--shift-gray-200, #e5e7eb) 100%
+      );
+    background-size: 200px 100%;
+    animation: shift-skeleton 1.4s linear infinite;
   }
 
-  .morph-loader.morph-muted {
-    background: linear-gradient(135deg, color-mix(in oklab, var(--muted-foreground) 74%, transparent), color-mix(in oklab, var(--muted-foreground) 54%, transparent));
-    box-shadow:
-      0 0 0 1px color-mix(in oklab, var(--muted-foreground) 22%, transparent),
-      0 8px 18px color-mix(in oklab, var(--muted-foreground) 20%, transparent);
-  }
-
-  .morph-loader.morph-shift {
-    box-shadow:
-      0 0 0 1px color-mix(in oklab, var(--foreground) 25%, transparent),
-      0 12px 30px color-mix(in oklab, var(--foreground) 26%, transparent),
-      0 0 26px color-mix(in oklab, var(--primary) 30%, transparent);
+  .dark .shift-skeleton {
+    background:
+      linear-gradient(
+        90deg,
+        rgba(255, 255, 255, 0.04) 0%,
+        rgba(255, 255, 255, 0.10) 50%,
+        rgba(255, 255, 255, 0.04) 100%
+      );
+    background-size: 200px 100%;
   }
 }
 
-@keyframes morph-loader {
-  0%,
-  100% {
-    border-radius: 0.2rem;
-    transform: rotate(0deg) scale(1);
-  }
-  25% {
-    border-radius: 45% 10% 45% 10%;
-    transform: rotate(45deg) scale(0.82) skew(-2deg, 2deg);
-  }
-  50% {
-    border-radius: 9999px;
-    transform: rotate(92deg) scale(1.08);
-  }
-  75% {
-    border-radius: 10% 45% 10% 45%;
-    transform: rotate(138deg) scale(0.82) skew(2deg, -2deg);
-  }
+@keyframes shift-rotate-cw {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
 }
 
-@keyframes morph-aura {
-  0%,
-  100% {
-    opacity: 0.4;
-    transform: scale(0.9);
-  }
-  50% {
-    opacity: 0.66;
-    transform: scale(1.12);
-  }
+@keyframes shift-shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
 }
+
+@keyframes shift-skeleton {
+  0%   { background-position: -200px 0; }
+  100% { background-position: calc(200px + 100%) 0; }
+}
+
+@keyframes shift-halo-pulse {
+  0%   { transform: scale(1);   opacity: 0.55; }
+  60%  { transform: scale(1.8); opacity: 0;    }
+  100% { transform: scale(1.8); opacity: 0;    }
+}
+
+/* Auth entry animation (V2 Comet) é JS-driven — ver components/auth/auth-shell.tsx */
 
 /* ── React Flow canvas overrides ──────────────────────────────────────────── */
 

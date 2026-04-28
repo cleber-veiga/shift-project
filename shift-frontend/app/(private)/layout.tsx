@@ -11,7 +11,7 @@ import { AIPanel } from "@/components/agent/ai-panel"
 import { useState } from "react"
 import { usePathname } from "next/navigation"
 import { useDashboard } from "@/lib/context/dashboard-context"
-import { MorphLoader } from "@/components/ui/morph-loader"
+import { ShiftSplash } from "@/components/ui/shift-loader"
 import { SessionGuard } from "@/components/ui/session-guard"
 
 function PrivateLayoutContent({ children }: { children: React.ReactNode }) {
@@ -21,11 +21,7 @@ function PrivateLayoutContent({ children }: { children: React.ReactNode }) {
   const isFullBleed = pathname.startsWith("/playground") || pathname.startsWith("/workflow")
 
   if (isLoading) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-background text-foreground">
-        <MorphLoader className="size-14 morph-shift" />
-      </main>
-    )
+    return <ShiftSplash label="Carregando seu workspace..." />
   }
 
   if (error) {

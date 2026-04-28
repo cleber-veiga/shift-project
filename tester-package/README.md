@@ -126,6 +126,20 @@ As credenciais de connections gravadas antes ficam ilegiveis. Recrie as
 connections via UI — nao tem como recuperar a `ENCRYPTION_KEY` antiga.
 Para evitar: use `docker compose down` (sem `-v`) sempre que possivel.
 
+**Erro: "Senha da conexao 'X' nao pode ser descriptografada"**
+A `ENCRYPTION_KEY` mudou desde que voce salvou a conexao. Causa comum:
+voce esta apontando este tester-package para um Postgres que ja foi
+usado por outra instalacao Shift (com chave diferente). Solucao:
+
+1. Pegue a `ENCRYPTION_KEY` antiga (do `.env` ou `secrets.env` da
+   instalacao original).
+2. Cole no `.env` deste pacote: `ENCRYPTION_KEY=<valor antigo>`.
+3. (Opcional) cole tambem `SECRET_KEY` para manter tokens JWT validos.
+4. `docker compose down && docker compose up -d`.
+
+Como env var vence o volume `shift_secrets`, o backend passa a usar a
+chave antiga e suas conexoes voltam a funcionar.
+
 **Sandbox falha com `permission denied` em `/var/run/docker.sock` (Linux/WSL2)**
 Ajuste `DOCKER_GID` no `.env` rodando:
 ```bash

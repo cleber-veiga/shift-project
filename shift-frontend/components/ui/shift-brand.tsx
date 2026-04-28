@@ -41,7 +41,7 @@ export function ShiftBrand({
         <span
           className="mt-3 text-[11px] font-semibold uppercase text-neutral-400"
           style={{
-            fontFamily: '"Viasoft Regular", "Inter Tight", system-ui, sans-serif',
+            fontFamily: '"Viasoft Regular", var(--font-sans, system-ui), sans-serif',
             letterSpacing: "0.42em",
           }}
         >
