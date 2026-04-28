@@ -8,7 +8,6 @@ import {
   Clock,
   Download,
   FileJson,
-  Loader2,
   MoreHorizontal,
   Pencil,
   Play,
@@ -20,6 +19,7 @@ import {
   Check,
   X,
 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import type { WorkflowScheduleStatus } from "@/lib/auth"
 
@@ -190,7 +190,7 @@ export function WorkflowToolbar({
           disabled={isSaving}
           className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
         >
-          {isSaving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
+          {isSaving ? <MorphLoader className="size-3.5" /> : <Save className="size-3.5" />}
           Salvar
         </button>
 
@@ -200,7 +200,7 @@ export function WorkflowToolbar({
           disabled={isExecuting}
           className="inline-flex h-8 items-center gap-1.5 rounded-md bg-emerald-600 px-3.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
         >
-          {isExecuting ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+          {isExecuting ? <MorphLoader className="size-3.5" /> : <Play className="size-3.5" />}
           Executar
         </button>
       </div>

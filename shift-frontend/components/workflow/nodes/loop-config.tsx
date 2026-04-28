@@ -5,11 +5,11 @@ import {
   AlertTriangle,
   ChevronDown,
   Info,
-  Loader2,
   RefreshCw,
   Search,
   Workflow as WorkflowIcon,
 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import {
   listCallableWorkflows,
@@ -34,6 +34,95 @@ import { ValueInput } from "@/components/workflow/value-input/ValueInput"
 type LoopMode = "sequential" | "parallel"
 type OnItemError = "fail_fast" | "continue" | "collect"
 type VersionSpec = number | "latest"
+
+/**
+ * Subcomponente: alterna entre upstream/template (ja exposto no ValueInput
+ * acima) e uma lista literal em JSON. Quando ativado, salva o source_field
+ * como ParameterValue fixo com array — o backend ja aceita esse caso sem
+ * adaptacoes. Util para iterar sobre dados estaticos sem depender de um
+ * upstream.
+ */
+function LiteralJsonSource({
+  source,
+  onChange,
+}: {
+  source: ParameterValue
+  onChange: (pv: ParameterValue) => void
+}) {
+  const isFixedArray =
+    source.mode === "fixed" && Array.isArray(source.value)
+  const [open, setOpen] = useState<boolean>(isFixedArray)
+  const [draft, setDraft] = useState<string>(() =>
+    isFixedArray ? JSON.stringify(source.value, null, 2) : "[\n  \n]",
+  )
+  const [error, setError] = useState<string | null>(null)
+
+  function commit() {
+    try {
+      const parsed = JSON.parse(draft)
+      if (!Array.isArray(parsed)) {
+        setError("Deve ser um array JSON.")
+        return
+      }
+      setError(null)
+      // ParameterValue.value e tipado como string mas o source_field do
+      // loop aceita arrays/dicts (resolvido no backend). Cast via unknown
+      // — tipo do contrato precisaria aceitar arrays para essa rota.
+      onChange({ mode: "fixed", value: parsed as unknown as string })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "JSON invalido.")
+    }
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="text-[10px] font-medium text-violet-600 hover:underline dark:text-violet-400"
+      >
+        Usar lista literal (JSON) em vez de upstream
+      </button>
+    )
+  }
+
+  return (
+    <div className="space-y-1.5 rounded-md border border-dashed border-violet-400/40 bg-violet-500/5 p-2">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-violet-600 dark:text-violet-400">
+          Lista literal (JSON)
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            setOpen(false)
+            // Nao reverte o source — usuario pode querer voltar pra escolher
+            // upstream sem perder a lista. Se quiser limpar, edita o JSON.
+          }}
+          className="text-[10px] text-muted-foreground hover:text-foreground"
+        >
+          fechar
+        </button>
+      </div>
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        rows={6}
+        spellCheck={false}
+        className="w-full rounded-md border border-input bg-background px-2 py-1.5 font-mono text-[11px] outline-none focus:ring-1 focus:ring-primary"
+        placeholder={'[\n  { "id": 1 },\n  { "id": 2 }\n]'}
+      />
+      {error ? (
+        <p className="text-[10px] text-destructive">{error}</p>
+      ) : (
+        <p className="text-[10px] text-muted-foreground">
+          Cada item do array vira uma iteração. Salva ao sair do campo.
+        </p>
+      )}
+    </div>
+  )
+}
 
 interface LoopConfigProps {
   data: Record<string, unknown>
@@ -141,6 +230,17 @@ export function LoopConfig({ data, onUpdate }: LoopConfigProps) {
   const maxIterations = (data.max_iterations as number) ?? 10000
   const outputField = (data.output_field as string) ?? "loop_result"
   const timeoutSeconds = (data.timeout_seconds as number) ?? 300
+
+  // body_mode='inline' substitui o workflow externo por um subgrafo
+  // embutido no canvas (filhos com parentId apontando para este loop).
+  const bodyMode = ((data.body_mode as "external" | "inline") ?? "external")
+  const isInline = bodyMode === "inline"
+  const iterationInputName =
+    (data.iteration_input_name as string | undefined) ?? "item"
+  const iterationIndexName =
+    (data.iteration_index_name as string | undefined) ?? "idx"
+  const outputMapping =
+    (data.output_mapping as Record<string, string> | undefined) ?? {}
 
   useEffect(() => {
     setWorkflowsLoading(true)
@@ -335,8 +435,87 @@ export function LoopConfig({ data, onUpdate }: LoopConfigProps) {
     previewLines.push(`Cada item tem até ${timeoutSeconds}s para completar.`)
   }
 
+  function setBodyMode(next: "external" | "inline") {
+    if (next === bodyMode) return
+    if (next === "inline") {
+      // Inicializa body vazio na primeira troca pra inline.
+      const existingBody = data.body as { nodes?: unknown; edges?: unknown } | undefined
+      update({
+        body_mode: "inline",
+        body:
+          existingBody && Array.isArray(existingBody.nodes)
+            ? existingBody
+            : { nodes: [], edges: [] },
+      })
+    } else {
+      update({ body_mode: "external" })
+    }
+  }
+
+  function setOutputMappingValue(name: string, value: string) {
+    const next = { ...outputMapping }
+    if (value.trim() === "") delete next[name]
+    else next[name] = value
+    update({ output_mapping: next })
+  }
+
+  function addOutputMappingRow() {
+    let i = 1
+    let key = "result"
+    while (key in outputMapping) {
+      i += 1
+      key = `result_${i}`
+    }
+    update({ output_mapping: { ...outputMapping, [key]: "" } })
+  }
+
+  function removeOutputMappingRow(name: string) {
+    const next = { ...outputMapping }
+    delete next[name]
+    update({ output_mapping: next })
+  }
+
   return (
     <div className="space-y-4">
+      {/* ── Modo do corpo (external vs inline) ── */}
+      <div className="space-y-1.5">
+        <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          Corpo do loop
+        </label>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setBodyMode("external")}
+            className={cn(
+              "flex-1 rounded-md border px-3 py-2 text-left text-xs transition-colors",
+              !isInline
+                ? "border-violet-400 bg-violet-50 text-violet-900 dark:border-violet-500 dark:bg-violet-950/40 dark:text-violet-100"
+                : "border-input bg-background text-muted-foreground hover:bg-muted/50",
+            )}
+          >
+            <div className="font-semibold">Workflow externo</div>
+            <div className="mt-0.5 text-[10px] opacity-80">
+              Invoca uma versão publicada por item.
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setBodyMode("inline")}
+            className={cn(
+              "flex-1 rounded-md border px-3 py-2 text-left text-xs transition-colors",
+              isInline
+                ? "border-violet-400 bg-violet-50 text-violet-900 dark:border-violet-500 dark:bg-violet-950/40 dark:text-violet-100"
+                : "border-input bg-background text-muted-foreground hover:bg-muted/50",
+            )}
+          >
+            <div className="font-semibold">Corpo embutido</div>
+            <div className="mt-0.5 text-[10px] opacity-80">
+              Edita os nós dentro do próprio loop no canvas.
+            </div>
+          </button>
+        </div>
+      </div>
+
       {/* ── Origem dos itens ── */}
       <div className="space-y-1.5">
         <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
@@ -440,9 +619,19 @@ export function LoopConfig({ data, onUpdate }: LoopConfigProps) {
           Escolha no dropdown acima, arraste um campo do INPUT ou edite o
           caminho manualmente.
         </p>
+
+        {/* Lista literal — alternativa ao upstream/template. Persiste como
+            ParameterValue fixed com array; backend ja consome listas inline
+            sem mudancas. */}
+        <LiteralJsonSource
+          source={sourceFieldPV}
+          onChange={(pv) => update({ source_field: pv })}
+        />
       </div>
 
-      {/* ── Workflow alvo ── */}
+      {/* ── Workflow alvo + Versao (modo external) ── */}
+      {!isInline && (
+      <>
       <div className="space-y-1.5">
         <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           Workflow a executar por item
@@ -457,7 +646,7 @@ export function LoopConfig({ data, onUpdate }: LoopConfigProps) {
           >
             {workflowsLoading ? (
               <span className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" /> Carregando…
+                <MorphLoader className="size-3.5" /> Carregando…
               </span>
             ) : selectedWorkflow ? (
               <span className="flex items-center gap-2 truncate font-medium text-foreground">
@@ -535,7 +724,7 @@ export function LoopConfig({ data, onUpdate }: LoopConfigProps) {
           </label>
           {versionsLoading ? (
             <div className="flex h-8 items-center gap-2 text-[11px] text-muted-foreground">
-              <Loader2 className="size-3 animate-spin" /> Carregando versões…
+              <MorphLoader className="size-3" /> Carregando versões…
             </div>
           ) : versionsError ? (
             <div className="flex items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5">
@@ -578,9 +767,123 @@ export function LoopConfig({ data, onUpdate }: LoopConfigProps) {
           )}
         </div>
       )}
+      </>
+      )}
 
-      {/* ── Mapeamento de inputs ── */}
-      {workflowId && resolvedVersion != null && (
+      {/* ── Corpo embutido (modo inline) ── */}
+      {isInline && (
+        <div className="space-y-3 rounded-md border border-border bg-muted/30 p-3">
+          <div className="rounded-md border border-dashed border-border bg-background/60 p-2 text-[10px] leading-relaxed text-muted-foreground">
+            Arraste nós da paleta para dentro do container do loop no canvas.
+            Variáveis disponíveis em cada iteração:{" "}
+            <code className="rounded bg-muted px-1 font-mono text-foreground">
+              {`{{input_data.${iterationInputName}}}`}
+            </code>{" "}
+            <code className="rounded bg-muted px-1 font-mono text-foreground">
+              {`{{input_data.${iterationIndexName}}}`}
+            </code>
+            .
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <label className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                Nome do item
+              </label>
+              <input
+                type="text"
+                value={iterationInputName}
+                onChange={(e) =>
+                  update({ iteration_input_name: e.target.value || "item" })
+                }
+                placeholder="item"
+                className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                Nome do índice
+              </label>
+              <input
+                type="text"
+                value={iterationIndexName}
+                onChange={(e) =>
+                  update({ iteration_index_name: e.target.value || "idx" })
+                }
+                placeholder="idx"
+                className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                Saída por iteração (opcional)
+              </label>
+              <button
+                type="button"
+                onClick={addOutputMappingRow}
+                className="text-[10px] font-medium text-violet-600 hover:underline dark:text-violet-400"
+              >
+                + adicionar campo
+              </button>
+            </div>
+            {Object.keys(outputMapping).length === 0 ? (
+              <p className="text-[10px] text-muted-foreground">
+                Sem mapeamento — cada iteração devolve um dict vazio. Adicione
+                campos para coletar valores dos nós internos via{" "}
+                <code className="font-mono">
+                  {`{{upstream_results.<id>.<campo>}}`}
+                </code>
+                .
+              </p>
+            ) : (
+              <div className="space-y-1.5">
+                {Object.entries(outputMapping).map(([name, tmpl]) => (
+                  <div key={name} className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      value={name}
+                      onChange={(e) => {
+                        const newName = e.target.value
+                        if (!newName.trim() || newName === name) return
+                        const next: Record<string, string> = {}
+                        for (const [k, v] of Object.entries(outputMapping)) {
+                          next[k === name ? newName : k] = v
+                        }
+                        update({ output_mapping: next })
+                      }}
+                      placeholder="nome"
+                      className="h-7 w-28 rounded-md border border-input bg-background px-2 font-mono text-[11px] outline-none focus:ring-1 focus:ring-primary"
+                    />
+                    <input
+                      type="text"
+                      value={tmpl}
+                      onChange={(e) =>
+                        setOutputMappingValue(name, e.target.value)
+                      }
+                      placeholder="{{upstream_results.<id>.<campo>}}"
+                      className="h-7 flex-1 rounded-md border border-input bg-background px-2 font-mono text-[11px] outline-none focus:ring-1 focus:ring-primary"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeOutputMappingRow(name)}
+                      className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+                      aria-label="Remover"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Mapeamento de inputs (modo external) ── */}
+      {!isInline && workflowId && resolvedVersion != null && (
         <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-foreground">

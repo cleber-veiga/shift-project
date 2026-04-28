@@ -5,11 +5,11 @@ import {
   AlertTriangle,
   ChevronDown,
   Info,
-  Loader2,
   RefreshCw,
   Search,
   Workflow as WorkflowIcon,
 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import {
   listCallableWorkflows,
@@ -254,7 +254,7 @@ export function CallWorkflowConfig({ data, onUpdate, currentWorkflowId }: CallWo
           >
             {workflowsLoading ? (
               <span className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" /> Carregando…
+                <MorphLoader className="size-3.5" /> Carregando…
               </span>
             ) : selectedWorkflow ? (
               <span className="flex items-center gap-2 truncate font-medium text-foreground">
@@ -347,7 +347,7 @@ export function CallWorkflowConfig({ data, onUpdate, currentWorkflowId }: CallWo
           </label>
           {versionsLoading ? (
             <div className="flex h-8 items-center gap-2 text-[11px] text-muted-foreground">
-              <Loader2 className="size-3 animate-spin" /> Carregando versões…
+              <MorphLoader className="size-3" /> Carregando versões…
             </div>
           ) : versionsError ? (
             <div className="flex items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-2 py-1.5">

@@ -8,13 +8,13 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
-  Loader2,
   PanelRightClose,
   Play,
   SendHorizontal,
   Sparkles,
   Square,
 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import {
@@ -108,7 +108,7 @@ function ToolBadge({ name, status }: { name: string; status: "calling" | "done" 
   return (
     <div className="my-1 inline-flex items-center gap-1.5 rounded-md bg-muted/60 px-2 py-1 text-[10px] text-muted-foreground">
       {status === "calling" ? (
-        <Loader2 className="size-3 animate-spin" />
+        <MorphLoader className="size-3" />
       ) : (
         <Check className="size-3 text-green-600 dark:text-green-400" />
       )}
@@ -139,7 +139,7 @@ function ReasoningBlock({
         className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left text-[11px] text-muted-foreground transition-colors hover:bg-muted"
       >
         {streaming ? (
-          <Loader2 className="size-3 shrink-0 animate-spin text-primary" />
+          <MorphLoader className="size-3 shrink-0 text-primary" />
         ) : (
           <Brain className="size-3 shrink-0 text-primary" />
         )}

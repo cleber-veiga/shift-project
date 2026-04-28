@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { ChevronDown, Loader2, Plus, Search, Trash2 } from "lucide-react"
+import { ChevronDown, Plus, Search, Trash2 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import { useDashboard } from "@/lib/context/dashboard-context"
 import { useUpstreamFields, useUpstreamOutputs } from "@/lib/workflow/upstream-fields-context"
@@ -233,7 +234,7 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
           >
             {connectionsLoading ? (
               <span className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" /> Carregando...
+                <MorphLoader className="size-3.5" /> Carregando...
               </span>
             ) : selectedConnection ? (
               <span className="flex items-center gap-2">

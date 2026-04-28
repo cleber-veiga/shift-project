@@ -55,10 +55,15 @@ import {
   type InheritedVariable,
 } from "@/lib/api/workflow-variables"
 import { getNodeDefinition, NODE_REGISTRY, type WorkflowVariable } from "@/lib/workflow/types"
+import {
+  collapseInlineLoopBodies,
+  expandInlineLoopBodies,
+} from "@/lib/workflow/loop-inline-bodies"
 import { NodeExecutionContext, type NodeExecState } from "@/lib/workflow/execution-context"
 import { NodeActionsContext } from "@/lib/workflow/node-actions-context"
 import { WorkflowVariablesContext } from "@/lib/workflow/workflow-variables-context"
-import { Copy, Hand, History, LayoutGrid, Loader2, Maximize2, MousePointer2, Power, PowerOff, Trash2, Workflow as WorkflowIcon, X, ZoomIn, ZoomOut } from "lucide-react"
+import { Copy, Hand, History, LayoutGrid, Maximize2, MousePointer2, Power, PowerOff, Trash2, Workflow as WorkflowIcon, X, ZoomIn, ZoomOut } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import {
   getWorkflow,
@@ -181,7 +186,7 @@ function WorkflowEditorInner({
     save: saveVariables,
   } = useWorkflowVariables(workflowId)
 
-  // ── Schedule state (cron agendado no Prefect) ───────────────────────────
+  // ── Schedule state (cron agendado no APScheduler) ────────────────────────
   const [scheduleStatus, setScheduleStatus] = useState<WorkflowScheduleStatus | null>(null)
 
   // ── Variaveis herdadas de sub-workflows (call_workflow) — fetch sob demanda ──
@@ -348,9 +353,15 @@ function WorkflowEditorInner({
         setIsTemplate(wf.is_template ?? false)
         setIsPublished(wf.is_published ?? false)
         const def = wf.definition ?? {}
-        const loadedNodes = (def.nodes as Node[]) ?? []
+        // Expande corpos inline de loops (data.body) em nos-filho com
+        // parentId — assim o usuario edita visualmente no canvas.
+        const expanded = expandInlineLoopBodies(
+          (def.nodes as Node[]) ?? [],
+          (def.edges as Edge[]) ?? [],
+        )
+        const loadedNodes = expanded.nodes
         setNodes(loadedNodes)
-        setEdges((def.edges as Edge[]) ?? [])
+        setEdges(expanded.edges)
         setWorkflowMeta((def.meta as Record<string, unknown>) ?? {})
         const loadedIoSchema = def.io_schema as WorkflowIOSchema | undefined
         setIoSchema({
@@ -675,14 +686,18 @@ function WorkflowEditorInner({
 
   // ── Build definition payload (strips execution state) ────────────────────
   function buildDefinition() {
+    // Empacota filhos de loops inline (parentId) de volta em data.body
+    // antes de serializar — o backend espera body.nodes/body.edges,
+    // nao parentId no array flat.
+    const collapsed = collapseInlineLoopBodies(nodes, edges)
     return {
-      nodes: nodes.map((n) => ({
+      nodes: collapsed.nodes.map((n) => ({
         id: n.id,
         type: n.type,
         position: n.position,
         data: n.data,
       })),
-      edges: edges.map((e) => ({
+      edges: collapsed.edges.map((e) => ({
         id: e.id,
         source: e.source,
         target: e.target,
@@ -1106,7 +1121,7 @@ function WorkflowEditorInner({
     return (
       <div className="flex h-full items-center justify-center bg-background">
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" />
+          <MorphLoader className="size-4" />
           Carregando workflow…
         </div>
       </div>

@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { CheckCircle2, ChevronDown, Copy, Info, Loader2, X } from "lucide-react"
+import { CheckCircle2, ChevronDown, Copy, Info, X } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import {
   cloneWorkflowTemplate,
@@ -167,7 +168,7 @@ export function CloneTemplateModal({
             </div>
           ) : loadingData ? (
             <div className="flex items-center justify-center py-6 text-xs text-muted-foreground">
-              <Loader2 className="mr-2 size-4 animate-spin" />
+              <MorphLoader className="mr-2 size-4" />
               Carregando…
             </div>
           ) : (
@@ -263,7 +264,7 @@ export function CloneTemplateModal({
               className="flex h-8 items-center gap-1.5 rounded-md bg-foreground px-3 text-xs font-semibold text-background transition hover:opacity-90 disabled:opacity-50"
             >
               {submitting ? (
-                <Loader2 className="size-3.5 animate-spin" />
+                <MorphLoader className="size-3.5" />
               ) : (
                 <Copy className="size-3.5" />
               )}

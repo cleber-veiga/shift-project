@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { ArrowRight, ChevronDown, Database, Loader2, Search, Sparkles, Trash2 } from "lucide-react"
+import { ArrowRight, ChevronDown, Database, Search, Sparkles, Trash2 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import { useDashboard } from "@/lib/context/dashboard-context"
 import { useUpstreamFields } from "@/lib/workflow/upstream-fields-context"
@@ -232,7 +233,7 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
           >
             {connectionsLoading ? (
               <span className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" /> Carregando...
+                <MorphLoader className="size-3.5" /> Carregando...
               </span>
             ) : selectedConnection ? (
               <span className="flex items-center gap-2">
@@ -300,7 +301,7 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
             >
               {tablesLoading ? (
                 <span className="flex items-center gap-2 text-muted-foreground">
-                  <Loader2 className="size-3.5 animate-spin" /> Carregando tabelas...
+                  <MorphLoader className="size-3.5" /> Carregando tabelas...
                 </span>
               ) : selectedTableName ? (
                 <span className="flex items-center gap-2">

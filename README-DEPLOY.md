@@ -85,7 +85,7 @@ Equivale a `psql "$DATABASE_URL" -f ops/postgres/bootstrap.sql`. Idempotente.
 
 ## Modelo de processo (importante)
 
-Single-process. **Nao tem Celery worker, nao tem Celery beat, nao tem Prefect.** Todo o agendamento (webhook dispatch, cleanup de checkpoints, extract-cache GC, agent expiration) roda em **APScheduler in-process** dentro do FastAPI — registrado no `lifespan` em [shift-backend/main.py](shift-backend/main.py).
+Single-process. **Nao tem Celery worker, nao tem Celery beat, nao tem orquestrador externo.** Todo o agendamento (webhook dispatch, cleanup de checkpoints, extract-cache GC, agent expiration) roda em **APScheduler in-process** dentro do FastAPI — registrado no `lifespan` em [shift-backend/main.py](shift-backend/main.py).
 
 Consequencia operacional: o backend roda com **single worker** uvicorn (`--workers 1`). Multi-worker no mesmo container quebra APScheduler — cada worker tentaria iniciar o scheduler e disparar jobs duplicados. Para escalar horizontalmente, suba **multiplas replicas** do `shift-backend` — APScheduler com `SQLAlchemyJobStore` coordena via locks no Postgres (`coalesce=True`, `max_instances=1`).
 

@@ -11,7 +11,6 @@ import {
   GripVertical,
   Hash,
   List,
-  Loader2,
   Pin,
   PinOff,
   Play,
@@ -21,6 +20,7 @@ import {
   X,
   XCircle,
 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import { getNodeDefinition } from "@/lib/workflow/types"
 import { getNodeIcon } from "@/lib/workflow/node-icons"
@@ -366,7 +366,7 @@ export function NodeConfigModal({
                 )}
               >
                 {isRunning
-                  ? <><Loader2 className="size-3 animate-spin" /> Executando…</>
+                  ? <><MorphLoader className="size-3" /> Executando…</>
                   : <><Play className="size-3" /> Executar</>
                 }
               </button>
@@ -561,7 +561,7 @@ function OutputPanel({
 
       {currentOutput?.status === "running" ? (
         <div className="flex flex-1 items-center justify-center gap-2 text-xs text-muted-foreground">
-          <Loader2 className="size-3.5 animate-spin" />
+          <MorphLoader className="size-3.5" />
           Executando…
         </div>
       ) : currentOutput?.status === "handled_error" ? (
@@ -793,7 +793,7 @@ export function DataViewer({
         />
         <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">
           {duckDbLoading ? (
-            <Loader2 className="size-3 animate-spin" />
+            <MorphLoader className="size-3" />
           ) : (
             itemCountLabel
           )}
@@ -814,7 +814,7 @@ export function DataViewer({
         ) : tab === "table" ? (
           duckDbLoading ? (
             <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />
+              <MorphLoader className="size-4" />
               Carregando prévia…
             </div>
           ) : duckDbError ? (

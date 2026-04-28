@@ -6,12 +6,12 @@ import {
   ChevronUp,
   Eye,
   Link2,
-  Loader2,
   Pencil,
   Plus,
   Trash2,
   X,
 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import type { WorkflowVariable, WorkflowVariableType } from "@/lib/workflow/types"
 import type { InheritedVariable } from "@/lib/api/workflow-variables"
 
@@ -601,7 +601,7 @@ export function VariablesPanel({
               className="inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md bg-primary text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
             >
               {isSaving ? (
-                <Loader2 className="size-3.5 animate-spin" />
+                <MorphLoader className="size-3.5" />
               ) : saved ? (
                 "Salvo!"
               ) : (

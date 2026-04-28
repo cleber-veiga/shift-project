@@ -1,6 +1,7 @@
 "use client"
 
-import { Bot, Check, Loader2, X } from "lucide-react"
+import { Bot, Check, X } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import type { BuildModeState } from "@/lib/workflow/build-mode-context"
 
@@ -85,7 +86,7 @@ export function BuildModeBar({
             className="flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
           >
             {isCancelling ? (
-              <Loader2 className="size-3 animate-spin" />
+              <MorphLoader className="size-3" />
             ) : (
               <X className="size-3" />
             )}
@@ -99,7 +100,7 @@ export function BuildModeBar({
             className="flex h-7 items-center gap-1.5 rounded-md bg-violet-600 px-2.5 text-xs font-semibold text-white transition-colors hover:bg-violet-700 disabled:opacity-50"
           >
             {isConfirming ? (
-              <Loader2 className="size-3 animate-spin" />
+              <MorphLoader className="size-3" />
             ) : (
               <Check className="size-3" />
             )}
@@ -117,7 +118,7 @@ export function BuildModeBar({
           className="flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-50"
         >
           {isCancelling ? (
-            <Loader2 className="size-3 animate-spin" />
+            <MorphLoader className="size-3" />
           ) : (
             <X className="size-3" />
           )}

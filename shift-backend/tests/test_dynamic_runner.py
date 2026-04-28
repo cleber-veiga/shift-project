@@ -2,8 +2,8 @@
 Smoke tests para o orquestrador nativo (asyncio) do Shift.
 
 Cobre as funcoes puras do ``dynamic_runner`` que nao dependem de banco
-nem de processors reais — garantindo que a migracao do Prefect nao
-regrediu a logica de grafo, ordenacao topologica ou branch skipping.
+nem de processors reais — protege a logica de grafo, ordenacao
+topologica e branch skipping contra regressoes.
 """
 
 from __future__ import annotations

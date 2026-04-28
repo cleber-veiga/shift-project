@@ -1,6 +1,7 @@
 "use client"
 
-import { Grid2X2, List, Loader2, Plus, Search, Workflow, FolderOpen, Play, Trash2, Copy, LayoutTemplate, Tag as TagIcon, Check, X } from "lucide-react"
+import { Grid2X2, List, Plus, Search, Workflow, FolderOpen, Play, Trash2, Copy, LayoutTemplate, Tag as TagIcon, Check, X } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import Link from "next/link"
 import { useRouter, usePathname } from "next/navigation"
 import { useCallback, useEffect, useMemo, useState } from "react"
@@ -52,7 +53,7 @@ function TemplatesSection({ workspaceId }: { workspaceId: string }) {
   if (loading) {
     return (
       <div className="flex h-20 items-center justify-center gap-2 text-xs text-muted-foreground">
-        <Loader2 className="size-3.5 animate-spin" /> Carregando templates…
+        <MorphLoader className="size-3.5" /> Carregando templates…
       </div>
     )
   }
@@ -391,7 +392,7 @@ function FlowsSection({
 
       {loading ? (
         <div className="flex h-32 items-center justify-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" /> Carregando fluxos...
+          <MorphLoader className="size-4" /> Carregando fluxos...
         </div>
       ) : filtered.length === 0 ? (
         <div className="flex h-32 items-center justify-center rounded-xl border border-dashed border-border bg-card">

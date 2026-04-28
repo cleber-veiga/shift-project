@@ -1,6 +1,7 @@
 "use client"
 
-import { Activity, AlertCircle, CheckCircle2, Loader2, Search, Shield } from "lucide-react"
+import { Activity, AlertCircle, CheckCircle2, Search, Shield } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { useDashboard } from "@/lib/context/dashboard-context"
 import {
@@ -270,7 +271,7 @@ export function AgentActivitySection({ scope }: AgentActivitySectionProps) {
 
       {loading ? (
         <div className="flex h-32 items-center justify-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" /> Carregando auditoria...
+          <MorphLoader className="size-4" /> Carregando auditoria...
         </div>
       ) : entries.length === 0 ? (
         <div className="flex h-32 items-center justify-center rounded-xl border border-dashed border-border bg-card">

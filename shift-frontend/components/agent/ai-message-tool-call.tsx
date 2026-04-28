@@ -1,6 +1,7 @@
 "use client"
 
-import { Check, Loader2, X } from "lucide-react"
+import { Check, X } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import type { ExecutedToolCall } from "@/lib/types/ai-panel"
 
@@ -12,7 +13,7 @@ export function AIMessageToolCall({ toolCall }: AIMessageToolCallProps) {
   return (
     <div className="flex items-center gap-2 py-0.5 text-xs text-muted-foreground">
       {toolCall.running ? (
-        <Loader2 className="size-3 animate-spin text-primary" />
+        <MorphLoader className="size-3 text-primary" />
       ) : toolCall.success ? (
         <Check className="size-3 text-emerald-500" />
       ) : (

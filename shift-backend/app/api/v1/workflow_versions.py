@@ -54,6 +54,21 @@ async def publish_workflow_version(
             detail="Workflow nao possui definition publicavel (sem nodes).",
         )
 
+    # Estrutura de loops inline (body): triggers proibidos, edges fechados,
+    # sem loops aninhados. Falhar aqui evita publicar uma WorkflowVersion
+    # quebrada que so daria erro em runtime.
+    from app.services.workflow.nodes.loop import validate_loop_inline_bodies
+
+    inline_errors = validate_loop_inline_bodies(definition)
+    if inline_errors:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "Body de loop inline invalido.",
+                "errors": inline_errors,
+            },
+        )
+
     # Calcula o proximo numero de versao monotonico.
     result = await db.execute(
         sa.select(sa.func.coalesce(sa.func.max(WorkflowVersion.version), 0)).where(

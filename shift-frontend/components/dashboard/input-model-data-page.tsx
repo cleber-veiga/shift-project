@@ -7,7 +7,6 @@ import {
   Check,
   ClipboardPaste,
   FileSpreadsheet,
-  Loader2,
   Pencil,
   Plus,
   Trash2,
@@ -379,7 +378,7 @@ export function InputModelDataPage({ modelId }: Props) {
                 disabled={bulkPreviewRows.length === 0 || bulkSaving}
                 className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
               >
-                {bulkSaving && <Loader2 className="size-3 animate-spin" />}
+                {bulkSaving && <MorphLoader className="size-3" />}
                 Importar {bulkPreviewRows.length} linha(s)
               </button>
             </div>

@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { ClipboardPaste, Loader2, Plus, Trash2 } from "lucide-react"
+import { ClipboardPaste, Plus, Trash2 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import {
   createInputModel,
@@ -511,7 +512,7 @@ export function InputModelFormModal({ open, onOpenChange, editing, workspaceId, 
             disabled={saving || !name.trim()}
             className="inline-flex h-9 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
           >
-            {saving && <Loader2 className="size-3.5 animate-spin" />}
+            {saving && <MorphLoader className="size-3.5" />}
             {editing ? "Salvar alterações" : "Criar modelo"}
           </button>
         </div>

@@ -1,6 +1,7 @@
 "use client"
 
-import { Check, Hammer, Loader2, X } from "lucide-react"
+import { Check, Hammer, X } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { useAIContext } from "@/lib/context/ai-context"
 import { useBuildMode } from "@/lib/workflow/build-mode-context"
 
@@ -82,7 +83,7 @@ export function AIBuildConfirmationCard() {
             aria-label="Confirmar construcao"
           >
             {isConfirming ? (
-              <Loader2 className="size-3 animate-spin" />
+              <MorphLoader className="size-3" />
             ) : (
               <Check className="size-3.5" />
             )}
@@ -97,7 +98,7 @@ export function AIBuildConfirmationCard() {
             aria-label="Cancelar construcao"
           >
             {isCancelling ? (
-              <Loader2 className="size-3 animate-spin" />
+              <MorphLoader className="size-3" />
             ) : (
               <X className="size-3.5" />
             )}

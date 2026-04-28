@@ -1,7 +1,8 @@
 "use client"
 
 import { useCallback, useEffect, useState } from "react"
-import { ChevronDown, Database, ExternalLink, FileSearch, Loader2, Plug2, Search, Trash2, Zap } from "lucide-react"
+import { ChevronDown, Database, ExternalLink, FileSearch, Plug2, Search, Trash2, Zap } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import { useDashboard } from "@/lib/context/dashboard-context"
 import {
@@ -150,7 +151,7 @@ export function SqlDatabaseConfig({ data, onUpdate }: SqlDatabaseConfigProps) {
             )}
           >
             {connectionsLoading ? (
-              <Loader2 className="size-3.5 animate-spin" />
+              <MorphLoader className="size-3.5" />
             ) : selectedConnection ? (
               <>
                 <div className={cn("flex size-5 shrink-0 items-center justify-center rounded text-[9px] font-bold", DB_COLORS[selectedConnection.type] ?? "bg-muted text-muted-foreground")}>
@@ -264,7 +265,7 @@ export function SqlDatabaseConfig({ data, onUpdate }: SqlDatabaseConfigProps) {
             <div className="space-y-2">
               {queriesLoading ? (
                 <div className="flex h-16 items-center justify-center gap-2 text-[11px] text-muted-foreground">
-                  <Loader2 className="size-3.5 animate-spin" />
+                  <MorphLoader className="size-3.5" />
                   Carregando queries...
                 </div>
               ) : savedQueries.length === 0 ? (

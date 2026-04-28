@@ -973,6 +973,10 @@ async def run_workflow(
         "_preview_max_rows": (
             preview_max_rows if run_mode == "preview" else None
         ),
+        # Connections ja resolvidas para este workflow — disponibilizadas
+        # ao no ``loop`` em modo inline, que precisa repassa-las ao
+        # sub-run do corpo embutido (mesmo workflow = mesmas connections).
+        "_resolved_connections": resolved_connections or {},
     }
 
     nodes = resolved_payload.get("nodes", [])

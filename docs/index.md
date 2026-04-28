@@ -5,7 +5,7 @@ Plataforma de integração, migração e automação de dados entre sistemas leg
 !!! info "Visão geral"
     O Shift foi construído para resolver um problema comum em empresas com ERPs legados (Firebird, Oracle, etc.): extrair dados desses sistemas, transformá-los e carregá-los em destinos modernos (PostgreSQL, DW) de forma confiável, com rastreabilidade e sem necessidade de scripts avulsos.
 
-A plataforma oferece um ambiente visual para criar conexões, montar workflows de ETL, executar queries exploratórias com assistência de IA e acompanhar as execuções orquestradas pelo Prefect.
+A plataforma oferece um ambiente visual para criar conexões, montar workflows de ETL, executar queries exploratórias com assistência de IA e acompanhar o histórico das execuções.
 
 ## Funcionalidades
 
@@ -21,7 +21,7 @@ A plataforma oferece um ambiente visual para criar conexões, montar workflows d
 
     ---
 
-    Editor visual para montar fluxos de extração, transformação e carga. Execução orquestrada via Prefect com histórico de runs.
+    Editor visual para montar fluxos de extração, transformação e carga, com histórico de runs.
 
 -   :material-database-search: **Playground SQL**
 
@@ -56,7 +56,7 @@ A plataforma oferece um ambiente visual para criar conexões, montar workflows d
 | Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS, shadcn/ui |
 | Backend | FastAPI, Python 3.11+, SQLAlchemy (async), Alembic |
 | Banco de dados | PostgreSQL (aplicação), DuckDB (staging local) |
-| Orquestração | Prefect 3 |
+| Orquestração | Runner nativo asyncio (`app/orchestration/flows/dynamic_runner.py`) + APScheduler in-process |
 | Pipelines | dlt (data load tool) |
 | IA | LiteLLM, LangChain, LangGraph |
 | Auth | JWT (PyJWT + pwdlib/Argon2), Google OAuth |
@@ -65,7 +65,7 @@ A plataforma oferece um ambiente visual para criar conexões, montar workflows d
 
 ```
 shift-project/
-├── shift-backend/   # API FastAPI + orquestração Prefect + pipelines dlt
+├── shift-backend/   # API FastAPI + orquestração asyncio + pipelines dlt
 └── shift-frontend/  # Aplicação Next.js
 ```
 

@@ -19,7 +19,6 @@ import {
   CheckCircle2,
   Clock,
   Copy,
-  Loader2,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -27,6 +26,7 @@ import {
   XCircle,
   Zap,
 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { useDashboard } from "@/lib/context/dashboard-context"
 import { useToast } from "@/lib/context/toast-context"
 import { hasWorkspacePermission } from "@/lib/permissions"
@@ -109,7 +109,7 @@ function DeliveryStatusIcon({ status }: { status: WebhookDelivery["status"] }) {
     return <XCircle className="h-4 w-4 text-red-500" />
   }
   if (status === "in_flight") {
-    return <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+    return <MorphLoader className="size-4 text-blue-500" />
   }
   return <Clock className="h-4 w-4 text-amber-500" />
 }
@@ -254,7 +254,7 @@ export function WebhookSubscriptionsSection() {
 
       {loading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" /> Carregando...
+          <MorphLoader className="size-4" /> Carregando...
         </div>
       ) : subs.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border bg-card p-8 text-center">
@@ -468,7 +468,7 @@ function ExpandedDetails({
   if (loading) {
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="h-4 w-4 animate-spin" /> Carregando entregas...
+        <MorphLoader className="size-4" /> Carregando entregas...
       </div>
     )
   }
@@ -652,7 +652,7 @@ function CreateModal({
             disabled={submitting}
             className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
-            {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+            {submitting && <MorphLoader className="size-4" />}
             Criar
           </button>
         </div>

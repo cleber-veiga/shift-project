@@ -7,9 +7,9 @@ import {
   Copy,
   Eye,
   EyeOff,
-  Loader2,
   Radio,
 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import {
   clearWebhookCaptures,
   getWebhookUrls,
@@ -481,7 +481,7 @@ export function WebhookConfig({
           >
             {listening ? (
               <>
-                <Loader2 className="size-3 animate-spin" />
+                <MorphLoader className="size-3" />
                 Listening... (cancelar)
               </>
             ) : (

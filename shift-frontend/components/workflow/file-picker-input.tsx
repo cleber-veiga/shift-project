@@ -16,7 +16,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Loader2, Upload, X, FileSpreadsheet, Globe, Variable } from "lucide-react"
+import { Upload, X, FileSpreadsheet, Globe, Variable } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import {
   listWorkflowUploads,
   uploadWorkflowFile,
@@ -277,7 +278,7 @@ export function FilePickerInput({
           )}
           {workflowId && loadingList && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Loader2 className="size-3 animate-spin" />
+              <MorphLoader className="size-3" />
               Carregando arquivos...
             </div>
           )}
@@ -358,7 +359,7 @@ export function FilePickerInput({
           >
             {uploading ? (
               <>
-                <Loader2 className="size-5 animate-spin" />
+                <MorphLoader className="size-5" />
                 <p className="text-muted-foreground">
                   Enviando... {uploadProgress}%
                 </p>

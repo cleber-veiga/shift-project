@@ -24,8 +24,9 @@ import {
   type EdgeTypes,
 } from "@xyflow/react"
 import "@xyflow/react/dist/style.css"
-import { AlertTriangle, GitCompareArrows, Loader2, X } from "lucide-react"
+import { AlertTriangle, GitCompareArrows, X } from "lucide-react"
 
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { WorkflowNode } from "@/components/workflow/workflow-node"
 import { WorkflowEdge } from "@/components/workflow/workflow-edge"
 import { NODE_REGISTRY } from "@/lib/workflow/types"
@@ -174,7 +175,7 @@ export function SnapshotCanvasModal({ executionId, onClose }: SnapshotCanvasModa
         <div className="flex-1 min-h-0">
           {loading && (
             <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />
+              <MorphLoader className="size-4" />
               Carregando snapshot…
             </div>
           )}

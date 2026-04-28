@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { AlertTriangle, Loader2, Rocket, X } from "lucide-react"
+import { AlertTriangle, Rocket, X } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import {
   listWorkflowVersions,
   publishWorkflowVersion,
@@ -126,7 +127,7 @@ export function PublishVersionModal({
             <div className="mt-1 flex items-baseline gap-2">
               {loadingVersion ? (
                 <span className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="size-3.5 animate-spin" /> Carregando…
+                  <MorphLoader className="size-3.5" /> Carregando…
                 </span>
               ) : loadError ? (
                 <span className="text-xs text-destructive">{loadError}</span>
@@ -212,7 +213,7 @@ export function PublishVersionModal({
           >
             {submitting ? (
               <>
-                <Loader2 className="size-3.5 animate-spin" /> Publicando…
+                <MorphLoader className="size-3.5" /> Publicando…
               </>
             ) : (
               <>

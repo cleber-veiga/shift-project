@@ -20,9 +20,9 @@
 # suba multiplas replicas do shift-backend — APScheduler+SQLAlchemyJobStore
 # coordena via locks no Postgres (job_default_max_instances=1).
 #
-# Tambem nao tem Prefect — foi removido (alembic
-# 2026_04_16_b8c9d0e1f2a3_drop_prefect_flow_run_id.py). Orquestracao usa
-# orchestration/flows/dynamic_runner.py em asyncio puro.
+# Nao ha orquestrador externo. A execucao de workflows roda em
+# orchestration/flows/dynamic_runner.py em asyncio puro, dentro do
+# proprio processo do shift-backend.
 
 name: shift
 

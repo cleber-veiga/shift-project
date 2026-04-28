@@ -8,7 +8,6 @@ import {
   CheckCircle2,
   Copy,
   Info,
-  Loader2,
   MoreHorizontal,
   Pencil,
   Play,
@@ -18,6 +17,7 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import { getNodeDefinition, type NodeDefinition } from "@/lib/workflow/types"
 import { getNodeIcon } from "@/lib/workflow/node-icons"
@@ -337,6 +337,17 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
     return out
   }, [type, nodeData.cases, definition?.errorHandle])
 
+  // Loop em modo inline: o nó vira um container que abriga nos-filho
+  // (React Flow ``parentId`` + ``extent: 'parent'``). O container precisa
+  // ser fisicamente maior pra acomodar os filhos visualmente; eles sao
+  // renderizados como nos-irmaos no canvas, mas suas coordenadas sao
+  // relativas a esta caixa (ver loop-inline-bodies.ts).
+  const isInlineLoopContainer = type === "loop" && nodeData.body_mode === "inline"
+  const containerWidth = isInlineLoopContainer ? 460 : 260
+  const containerStyle: React.CSSProperties = isInlineLoopContainer
+    ? { width: containerWidth, minHeight: 320 }
+    : { width: containerWidth }
+
   // ── Render ───────────────────────────────────────────────────────────────
   return (
     <div
@@ -346,9 +357,10 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
         !enabled && "is-disabled",
         isPending && "is-pending",
         !isPending && statusMeta.cls,
+        isInlineLoopContainer && "wf-node--container",
       )}
       data-tone={tone}
-      style={{ width: 260 }}
+      style={containerStyle}
     >
       <div className="wf-node__aura" />
       <div className="wf-node__corner" />
@@ -559,7 +571,7 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
                       : undefined
                   }
                 >
-                  <Loader2 className="size-2.5 animate-spin" />
+                  <MorphLoader className="size-2.5" />
                   executando
                   {execState.progress && execState.progress.total > 0 && (
                     <span className="opacity-80">
@@ -666,6 +678,22 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
           )}
         </div>
       </div>
+
+      {/* ── Inline loop body area ──────────────────────────────────────── */}
+      {/* Visualmente delimita a area onde os nos-filho aparecem. Os filhos
+          em si NAO sao renderizados aqui — React Flow os renderiza como
+          nos-irmaos com posicao relativa ao container. Esta area e
+          puramente decorativa para indicar a fronteira do corpo. */}
+      {isInlineLoopContainer && (
+        <div
+          className="pointer-events-none relative z-0 mx-3 mb-3 mt-1 flex-1 rounded-lg border border-dashed border-slate-300/80 bg-slate-50/40 dark:border-slate-700/70 dark:bg-slate-900/30"
+          style={{ minHeight: 200 }}
+        >
+          <div className="absolute left-2 top-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+            corpo do loop
+          </div>
+        </div>
+      )}
 
       {/* ── Handles ────────────────────────────────────────────────────── */}
       {!isTrigger && (

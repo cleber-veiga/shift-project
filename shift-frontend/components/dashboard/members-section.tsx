@@ -5,7 +5,6 @@ import { useRegisterAIContext } from "@/lib/context/ai-context"
 import type { AIContext } from "@/lib/types/ai-context"
 import {
   Clock,
-  Loader2,
   MailPlus,
   MoreHorizontal,
   RefreshCw,
@@ -16,6 +15,7 @@ import {
   Users,
   X,
 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { useDashboard } from "@/lib/context/dashboard-context"
 import { useToast } from "@/lib/context/toast-context"
 import {
@@ -352,7 +352,7 @@ export function MembersSection({ scope }: MembersSectionProps) {
 
         {loading ? (
           <div className="flex h-32 items-center justify-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" /> Carregando membros...
+            <MorphLoader className="size-4" /> Carregando membros...
           </div>
         ) : (
           <div className="space-y-4">
@@ -416,7 +416,7 @@ export function MembersSection({ scope }: MembersSectionProps) {
                               className="rounded p-1.5 text-emerald-500 transition-colors hover:bg-emerald-500/10 disabled:opacity-50"
                             >
                               {savingRole ? (
-                                <Loader2 className="size-3.5 animate-spin" />
+                                <MorphLoader className="size-3.5" />
                               ) : (
                                 <Shield className="size-3.5" />
                               )}
@@ -510,7 +510,7 @@ export function MembersSection({ scope }: MembersSectionProps) {
                               title="Reenviar convite"
                             >
                               {actionInvId === inv.id ? (
-                                <Loader2 className="size-3.5 animate-spin" />
+                                <MorphLoader className="size-3.5" />
                               ) : (
                                 <RefreshCw className="size-3.5" />
                               )}

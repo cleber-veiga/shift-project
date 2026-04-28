@@ -567,7 +567,7 @@ export function CronConfig({ data, onUpdate }: CronConfigProps) {
             )}
           </div>
           <p className="text-[11px] text-muted-foreground">
-            O Prefect dispara no fuso{" "}
+            O agendador dispara no fuso{" "}
             <code className="font-mono text-foreground">{form.timezone}</code>.
             A lista acima converte para a sua hora local.
           </p>

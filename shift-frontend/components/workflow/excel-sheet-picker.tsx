@@ -15,7 +15,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react"
-import { Loader2 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { listExcelSheets } from "@/lib/auth"
 
 const VARS_RE = /\{\{\s*vars\./
@@ -167,7 +167,7 @@ export function ExcelSheetPicker({
   if (loading) {
     return (
       <div className="flex h-9 items-center gap-2 rounded-md border border-input bg-muted/20 px-3 text-xs text-muted-foreground">
-        <Loader2 className="size-3 animate-spin" />
+        <MorphLoader className="size-3" />
         Lendo abas do arquivo…
       </div>
     )

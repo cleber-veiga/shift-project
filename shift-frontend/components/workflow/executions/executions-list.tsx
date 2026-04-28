@@ -13,6 +13,7 @@ import {
   Webhook,
   XCircle,
 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import { formatDuration, formatRelative } from "@/lib/format"
 import type {
@@ -41,7 +42,7 @@ function statusIcon(status: ExecutionStatus) {
     case "CRASHED":
       return <XCircle className="size-4 text-red-500" />
     case "RUNNING":
-      return <Loader2 className="size-4 animate-spin text-blue-500" />
+      return <MorphLoader className="size-4 text-blue-500" />
     case "PENDING":
       return <Loader2 className="size-4 text-amber-500" />
     case "CANCELLED":
@@ -84,7 +85,7 @@ export function ExecutionsList({
       <div className="min-h-0 flex-1 overflow-auto">
         {loading && items.length === 0 && (
           <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-            <Loader2 className="mr-2 size-4 animate-spin" />
+            <MorphLoader className="mr-2 size-4" />
             Carregando execuções…
           </div>
         )}

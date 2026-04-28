@@ -1,8 +1,17 @@
 """
-Processador do no ``loop`` — iteracao sobre dataset chamando sub-workflow.
+Processador do no ``loop`` — iteracao sobre dataset.
 
-Para cada item do dataset upstream, invoca a ``WorkflowVersion`` publicada
-indicada em ``workflow_id`` + ``workflow_version``.
+Dois modos de corpo de iteracao:
+
+- ``body_mode='external'`` (padrao): para cada item, invoca a
+  ``WorkflowVersion`` publicada em ``workflow_id`` + ``workflow_version``.
+  Mantem-se compativel com workflows existentes (sem ``body_mode`` cai
+  aqui).
+- ``body_mode='inline'``: o corpo do loop e um subgrafo embutido em
+  ``body = {nodes, edges}`` no proprio ``data`` do no. A cada iteracao,
+  o subgrafo roda via ``run_workflow`` recebendo ``item`` e ``idx`` no
+  ``input_data``. Ideal pra "rodar 1-2 nos por item" sem precisar
+  publicar um sub-workflow separado.
 
 Modos de mapeamento de inputs
 -----------------------------
@@ -56,7 +65,7 @@ import concurrent.futures
 import time
 from datetime import datetime, timezone
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import duckdb
 
@@ -68,6 +77,138 @@ from app.data_pipelines.duckdb_storage import (
 from app.services.workflow.nodes import BaseNodeProcessor, register_processor
 from app.services.workflow.nodes.exceptions import NodeProcessingError
 from app.services.workflow.nodes.sub_workflow import _invoke_subworkflow
+
+_BODY_MODE_EXTERNAL = "external"
+_BODY_MODE_INLINE = "inline"
+_BODY_MODES = (_BODY_MODE_EXTERNAL, _BODY_MODE_INLINE)
+
+
+# Tipos que NUNCA podem aparecer dentro de um body inline.
+# Triggers nao fazem sentido (cada iteracao nao e um trigger), nem
+# ``loop`` aninhado (proibido por contrato), nem ``workflow_input/output``
+# (essas sao convencoes de sub-workflow externo).
+_BODY_FORBIDDEN_NODE_TYPES = frozenset({
+    "loop",
+    "manual_trigger",
+    "cron_trigger",
+    "schedule_trigger",
+    "webhook_trigger",
+    "polling_trigger",
+    "api_input_node",
+    "workflow_input",
+    "workflow_output",
+    # Variantes legadas de tipo no campo "type" do React Flow:
+    "triggerNode",
+})
+
+
+def validate_loop_inline_bodies(definition: dict[str, Any]) -> list[str]:
+    """Valida estruturalmente todos os ``body`` de loops inline na definition.
+
+    Roda contra ``definition`` antes de publicar uma WorkflowVersion (ou em
+    qualquer outro caminho que queira detectar problemas cedo). Retorna
+    lista de mensagens de erro — vazia significa OK.
+
+    Verifica:
+    - body.nodes nao-vazio.
+    - Nenhum tipo proibido (triggers, loop aninhado, workflow_input/output).
+    - Nenhum no com mesmo id repetido dentro do body.
+    - Edges referenciam apenas ids do proprio body (sem cruzar fronteira).
+    - body.nodes nao contem outro nó loop em modo inline (segunda checagem
+      explicita; redundante com a regra acima mas com mensagem dedicada).
+    """
+    errors: list[str] = []
+    if not isinstance(definition, dict):
+        return errors
+
+    nodes = definition.get("nodes") or []
+    if not isinstance(nodes, list):
+        return errors
+
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id") or "?")
+        node_data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        # ``loop`` no Shift e identificado por ``data.type == 'loop'`` ou
+        # pelo campo ``type`` no nivel do node — cobrir ambos.
+        is_loop = (
+            (node.get("type") or "").lower() == "loop"
+            or (node_data.get("type") or "").lower() == "loop"
+        )
+        if not is_loop:
+            continue
+        body_mode = str(node_data.get("body_mode") or _BODY_MODE_EXTERNAL).lower()
+        if body_mode != _BODY_MODE_INLINE:
+            continue
+        body = node_data.get("body")
+        if not isinstance(body, dict):
+            errors.append(
+                f"Loop '{node_id}': body inline ausente ou invalido."
+            )
+            continue
+        body_nodes = body.get("nodes") or []
+        body_edges = body.get("edges") or []
+        if not isinstance(body_nodes, list) or not body_nodes:
+            errors.append(
+                f"Loop '{node_id}': body.nodes deve ser uma lista nao-vazia."
+            )
+            continue
+        if not isinstance(body_edges, list):
+            errors.append(
+                f"Loop '{node_id}': body.edges deve ser uma lista."
+            )
+            body_edges = []
+
+        body_ids: set[str] = set()
+        for child in body_nodes:
+            if not isinstance(child, dict):
+                continue
+            child_id = str(child.get("id") or "")
+            if not child_id:
+                errors.append(
+                    f"Loop '{node_id}': no filho sem 'id'."
+                )
+                continue
+            if child_id in body_ids:
+                errors.append(
+                    f"Loop '{node_id}': id '{child_id}' duplicado no body."
+                )
+            body_ids.add(child_id)
+
+            child_data = child.get("data") if isinstance(child.get("data"), dict) else {}
+            child_type = str(
+                child.get("type")
+                or child_data.get("type")
+                or ""
+            ).strip()
+            child_data_type = str(child_data.get("type") or "").strip()
+            forbidden_hits = (
+                {child_type, child_data_type} & _BODY_FORBIDDEN_NODE_TYPES
+            )
+            if forbidden_hits:
+                errors.append(
+                    f"Loop '{node_id}': filho '{child_id}' usa tipo proibido em "
+                    f"corpo inline: {sorted(forbidden_hits)[0]}."
+                )
+
+        for edge in body_edges:
+            if not isinstance(edge, dict):
+                continue
+            src = str(edge.get("source") or "")
+            tgt = str(edge.get("target") or "")
+            if src and src not in body_ids:
+                errors.append(
+                    f"Loop '{node_id}': edge referencia source '{src}' fora "
+                    "do body inline."
+                )
+            if tgt and tgt not in body_ids:
+                errors.append(
+                    f"Loop '{node_id}': edge referencia target '{tgt}' fora "
+                    "do body inline."
+                )
+
+    return errors
 
 
 _CHUNK_SIZE = 1000
@@ -181,22 +322,62 @@ class LoopProcessor(BaseNodeProcessor):
             )
         input_mapping: dict[str, Any] = {str(k): v for k, v in raw_mapping.items()}
 
-        # Com input_mapping, item_param_name deixa de ser obrigatorio.
-        required = ("source_field", "workflow_id")
-        if not input_mapping:
-            required = required + ("item_param_name",)
-        for key in required:
-            if not config.get(key):
-                raise NodeProcessingError(
-                    f"No loop '{node_id}': '{key}' e obrigatorio."
-                )
-
-        try:
-            workflow_id = UUID(str(config["workflow_id"]))
-        except (TypeError, ValueError) as exc:
+        body_mode = str(config.get("body_mode") or _BODY_MODE_EXTERNAL).lower()
+        if body_mode not in _BODY_MODES:
             raise NodeProcessingError(
-                f"No loop '{node_id}': workflow_id invalido."
-            ) from exc
+                f"No loop '{node_id}': body_mode invalido '{body_mode}'."
+            )
+
+        if body_mode == _BODY_MODE_EXTERNAL:
+            # Com input_mapping, item_param_name deixa de ser obrigatorio.
+            required = ("source_field", "workflow_id")
+            if not input_mapping:
+                required = required + ("item_param_name",)
+            for key in required:
+                if not config.get(key):
+                    raise NodeProcessingError(
+                        f"No loop '{node_id}': '{key}' e obrigatorio."
+                    )
+            try:
+                workflow_id: UUID | None = UUID(str(config["workflow_id"]))
+            except (TypeError, ValueError) as exc:
+                raise NodeProcessingError(
+                    f"No loop '{node_id}': workflow_id invalido."
+                ) from exc
+            body_payload: dict[str, Any] | None = None
+            output_mapping: dict[str, Any] = {}
+        else:
+            # Modo inline: body obrigatorio, workflow_id ignorado.
+            if not config.get("source_field"):
+                raise NodeProcessingError(
+                    f"No loop '{node_id}': 'source_field' e obrigatorio."
+                )
+            raw_body = config.get("body")
+            if not isinstance(raw_body, dict):
+                raise NodeProcessingError(
+                    f"No loop '{node_id}': 'body' deve ser um dict {{nodes, edges}} "
+                    "no modo inline."
+                )
+            body_nodes = raw_body.get("nodes") or []
+            body_edges = raw_body.get("edges") or []
+            if not isinstance(body_nodes, list) or not body_nodes:
+                raise NodeProcessingError(
+                    f"No loop '{node_id}': 'body.nodes' deve ser uma lista nao-vazia "
+                    "no modo inline."
+                )
+            if not isinstance(body_edges, list):
+                raise NodeProcessingError(
+                    f"No loop '{node_id}': 'body.edges' deve ser uma lista."
+                )
+            workflow_id = None
+            body_payload = {"nodes": list(body_nodes), "edges": list(body_edges)}
+
+            raw_out = config.get("output_mapping") or {}
+            if not isinstance(raw_out, dict):
+                raise NodeProcessingError(
+                    f"No loop '{node_id}': output_mapping deve ser um dict."
+                )
+            output_mapping = {str(k): v for k, v in raw_out.items()}
 
         mode = str(config.get("mode") or "sequential").lower()
         if mode not in ("sequential", "parallel"):
@@ -228,7 +409,16 @@ class LoopProcessor(BaseNodeProcessor):
                 f"No loop '{node_id}': extra_inputs deve ser um dict."
             )
 
+        # Nomes das chaves injetadas no input_data do corpo inline.
+        item_input_name = str(config.get("iteration_input_name") or "item")
+        index_input_name = str(config.get("iteration_index_name") or "idx")
+
         return {
+            "body_mode": body_mode,
+            "body": body_payload,
+            "output_mapping": output_mapping,
+            "iteration_input_name": item_input_name,
+            "iteration_index_name": index_input_name,
             "source_field": config["source_field"],
             "workflow_id": workflow_id,
             "workflow_version": config.get("workflow_version", "latest"),
@@ -424,22 +614,43 @@ async def _run_iterations(
                 inputs[name] = processor.resolve_data(tmpl, iter_ctx)
         else:
             inputs = dict(base_inputs)
-            inputs[cfg["item_param_name"]] = item
-            if cfg["index_param_name"]:
-                inputs[cfg["index_param_name"]] = idx
+            if cfg["body_mode"] == _BODY_MODE_EXTERNAL:
+                # No modo external precisamos respeitar item_param_name/
+                # index_param_name (legado). No modo inline o item/idx
+                # entram diretamente via _invoke_inline_body.
+                inputs[cfg["item_param_name"]] = item
+                if cfg["index_param_name"]:
+                    inputs[cfg["index_param_name"]] = idx
         try:
             parent_vars = context.get("vars") if isinstance(context, dict) else None
-            sub = await _invoke_subworkflow(
-                node_id=node_id,
-                target_workflow_id=cfg["workflow_id"],
-                version_spec=cfg["workflow_version"],
-                mapped_inputs=inputs,
-                parent_vars=dict(parent_vars) if isinstance(parent_vars, dict) else None,
-                call_stack=call_stack,
-                timeout_seconds=cfg["timeout_seconds"],
-                in_loop=True,
-            )
-            results[idx] = sub["workflow_output"]
+            if cfg["body_mode"] == _BODY_MODE_INLINE:
+                iter_output = await _invoke_inline_body(
+                    node_id=node_id,
+                    body=cfg["body"],
+                    item=item,
+                    idx=idx,
+                    mapped_inputs=inputs,
+                    output_mapping=cfg["output_mapping"],
+                    iteration_input_name=cfg["iteration_input_name"],
+                    iteration_index_name=cfg["iteration_index_name"],
+                    parent_context=context,
+                    call_stack=call_stack,
+                    timeout_seconds=cfg["timeout_seconds"],
+                    processor=processor,
+                )
+                results[idx] = iter_output
+            else:
+                sub = await _invoke_subworkflow(
+                    node_id=node_id,
+                    target_workflow_id=cfg["workflow_id"],
+                    version_spec=cfg["workflow_version"],
+                    mapped_inputs=inputs,
+                    parent_vars=dict(parent_vars) if isinstance(parent_vars, dict) else None,
+                    call_stack=call_stack,
+                    timeout_seconds=cfg["timeout_seconds"],
+                    in_loop=True,
+                )
+                results[idx] = sub["workflow_output"]
             succeeded_count += 1
         except Exception as exc:  # noqa: BLE001 — propagado via politica
             if cfg["on_item_error"] == "fail_fast":
@@ -528,3 +739,124 @@ def _build_output(
         "output_field": output_field,
         output_field: payload,
     }
+
+
+async def _invoke_inline_body(
+    *,
+    node_id: str,
+    body: dict[str, Any],
+    item: dict[str, Any],
+    idx: int,
+    mapped_inputs: dict[str, Any],
+    output_mapping: dict[str, Any],
+    iteration_input_name: str,
+    iteration_index_name: str,
+    parent_context: dict[str, Any],
+    call_stack: list[str],
+    timeout_seconds: int,
+    processor: BaseNodeProcessor,
+) -> dict[str, Any]:
+    """Executa o subgrafo embutido como corpo de uma iteracao.
+
+    Estrategia: reaproveita ``run_workflow`` passando o subgrafo como
+    payload arbitrario. Cada iteracao paga seu proprio
+    ``execution_id`` (isola arquivos DuckDB) e roda com ``in_loop=True``
+    (bloqueia loops aninhados via guard ja existente).
+
+    O ``input_data`` do sub-run carrega ``item`` e ``idx`` em chaves
+    configuraveis (``iteration_input_name``/``iteration_index_name``)
+    alem de quaisquer ``mapped_inputs`` resolvidos pelo input_mapping.
+
+    Saida da iteracao: combina o ``workflow_output`` acumulado pelos
+    nos ``workflow_output`` (se houver) com os campos resolvidos via
+    ``output_mapping`` (templates contra os ``upstream_results`` do
+    sub-run). ``output_mapping`` tem precedencia em caso de conflito.
+    """
+    # Lazy import: evita ciclo loop -> dynamic_runner -> processors -> loop.
+    from app.orchestration.flows.dynamic_runner import run_workflow
+
+    if not isinstance(body, dict):
+        raise NodeProcessingError(
+            f"No loop '{node_id}': body inline ausente."
+        )
+
+    body_inputs = dict(mapped_inputs)
+    body_inputs.setdefault(iteration_input_name, item)
+    body_inputs.setdefault(iteration_index_name, idx)
+
+    parent_input_data = parent_context.get("input_data") if isinstance(parent_context, dict) else None
+    if isinstance(parent_input_data, dict):
+        # Mantem inputs do workflow pai acessiveis (ex.: parametros do
+        # call_workflow externo). Item/idx tem precedencia.
+        merged = dict(parent_input_data)
+        merged.update(body_inputs)
+        body_inputs = merged
+
+    parent_vars = parent_context.get("vars") if isinstance(parent_context, dict) else None
+    resolved_connections = (
+        parent_context.get("_resolved_connections")
+        if isinstance(parent_context, dict)
+        else None
+    )
+    workspace_id = parent_context.get("workspace_id") if isinstance(parent_context, dict) else None
+    parent_mode = parent_context.get("mode") if isinstance(parent_context, dict) else "production"
+
+    sub_execution_id = f"loop-inline-{node_id}-{idx}-{uuid4()}"
+
+    try:
+        sub_result = await asyncio.wait_for(
+            run_workflow(
+                workflow_payload={
+                    "nodes": body.get("nodes", []),
+                    "edges": body.get("edges", []),
+                },
+                # NAO passar workflow_id: evita ciclo "self-call" no guard
+                # de call_stack (o subgrafo NAO e outro workflow, e parte
+                # deste mesmo run logico).
+                workflow_id=None,
+                triggered_by="loop_inline",
+                input_data=body_inputs,
+                execution_id=sub_execution_id,
+                resolved_connections=dict(resolved_connections) if isinstance(resolved_connections, dict) else None,
+                variable_values=dict(parent_vars) if isinstance(parent_vars, dict) else None,
+                mode=parent_mode if isinstance(parent_mode, str) else "production",
+                call_stack=call_stack,
+                in_loop=True,
+                workspace_id=workspace_id if isinstance(workspace_id, str) else None,
+            ),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        raise NodeProcessingError(
+            f"No loop '{node_id}' (inline, idx={idx}): corpo excedeu "
+            f"{timeout_seconds}s."
+        ) from exc
+
+    status = sub_result.get("status")
+    if status != "completed":
+        raise NodeProcessingError(
+            f"No loop '{node_id}' (inline, idx={idx}): corpo retornou status "
+            f"'{status}': {sub_result.get('error') or sub_result.get('reason') or ''}"
+        )
+
+    iteration_output: dict[str, Any] = {}
+    accumulated = sub_result.get("workflow_output")
+    if isinstance(accumulated, dict):
+        iteration_output.update(accumulated)
+
+    if output_mapping:
+        # Resolve templates contra os resultados internos do sub-run +
+        # item/idx, permitindo capturar campos sem precisar de um no
+        # ``workflow_output`` no body.
+        resolve_ctx = {
+            "input_data": body_inputs,
+            "upstream_results": sub_result.get("node_results") or {},
+            "_all_results": sub_result.get("node_results") or {},
+            "item": item,
+            "idx": idx,
+            "vars": parent_vars if isinstance(parent_vars, dict) else {},
+        }
+        for name, tmpl in output_mapping.items():
+            iteration_output[name] = processor.resolve_data(tmpl, resolve_ctx)
+
+    return iteration_output

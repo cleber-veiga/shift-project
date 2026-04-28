@@ -10,7 +10,6 @@ import {
   Copy,
   DatabaseZap,
   GitCompareArrows,
-  Loader2,
   Play,
   Sparkles,
   Square,
@@ -20,6 +19,7 @@ import {
   XCircle,
   Zap,
 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import { formatDateTime, formatDuration } from "@/lib/format"
 import { getNodeIcon } from "@/lib/workflow/node-icons"
@@ -101,7 +101,7 @@ function nodeStatusIcon(status: NodeExecution["status"]) {
     case "error":
       return <XCircle className="size-3.5 text-red-500" />
     case "running":
-      return <Loader2 className="size-3.5 animate-spin text-blue-500" />
+      return <MorphLoader className="size-3.5 text-blue-500" />
     case "skipped":
       return <Square className="size-3.5 text-zinc-400" />
     default:
@@ -235,7 +235,7 @@ export function ExecutionsDetail({
   if (loading && !detail) {
     return (
       <div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">
-        <Loader2 className="mr-2 size-4 animate-spin" />
+        <MorphLoader className="mr-2 size-4" />
         Carregando…
       </div>
     )

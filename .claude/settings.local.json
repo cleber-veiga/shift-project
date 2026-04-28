@@ -550,7 +550,18 @@
       "PowerShell($ErrorActionPreference='Stop'; $tokens = $null; $errs = $null; [System.Management.Automation.PSParser]::Tokenize\\(\\(Get-Content -Raw 'D:\\\\Labs\\\\shift-project\\\\scripts\\\\build-and-publish.ps1'\\), [ref]$errs\\) | Out-Null; if \\($errs.Count -gt 0\\) { Write-Output \"ERROS:\"; $errs | ForEach-Object { Write-Output $_ } } else { Write-Output \"[OK] Sintaxe valida\" })",
       "Bash(DATABASE_URL=test docker compose config --quiet)",
       "Bash(DATABASE_URL=test docker compose --profile firebird-legacy config --quiet)",
-      "Bash(DATABASE_URL=test docker compose --profile firebird-legacy config --services)"
+      "Bash(DATABASE_URL=test docker compose --profile firebird-legacy config --services)",
+      "Bash(node --eval ' *)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/services/workflow/nodes/loop.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/orchestration/flows/dynamic_runner.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -m pytest tests/test_loop_node.py -x -q)",
+      "Bash(python -m pytest tests/ -x -q --ignore=tests/test_loop_node.py -k \"workflow or loop or sub\")",
+      "Bash(python -m pytest tests/test_bulk_composite_parameter_value.py --collect-only)",
+      "Bash(python -m pytest tests/ -q --ignore=tests/test_bulk_composite_parameter_value.py -k \"loop or sub or workflow_version\")",
+      "Bash(grep -E \"\\\\.tsx?$\")",
+      "Bash(npx vitest *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3000/)",
+      "Bash(grep -n \"createManualInputFromClipboard\\\\|parse.*tabular\\\\|TSV\\\\|tsv\\\\|split.*\\\\\\\\\\\\\\\\t\" /d/Labs/Flowfile/flowfile_frontend/src/renderer/app/components/nodes/node-types/elements/manualInput/manualInputLogic.ts /d/Labs/Flowfile/flowfile_frontend/src/renderer/app/api/*.ts)"
     ]
   }
 }

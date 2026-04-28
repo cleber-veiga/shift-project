@@ -16,7 +16,8 @@
  */
 
 import { useEffect, useRef, useState } from "react"
-import { Loader2, FileText } from "lucide-react"
+import { FileText } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import {
   getWorkflow,
   listWorkspaceInputModels,
@@ -107,7 +108,7 @@ export function InputModelPicker({
     <div className="space-y-1">
       {loading && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Loader2 className="size-3 animate-spin" />
+          <MorphLoader className="size-3" />
           Carregando modelos…
         </div>
       )}

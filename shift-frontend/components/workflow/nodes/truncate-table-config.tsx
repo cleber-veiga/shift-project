@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { AlertTriangle, ChevronDown, Database, Loader2, Search } from "lucide-react"
+import { AlertTriangle, ChevronDown, Database, Search } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import { useDashboard } from "@/lib/context/dashboard-context"
 import {
@@ -127,7 +128,7 @@ export function TruncateTableConfig({ data, onUpdate }: TruncateTableConfigProps
           >
             {connectionsLoading ? (
               <span className="flex items-center gap-2 text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" /> Carregando...
+                <MorphLoader className="size-3.5" /> Carregando...
               </span>
             ) : selectedConnection ? (
               <span className="flex items-center gap-2">
@@ -195,7 +196,7 @@ export function TruncateTableConfig({ data, onUpdate }: TruncateTableConfigProps
             >
               {tablesLoading ? (
                 <span className="flex items-center gap-2 text-muted-foreground">
-                  <Loader2 className="size-3.5 animate-spin" /> Carregando tabelas...
+                  <MorphLoader className="size-3.5" /> Carregando tabelas...
                 </span>
               ) : selectedTable ? (
                 <span className="flex items-center gap-2">

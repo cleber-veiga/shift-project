@@ -1,7 +1,8 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { AlertTriangle, CheckCircle2, DatabaseZap, Loader2, Square, X, XCircle } from "lucide-react"
+import { AlertTriangle, CheckCircle2, DatabaseZap, Square, X, XCircle } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import { getNodeDefinition } from "@/lib/workflow/types"
 import { getNodeIcon } from "@/lib/workflow/node-icons"
@@ -161,7 +162,7 @@ export function ExecutionPanel({ events, isRunning, onAbort, onClose, libraryOpe
         <div className="flex items-center gap-2">
           {isRunning ? (
             <>
-              <Loader2 className="size-3.5 animate-spin text-amber-500" />
+              <MorphLoader className="size-3.5 text-amber-500" />
               <span className="text-xs font-semibold">Executando…</span>
             </>
           ) : completeEvent ? (
@@ -274,7 +275,7 @@ function NodeListItem({
         {/* Status icon */}
         <div className="shrink-0">
           {node.status === "running" && (
-            <Loader2 className="size-3.5 animate-spin text-amber-500" />
+            <MorphLoader className="size-3.5 text-amber-500" />
           )}
           {node.status === "success" && (
             <CheckCircle2 className="size-3.5 text-emerald-500" />
@@ -309,7 +310,7 @@ function NodeDetail({ node }: { node: NodeState }) {
   if (node.status === "running") {
     return (
       <div className="flex flex-1 items-center justify-center gap-2 text-xs text-muted-foreground">
-        <Loader2 className="size-3.5 animate-spin" />
+        <MorphLoader className="size-3.5" />
         Executando…
       </div>
     )

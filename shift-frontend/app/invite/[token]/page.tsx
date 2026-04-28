@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
-import { Loader2, ShieldAlert, UserPlus, XCircle } from "lucide-react"
+import { ShieldAlert, UserPlus, XCircle } from "lucide-react"
 import {
   acceptInvitation,
   getInvitationByToken,
@@ -125,7 +125,7 @@ export default function InvitePage() {
               color: "#6b7280",
             }}
           >
-            <Loader2 className="size-5 animate-spin" /> Carregando convite...
+            <MorphLoader className="size-5" /> Carregando convite...
           </div>
         ) : null}
 

@@ -4,12 +4,12 @@ import { useCallback, useEffect, useState } from "react"
 import {
   BanIcon,
   KeyRound,
-  Loader2,
   Plus,
   Search,
   ShieldCheck,
   Trash2,
 } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { useDashboard } from "@/lib/context/dashboard-context"
 import { useToast } from "@/lib/context/toast-context"
 import { hasWorkspacePermission } from "@/lib/permissions"
@@ -226,7 +226,7 @@ export function AgentKeysSection() {
 
         {loading ? (
           <div className="flex h-32 items-center justify-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" /> Carregando chaves...
+            <MorphLoader className="size-4" /> Carregando chaves...
           </div>
         ) : filtered.length === 0 ? (
           <div className="flex h-32 items-center justify-center rounded-xl border border-dashed border-border bg-card">

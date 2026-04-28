@@ -11,7 +11,6 @@ import {
   Clock,
   Database,
   FlaskConical,
-  Loader2,
   MessageSquare,
   Play,
   RefreshCw,
@@ -760,7 +759,7 @@ export default function PlaygroundPage({ params }: PageProps) {
                 disabled={executing || !query.trim()}
                 className="inline-flex h-7 items-center gap-2 rounded-md bg-primary px-3.5 text-xs font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
               >
-                {executing ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" />}
+                {executing ? <MorphLoader className="size-3.5" /> : <Play className="size-3.5" />}
                 Run
               </button>
               <span className="text-[11px] text-muted-foreground">
@@ -916,7 +915,7 @@ export default function PlaygroundPage({ params }: PageProps) {
                 disabled={!editName.trim() || !editSql.trim() || editSaving}
                 className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
               >
-                {editSaving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
+                {editSaving ? <MorphLoader className="size-3.5" /> : <Save className="size-3.5" />}
                 Salvar alterações
               </button>
             </div>
@@ -983,7 +982,7 @@ export default function PlaygroundPage({ params }: PageProps) {
                 disabled={!saveName.trim() || saving}
                 className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
               >
-                {saving ? <Loader2 className="size-3.5 animate-spin" /> : <Save className="size-3.5" />}
+                {saving ? <MorphLoader className="size-3.5" /> : <Save className="size-3.5" />}
                 Salvar
               </button>
             </div>

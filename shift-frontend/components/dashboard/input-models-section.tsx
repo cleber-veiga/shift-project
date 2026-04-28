@@ -8,7 +8,6 @@ import {
   FileSpreadsheet,
   Grid2X2,
   List,
-  Loader2,
   Pencil,
   Plus,
   Search,

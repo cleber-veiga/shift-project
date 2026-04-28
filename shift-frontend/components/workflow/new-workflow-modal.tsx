@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
-import { AlertCircle, ArrowRight, DatabaseZap, Loader2, Settings2, X } from "lucide-react"
+import { AlertCircle, ArrowRight, DatabaseZap, Settings2, X } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import { useDashboard } from "@/lib/context/dashboard-context"
 import { listWorkspacePlayers, createWorkflow, type WorkspacePlayer } from "@/lib/auth"
@@ -168,11 +169,11 @@ export function NewWorkflowModal({ open, onOpenChange }: NewWorkflowModalProps) 
       onClick={() => onOpenChange(false)}
     >
       <div
-        className="w-[min(580px,96vw)] rounded-2xl border border-border bg-card shadow-2xl"
+        className="flex max-h-[90vh] w-[min(580px,96vw)] flex-col rounded-2xl border border-border bg-card shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-border px-6 py-5">
+        <div className="flex shrink-0 items-center justify-between border-b border-border px-6 py-5">
           <div>
             <h2 className="text-base font-semibold text-foreground">Criar Novo Fluxo</h2>
             <p className="mt-0.5 text-xs text-muted-foreground">
@@ -189,7 +190,7 @@ export function NewWorkflowModal({ open, onOpenChange }: NewWorkflowModalProps) 
         </div>
 
         {/* Body */}
-        <div className="space-y-5 px-6 py-5">
+        <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
 
           {/* Type selector */}
           <div className="space-y-2">
@@ -253,7 +254,7 @@ export function NewWorkflowModal({ open, onOpenChange }: NewWorkflowModalProps) 
 
               {playersLoading ? (
                 <div className="flex h-16 items-center justify-center gap-2 rounded-xl border border-dashed border-border text-xs text-muted-foreground">
-                  <Loader2 className="size-3.5 animate-spin" />
+                  <MorphLoader className="size-3.5" />
                   Carregando sistemas...
                 </div>
               ) : players.length === 0 ? (
@@ -410,7 +411,7 @@ export function NewWorkflowModal({ open, onOpenChange }: NewWorkflowModalProps) 
         </div>
 
         {/* Footer */}
-        <div className="border-t border-border px-6 py-4">
+        <div className="shrink-0 border-t border-border px-6 py-4">
           {error && (
             <p className="mb-3 text-xs text-destructive">{error}</p>
           )}
@@ -434,7 +435,7 @@ export function NewWorkflowModal({ open, onOpenChange }: NewWorkflowModalProps) 
                   : "cursor-not-allowed bg-muted text-muted-foreground"
               )}
             >
-              {creating && <Loader2 className="size-3.5 animate-spin" />}
+              {creating && <MorphLoader className="size-3.5" />}
               Criar
               {!creating && <ArrowRight className="size-3.5" />}
             </button>

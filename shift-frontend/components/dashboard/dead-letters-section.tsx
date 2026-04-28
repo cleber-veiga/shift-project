@@ -1,7 +1,8 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { AlertTriangle, CheckCircle2, Loader2, RefreshCw, Search } from "lucide-react"
+import { AlertTriangle, CheckCircle2, RefreshCw, Search } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { useDashboard } from "@/lib/context/dashboard-context"
 import { useToast } from "@/lib/context/toast-context"
 import { hasWorkspacePermission } from "@/lib/permissions"
@@ -152,7 +153,7 @@ export function DeadLettersSection() {
 
       {loading ? (
         <div className="flex h-32 items-center justify-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" /> Carregando dead-letters…
+          <MorphLoader className="size-4" /> Carregando dead-letters…
         </div>
       ) : filtered.length === 0 ? (
         <div className="flex h-40 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-card/60">
@@ -219,7 +220,7 @@ export function DeadLettersSection() {
                           className="inline-flex items-center gap-1 rounded bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
                         >
                           {isRetrying ? (
-                            <Loader2 className="size-3 animate-spin" />
+                            <MorphLoader className="size-3" />
                           ) : (
                             <RefreshCw className="size-3" />
                           )}

@@ -18,7 +18,7 @@ import pytest
 
 from app.services.workflow.nodes import loop as loop_mod
 from app.services.workflow.nodes.exceptions import NodeProcessingError
-from app.services.workflow.nodes.loop import LoopProcessor
+from app.services.workflow.nodes.loop import LoopProcessor, validate_loop_inline_bodies
 
 from tests.conftest import create_duckdb_with_rows
 
@@ -379,3 +379,273 @@ class TestLargeDatasetStreams:
         result = LoopProcessor().process("loop1", cfg, ctx)
         assert result["iterations"] == 1500
         assert count == 1500
+
+
+# ---------------------------------------------------------------------------
+# Modo inline: corpo embutido (body_mode='inline')
+# ---------------------------------------------------------------------------
+
+
+_DEFAULT_INLINE_NODES = [{"id": "noop", "type": "stub", "data": {}}]
+
+
+def _inline_config(
+    *,
+    body_nodes: list[dict[str, Any]] | None = None,
+    body_edges: list[dict[str, Any]] | None = None,
+    source_field: str = "upstream_results.src.data",
+    mode: str = "sequential",
+    on_item_error: str = "fail_fast",
+    output_mapping: dict[str, Any] | None = None,
+    **overrides: Any,
+) -> dict[str, Any]:
+    cfg: dict[str, Any] = {
+        "body_mode": "inline",
+        "source_field": source_field,
+        "body": {
+            "nodes": body_nodes if body_nodes is not None else list(_DEFAULT_INLINE_NODES),
+            "edges": body_edges if body_edges is not None else [],
+        },
+        "mode": mode,
+        "on_item_error": on_item_error,
+        "output_field": "loop_result",
+    }
+    if output_mapping is not None:
+        cfg["output_mapping"] = output_mapping
+    cfg.update(overrides)
+    return cfg
+
+
+def _install_inline_mock(monkeypatch, impl):
+    """Substitui _invoke_inline_body para isolar do dynamic_runner."""
+    monkeypatch.setattr(loop_mod, "_invoke_inline_body", impl)
+
+
+class TestInlineModeBasics:
+    def test_passes_item_and_idx_to_inline_body(self, monkeypatch) -> None:
+        seen: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
+
+        async def fake_inline(**kwargs):
+            seen.append(
+                (kwargs["idx"], kwargs["item"], kwargs["mapped_inputs"])
+            )
+            return {"echoed": kwargs["item"]["i"], "_idx": kwargs["idx"]}
+
+        _install_inline_mock(monkeypatch, fake_inline)
+
+        ctx = _ctx_with_list([{"i": i} for i in range(4)])
+        cfg = _inline_config()
+
+        result = LoopProcessor().process("loop-inline", cfg, ctx)
+        assert result["iterations"] == 4
+        assert result["successes"] == 4
+        assert [s[0] for s in seen] == [0, 1, 2, 3]
+        assert [s[1]["i"] for s in seen] == [0, 1, 2, 3]
+        assert [r["echoed"] for r in result["loop_result"]["items"]] == [0, 1, 2, 3]
+
+    def test_inline_requires_body_with_nodes(self, monkeypatch) -> None:
+        ctx = _ctx_with_list([{"i": 0}])
+        cfg = _inline_config(body_nodes=[])
+        with pytest.raises(NodeProcessingError, match="body.nodes"):
+            LoopProcessor().process("loop-inline", cfg, ctx)
+
+    def test_inline_rejects_invalid_body_type(self, monkeypatch) -> None:
+        ctx = _ctx_with_list([{"i": 0}])
+        cfg = _inline_config()
+        cfg["body"] = "not-a-dict"
+        with pytest.raises(NodeProcessingError, match="body"):
+            LoopProcessor().process("loop-inline", cfg, ctx)
+
+
+class TestInlineModeFailFast:
+    def test_aborts_on_first_inline_error(self, monkeypatch) -> None:
+        calls: list[int] = []
+
+        async def fake_inline(**kwargs):
+            i = kwargs["item"]["i"]
+            calls.append(i)
+            if i == 2:
+                raise RuntimeError("boom inline")
+            return {"i": i}
+
+        _install_inline_mock(monkeypatch, fake_inline)
+
+        ctx = _ctx_with_list([{"i": i} for i in range(5)])
+        cfg = _inline_config(mode="sequential", on_item_error="fail_fast")
+
+        with pytest.raises(NodeProcessingError, match="boom inline"):
+            LoopProcessor().process("loop-inline", cfg, ctx)
+
+        assert max(calls) == 2
+
+
+class TestInlineModeCollect:
+    def test_collects_successes_and_failures(self, monkeypatch) -> None:
+        async def fake_inline(**kwargs):
+            i = kwargs["item"]["i"]
+            if i % 2 == 1:
+                raise RuntimeError(f"odd_{i}")
+            return {"i": i}
+
+        _install_inline_mock(monkeypatch, fake_inline)
+
+        ctx = _ctx_with_list([{"i": i} for i in range(6)])
+        cfg = _inline_config(on_item_error="collect")
+
+        result = LoopProcessor().process("loop-inline", cfg, ctx)
+        assert result["iterations"] == 6
+        assert result["successes"] == 3
+        assert result["failures"] == 3
+        payload = result["loop_result"]
+        assert [r["i"] for r in payload["successes"]] == [0, 2, 4]
+        assert {f["index"] for f in payload["failures"]} == {1, 3, 5}
+
+
+class TestInlineModeParallel:
+    def test_parallel_respects_max_in_inline(self, monkeypatch) -> None:
+        concurrent = 0
+        peak = 0
+
+        async def fake_inline(**kwargs):
+            nonlocal concurrent, peak
+            concurrent += 1
+            peak = max(peak, concurrent)
+            await asyncio.sleep(0.02)
+            concurrent -= 1
+            return {"i": kwargs["item"]["i"]}
+
+        _install_inline_mock(monkeypatch, fake_inline)
+
+        ctx = _ctx_with_list([{"i": i} for i in range(15)])
+        cfg = _inline_config(mode="parallel", max_parallelism=3)
+
+        result = LoopProcessor().process("loop-inline", cfg, ctx)
+        assert result["iterations"] == 15
+        assert peak <= 3
+
+
+class TestInlineModeReceivesContext:
+    def test_passes_resolved_connections_and_call_stack(self, monkeypatch) -> None:
+        captured: dict[str, Any] = {}
+
+        async def fake_inline(**kwargs):
+            captured.update(kwargs)
+            return {"ok": True}
+
+        _install_inline_mock(monkeypatch, fake_inline)
+
+        conns = {"conn-1": "postgres://stub"}
+        ctx = _ctx_with_list([{"i": 0}])
+        ctx["_resolved_connections"] = conns
+        ctx["call_stack"] = ["wf-A"]
+        ctx["vars"] = {"X": 1}
+
+        cfg = _inline_config(output_mapping={"value": "{{item.i}}"})
+        result = LoopProcessor().process("loop-inline", cfg, ctx)
+
+        assert result["iterations"] == 1
+        # call_stack e parent_context sao repassados ao inline body.
+        assert captured["call_stack"] == ["wf-A"]
+        assert captured["parent_context"]["_resolved_connections"] == conns
+        assert captured["output_mapping"] == {"value": "{{item.i}}"}
+
+
+# ---------------------------------------------------------------------------
+# Validacao estrutural pre-publicacao: validate_loop_inline_bodies
+# ---------------------------------------------------------------------------
+
+
+def _wrap_loop(body_nodes, body_edges, *, body_mode="inline") -> dict[str, Any]:
+    """Embrulha um body inline em uma definition com 1 nó loop."""
+    return {
+        "nodes": [
+            {
+                "id": "loop-1",
+                "type": "loop",
+                "data": {
+                    "type": "loop",
+                    "body_mode": body_mode,
+                    "body": {"nodes": body_nodes, "edges": body_edges},
+                    "source_field": "upstream_results.x.data",
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+
+class TestInlineBodyStaticValidation:
+    def test_accepts_valid_body(self) -> None:
+        defn = _wrap_loop(
+            [
+                {"id": "h", "type": "http_request", "data": {"type": "http_request"}},
+                {"id": "m", "type": "mapper", "data": {"type": "mapper"}},
+            ],
+            [{"source": "h", "target": "m"}],
+        )
+        assert validate_loop_inline_bodies(defn) == []
+
+    def test_rejects_empty_body_nodes(self) -> None:
+        defn = _wrap_loop([], [])
+        errs = validate_loop_inline_bodies(defn)
+        assert any("body.nodes" in e for e in errs)
+
+    def test_rejects_nested_loop_in_body(self) -> None:
+        defn = _wrap_loop(
+            [{"id": "inner", "type": "loop", "data": {"type": "loop"}}],
+            [],
+        )
+        errs = validate_loop_inline_bodies(defn)
+        assert any("loop" in e and "proibido" in e for e in errs)
+
+    def test_rejects_trigger_in_body(self) -> None:
+        defn = _wrap_loop(
+            [
+                {
+                    "id": "t",
+                    "type": "manual_trigger",
+                    "data": {"type": "manual_trigger"},
+                }
+            ],
+            [],
+        )
+        errs = validate_loop_inline_bodies(defn)
+        assert any("manual_trigger" in e and "proibido" in e for e in errs)
+
+    def test_rejects_workflow_input_in_body(self) -> None:
+        defn = _wrap_loop(
+            [
+                {
+                    "id": "w",
+                    "type": "workflow_input",
+                    "data": {"type": "workflow_input"},
+                }
+            ],
+            [],
+        )
+        errs = validate_loop_inline_bodies(defn)
+        assert any("workflow_input" in e for e in errs)
+
+    def test_rejects_edges_crossing_boundary(self) -> None:
+        defn = _wrap_loop(
+            [{"id": "h", "type": "http_request", "data": {"type": "http_request"}}],
+            [{"source": "h", "target": "outside-id"}],
+        )
+        errs = validate_loop_inline_bodies(defn)
+        assert any("fora do body inline" in e for e in errs)
+
+    def test_rejects_duplicate_child_ids(self) -> None:
+        defn = _wrap_loop(
+            [
+                {"id": "x", "type": "mapper", "data": {"type": "mapper"}},
+                {"id": "x", "type": "filter", "data": {"type": "filter"}},
+            ],
+            [],
+        )
+        errs = validate_loop_inline_bodies(defn)
+        assert any("duplicado" in e for e in errs)
+
+    def test_skips_external_loops_silently(self) -> None:
+        # Modo external nao precisa de body; validador deve ignorar.
+        defn = _wrap_loop([], [], body_mode="external")
+        assert validate_loop_inline_bodies(defn) == []

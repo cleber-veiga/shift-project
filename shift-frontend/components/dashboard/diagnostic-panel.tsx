@@ -1,6 +1,7 @@
 "use client"
 
-import { CircleCheck, CircleX, Loader2 } from "lucide-react"
+import { CircleCheck, CircleX } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import type { DiagnosticStep } from "@/lib/auth"
 
 const STAGE_LABELS: Record<DiagnosticStep["stage"], string> = {
@@ -73,7 +74,7 @@ export function DiagnosticPanel({ steps, running = false }: DiagnosticPanelProps
         })}
         {running && (
           <li className="flex items-center gap-1.5 px-1.5 py-0.5 text-muted-foreground">
-            <Loader2 className="size-3.5 animate-spin" aria-label="Em progresso" />
+            <MorphLoader className="size-3.5" aria-label="Em progresso" />
             <span>Aguardando próxima etapa…</span>
           </li>
         )}

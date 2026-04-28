@@ -1,6 +1,7 @@
 "use client"
 
-import { BanIcon, KeyRound, Loader2 } from "lucide-react"
+import { BanIcon, KeyRound } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import type { AgentApiKey } from "@/lib/auth"
 
 function formatDate(iso: string | null | undefined) {
@@ -95,7 +96,7 @@ export function ApiKeysList({ keys, isLoading, error, canManage, onRevoke }: Api
   if (isLoading) {
     return (
       <div className="flex h-32 items-center justify-center gap-2 text-sm text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" /> Carregando chaves...
+        <MorphLoader className="size-4" /> Carregando chaves...
       </div>
     )
   }

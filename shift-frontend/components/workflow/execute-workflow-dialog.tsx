@@ -2,7 +2,8 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
-import { ChevronDown, Eye, FileUp, Loader2, Play, X } from "lucide-react"
+import { ChevronDown, Eye, FileUp, Play, X } from "lucide-react"
+import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import {
   getVariablesSchema,
@@ -271,7 +272,7 @@ function VariableField({
           >
             {uploading ? (
               <>
-                <Loader2 className="size-5 animate-spin" />
+                <MorphLoader className="size-5" />
                 <span>Enviando...</span>
               </>
             ) : fileId ? (
@@ -459,7 +460,7 @@ export function ExecuteWorkflowDialog({
   if (!schema && !loadError) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[2px]">
-        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+        <MorphLoader className="size-6 text-muted-foreground" />
       </div>
     )
   }
