@@ -1,0 +1,421 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Shift Docs — tema alinhado com o design system da aplicação
+   Fonte: shift-frontend/app/globals.css
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* ── Tokens base (light) ──────────────────────────────────────────────────── */
+:root {
+  --shift-background: oklch(0.978 0.006 95);
+  --shift-foreground: oklch(0.215 0.018 255);
+  --shift-card: oklch(0.995 0.003 95);
+  --shift-card-foreground: oklch(0.215 0.018 255);
+  --shift-primary: oklch(0.4 0.08 255);
+  --shift-primary-foreground: oklch(0.985 0.004 95);
+  --shift-secondary: oklch(0.952 0.008 95);
+  --shift-muted: oklch(0.962 0.008 95);
+  --shift-muted-foreground: oklch(0.5 0.016 255);
+  --shift-accent: oklch(0.62 0.12 235);
+  --shift-accent-foreground: oklch(0.255 0.02 255);
+  --shift-border: oklch(0.89 0.01 95);
+  --shift-input: oklch(0.925 0.01 95);
+  --shift-ring: oklch(0.62 0.06 250);
+  --shift-success: oklch(0.55 0.2 145);
+  --shift-warning: oklch(0.7 0.18 80);
+  --shift-info: oklch(0.55 0.18 250);
+  --shift-destructive: oklch(0.55 0.22 27);
+  --shift-radius: 0.5rem;
+}
+
+/* ── Mapeamento Material → tokens Shift (light) ───────────────────────────── */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: var(--shift-primary);
+  --md-primary-fg-color--light: oklch(0.5 0.08 255);
+  --md-primary-fg-color--dark: oklch(0.32 0.08 255);
+  --md-primary-bg-color: var(--shift-primary-foreground);
+  --md-primary-bg-color--light: oklch(0.985 0.004 95 / 0.7);
+
+  --md-accent-fg-color: var(--shift-accent);
+  --md-accent-fg-color--transparent: oklch(0.62 0.12 235 / 0.1);
+  --md-accent-bg-color: var(--shift-accent-foreground);
+
+  --md-default-bg-color: var(--shift-background);
+  --md-default-fg-color: var(--shift-foreground);
+  --md-default-fg-color--light: var(--shift-muted-foreground);
+  --md-default-fg-color--lighter: oklch(0.65 0.014 255);
+  --md-default-fg-color--lightest: oklch(0.85 0.01 255);
+
+  --md-typeset-color: var(--shift-foreground);
+  --md-typeset-a-color: var(--shift-primary);
+  --md-typeset-mark-color: oklch(0.85 0.15 90 / 0.4);
+
+  --md-code-bg-color: var(--shift-muted);
+  --md-code-fg-color: var(--shift-foreground);
+
+  --md-footer-bg-color: oklch(0.18 0.014 255);
+  --md-footer-bg-color--dark: oklch(0.13 0.012 255);
+  --md-footer-fg-color: oklch(0.92 0.006 95);
+  --md-footer-fg-color--light: oklch(0.72 0.012 95);
+  --md-footer-fg-color--lighter: oklch(0.55 0.014 255);
+
+  --md-admonition-bg-color: var(--shift-card);
+  --md-admonition-fg-color: var(--shift-foreground);
+}
+
+/* ── Tokens base (dark) ───────────────────────────────────────────────────── */
+[data-md-color-scheme="slate"] {
+  --shift-background: oklch(0.15 0.012 255);
+  --shift-foreground: oklch(0.958 0.006 95);
+  --shift-card: oklch(0.185 0.014 255);
+  --shift-primary: oklch(0.76 0.08 245);
+  --shift-primary-foreground: oklch(0.17 0.014 255);
+  --shift-secondary: oklch(0.245 0.014 255);
+  --shift-muted: oklch(0.225 0.012 255);
+  --shift-muted-foreground: oklch(0.72 0.012 95);
+  --shift-accent: oklch(0.7 0.12 235);
+  --shift-accent-foreground: oklch(0.958 0.006 95);
+  --shift-border: oklch(0.3 0.012 255);
+
+  --md-hue: 255;
+  --md-primary-fg-color: var(--shift-primary);
+  --md-primary-fg-color--light: oklch(0.82 0.08 245);
+  --md-primary-fg-color--dark: oklch(0.62 0.08 245);
+  --md-primary-bg-color: var(--shift-primary-foreground);
+
+  --md-accent-fg-color: var(--shift-accent);
+  --md-accent-fg-color--transparent: oklch(0.7 0.12 235 / 0.15);
+
+  --md-default-bg-color: var(--shift-background);
+  --md-default-fg-color: var(--shift-foreground);
+  --md-default-fg-color--light: var(--shift-muted-foreground);
+  --md-default-fg-color--lighter: oklch(0.55 0.014 255);
+  --md-default-fg-color--lightest: oklch(0.35 0.014 255);
+
+  --md-typeset-color: var(--shift-foreground);
+  --md-typeset-a-color: var(--shift-primary);
+
+  --md-code-bg-color: var(--shift-muted);
+  --md-code-fg-color: var(--shift-foreground);
+
+  --md-footer-bg-color: oklch(0.11 0.012 255);
+  --md-footer-bg-color--dark: oklch(0.08 0.01 255);
+
+  --md-admonition-bg-color: var(--shift-card);
+}
+
+/* ── Body com gradiente radial (igual ao app) ─────────────────────────────── */
+.md-main,
+.md-container {
+  background-color: var(--shift-background);
+}
+
+body {
+  background-image:
+    radial-gradient(circle at top left, color-mix(in oklab, var(--shift-primary) 9%, transparent), transparent 26%),
+    radial-gradient(circle at top right, color-mix(in oklab, var(--shift-accent) 22%, transparent), transparent 22%);
+  background-attachment: fixed;
+}
+
+[data-md-color-scheme="slate"] body {
+  background-image:
+    radial-gradient(circle at top left, color-mix(in oklab, var(--shift-primary) 14%, transparent), transparent 30%),
+    radial-gradient(circle at top right, color-mix(in oklab, var(--shift-accent) 18%, transparent), transparent 26%);
+}
+
+/* ── Tipografia ───────────────────────────────────────────────────────────── */
+.md-typeset {
+  font-feature-settings: "ss01", "cv11";
+  letter-spacing: -0.005em;
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  letter-spacing: -0.02em;
+  font-weight: 600;
+}
+
+.md-typeset h1 {
+  color: var(--shift-foreground);
+  font-weight: 700;
+}
+
+/* ── Header com sombra suave ──────────────────────────────────────────────── */
+.md-header {
+  background: color-mix(in oklab, var(--shift-background) 86%, transparent);
+  backdrop-filter: saturate(180%) blur(12px);
+  -webkit-backdrop-filter: saturate(180%) blur(12px);
+  color: var(--shift-foreground);
+  box-shadow: 0 1px 0 var(--shift-border);
+}
+
+.md-header__title,
+.md-header__topic {
+  color: var(--shift-foreground);
+  font-weight: 600;
+}
+
+.md-header__button.md-logo svg,
+.md-header__button.md-logo img {
+  fill: var(--shift-primary);
+}
+
+/* ── Tabs de navegação ────────────────────────────────────────────────────── */
+.md-tabs {
+  background: transparent;
+  color: var(--shift-foreground);
+  border-bottom: 1px solid var(--shift-border);
+}
+
+.md-tabs__link {
+  color: var(--shift-muted-foreground);
+  opacity: 1;
+  font-weight: 500;
+}
+
+.md-tabs__link:hover,
+.md-tabs__link--active {
+  color: var(--shift-primary);
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────────────────── */
+.md-nav__title {
+  color: var(--shift-foreground);
+  font-weight: 600;
+}
+
+.md-nav__link {
+  color: var(--shift-muted-foreground);
+  border-radius: calc(var(--shift-radius) - 2px);
+  padding: 0.25rem 0.5rem;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.md-nav__link:hover {
+  color: var(--shift-foreground);
+  background-color: var(--shift-muted);
+}
+
+.md-nav__item .md-nav__link--active,
+.md-nav__item .md-nav__link--active:hover {
+  color: var(--shift-primary);
+  background-color: color-mix(in oklab, var(--shift-primary) 10%, transparent);
+  font-weight: 500;
+}
+
+/* ── Search ───────────────────────────────────────────────────────────────── */
+.md-search__form {
+  background-color: var(--shift-card);
+  border: 1px solid var(--shift-border);
+  border-radius: var(--shift-radius);
+  box-shadow: none;
+}
+
+.md-search__form:hover,
+[data-md-toggle="search"]:checked ~ .md-header .md-search__form {
+  background-color: var(--shift-card);
+  border-color: var(--shift-ring);
+}
+
+.md-search__input {
+  color: var(--shift-foreground);
+}
+
+.md-search__input::placeholder {
+  color: var(--shift-muted-foreground);
+}
+
+/* ── Code blocks ──────────────────────────────────────────────────────────── */
+.md-typeset code {
+  background-color: var(--shift-muted);
+  border: 1px solid var(--shift-border);
+  border-radius: calc(var(--shift-radius) - 2px);
+  padding: 0.1em 0.35em;
+  font-size: 0.85em;
+}
+
+.md-typeset pre > code {
+  border: none;
+  border-radius: var(--shift-radius);
+  padding: 1rem;
+}
+
+.md-typeset .highlight {
+  border: 1px solid var(--shift-border);
+  border-radius: var(--shift-radius);
+  overflow: hidden;
+  background-color: var(--shift-card);
+}
+
+.md-typeset .highlight pre,
+.md-typeset .highlight code {
+  background-color: transparent;
+  border: none;
+}
+
+/* ── Cards (grid cards) ───────────────────────────────────────────────────── */
+.md-typeset .grid.cards > :is(ul, ol) > li,
+.md-typeset .grid > .card {
+  border: 1px solid var(--shift-border);
+  border-radius: var(--shift-radius);
+  background-color: var(--shift-card);
+  box-shadow: 0 1px 2px color-mix(in oklab, var(--shift-foreground) 4%, transparent);
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.md-typeset .grid.cards > :is(ul, ol) > li:hover,
+.md-typeset .grid > .card:hover {
+  border-color: var(--shift-ring);
+  box-shadow:
+    0 4px 12px color-mix(in oklab, var(--shift-foreground) 8%, transparent),
+    0 0 0 1px var(--shift-ring);
+}
+
+/* ── Admonitions ──────────────────────────────────────────────────────────── */
+.md-typeset .admonition,
+.md-typeset details {
+  border: 1px solid var(--shift-border);
+  border-radius: var(--shift-radius);
+  background-color: var(--shift-card);
+  box-shadow: 0 1px 2px color-mix(in oklab, var(--shift-foreground) 3%, transparent);
+}
+
+.md-typeset .admonition-title,
+.md-typeset summary {
+  background-color: color-mix(in oklab, var(--shift-primary) 6%, transparent);
+  font-weight: 600;
+}
+
+.md-typeset .admonition.note,
+.md-typeset details.note {
+  border-left: 3px solid var(--shift-info);
+}
+
+.md-typeset .admonition.warning,
+.md-typeset details.warning {
+  border-left: 3px solid var(--shift-warning);
+}
+
+.md-typeset .admonition.danger,
+.md-typeset details.danger,
+.md-typeset .admonition.failure,
+.md-typeset details.failure {
+  border-left: 3px solid var(--shift-destructive);
+}
+
+.md-typeset .admonition.success,
+.md-typeset details.success,
+.md-typeset .admonition.tip,
+.md-typeset details.tip {
+  border-left: 3px solid var(--shift-success);
+}
+
+.md-typeset .admonition.info,
+.md-typeset details.info {
+  border-left: 3px solid var(--shift-info);
+}
+
+/* ── Tabelas ──────────────────────────────────────────────────────────────── */
+.md-typeset table:not([class]) {
+  border: 1px solid var(--shift-border);
+  border-radius: var(--shift-radius);
+  overflow: hidden;
+  background-color: var(--shift-card);
+}
+
+.md-typeset table:not([class]) th {
+  background-color: var(--shift-muted);
+  color: var(--shift-foreground);
+  font-weight: 600;
+  border-bottom: 1px solid var(--shift-border);
+}
+
+.md-typeset table:not([class]) td {
+  border-top: 1px solid var(--shift-border);
+}
+
+/* ── Botões ──────────────────────────────────────────────────────────────── */
+.md-typeset .md-button {
+  border-radius: calc(var(--shift-radius) - 2px);
+  border: 1px solid var(--shift-border);
+  font-weight: 500;
+  transition: all 120ms ease;
+}
+
+.md-typeset .md-button:hover {
+  border-color: var(--shift-ring);
+  background-color: var(--shift-muted);
+}
+
+.md-typeset .md-button--primary {
+  background-color: var(--shift-primary);
+  color: var(--shift-primary-foreground);
+  border-color: var(--shift-primary);
+}
+
+.md-typeset .md-button--primary:hover {
+  background-color: color-mix(in oklab, var(--shift-primary) 88%, black);
+  border-color: color-mix(in oklab, var(--shift-primary) 88%, black);
+  color: var(--shift-primary-foreground);
+}
+
+/* ── Tabs de conteúdo (pymdownx.tabbed) ───────────────────────────────────── */
+.md-typeset .tabbed-set {
+  border: 1px solid var(--shift-border);
+  border-radius: var(--shift-radius);
+  background-color: var(--shift-card);
+  overflow: hidden;
+}
+
+.md-typeset .tabbed-labels > label {
+  font-weight: 500;
+  color: var(--shift-muted-foreground);
+}
+
+.md-typeset .tabbed-labels > label:hover,
+.md-typeset .tabbed-set > input:checked + label {
+  color: var(--shift-primary);
+}
+
+.md-typeset .tabbed-set > input:checked + label {
+  border-color: var(--shift-primary);
+}
+
+/* ── Blockquote ───────────────────────────────────────────────────────────── */
+.md-typeset blockquote {
+  border-left: 3px solid var(--shift-primary);
+  background-color: color-mix(in oklab, var(--shift-primary) 4%, transparent);
+  border-radius: 0 calc(var(--shift-radius) - 2px) calc(var(--shift-radius) - 2px) 0;
+  color: var(--shift-foreground);
+}
+
+/* ── Links ────────────────────────────────────────────────────────────────── */
+.md-typeset a {
+  color: var(--shift-primary);
+  text-decoration: none;
+  transition: color 120ms ease;
+}
+
+.md-typeset a:hover {
+  color: var(--shift-accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ── Footer ───────────────────────────────────────────────────────────────── */
+.md-footer {
+  border-top: 1px solid var(--shift-border);
+}
+
+/* ── Scrollbar (sutil, alinhada com app) ─────────────────────────────────── */
+.md-sidebar__scrollwrap::-webkit-scrollbar {
+  width: 6px;
+}
+
+.md-sidebar__scrollwrap::-webkit-scrollbar-thumb {
+  background-color: var(--shift-border);
+  border-radius: 3px;
+}
+
+.md-sidebar__scrollwrap::-webkit-scrollbar-thumb:hover {
+  background-color: var(--shift-muted-foreground);
+}

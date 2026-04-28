@@ -147,7 +147,7 @@ Foram expostos **15 tools**, agrupados por categoria. Cada tool tem schema JSON 
 
 ## 5. Frontend — como o painel "sabe onde está"
 
-O segredo é o `AIContextProvider` em [app/(private)/layout.tsx](shift-frontend/app/(private)/layout.tsx).
+O segredo é o `AIContextProvider` em [app/(private)/layout.tsx](https://github.com/cleber-veiga/shift-project/blob/main/shift-frontend/app/%28private%29/layout.tsx).
 
 Cada página que quer contribuir para o contexto usa:
 
@@ -271,4 +271,4 @@ Endpoints de audit em `/api/v1/agent/audit/*` consumidos pela UI administrativa.
 
 ---
 
-*Versão do doc: 2026-04-20. Referência: fases 0–7 implementadas em [MEMORY.md](../.claude/projects/D--Labs-shift-project/memory/MEMORY.md) e revisadas via suite de integration tests.*
+*Versão do doc: 2026-04-20. Referência: fases 0–7 implementadas e revisadas via suite de integration tests.*

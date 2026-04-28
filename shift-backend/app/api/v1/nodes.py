@@ -104,6 +104,20 @@ async def duckdb_preview(
                 return float(v)
             if isinstance(v, (datetime.date, datetime.datetime)):
                 return v.isoformat()
+            if isinstance(v, bytes):
+                # BLOBs ou strings em encoding não-UTF-8 (ex.: Firebird latin-1)
+                try:
+                    return v.decode("utf-8")
+                except UnicodeDecodeError:
+                    try:
+                        return v.decode("latin-1")
+                    except Exception:
+                        return v.hex()
+            if isinstance(v, str):
+                # Garante que a string é UTF-8 válida; substitui bytes inválidos.
+                # Necessário porque DuckDB pode retornar str com surrogates de
+                # dados cuja origem (ex.: Firebird) não respeitou o encoding declarado.
+                return v.encode("utf-8", errors="replace").decode("utf-8")
         except Exception:
             pass
         return v

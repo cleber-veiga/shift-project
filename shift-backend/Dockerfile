@@ -163,21 +163,63 @@ WORKDIR /app
 
 # Diretorios persistentes que o codigo espera existir.
 # Owners apropriados — o usuario shift escreve nos volumes montados.
+#
+# /shift-secrets — volume nomeado onde o bootstrap-secrets.py grava
+# SECRET_KEY e ENCRYPTION_KEY na primeira subida. Persiste entre
+# `docker compose down` e `up` (so e apagado com `down -v`).
 RUN mkdir -p /var/lib/shift/checkpoints \
              /var/lib/shift/extract-cache \
              /var/lib/shift/uploads \
              /tmp/streaming-spill \
-    && chown -R shift:shift /var/lib/shift /tmp/streaming-spill /app
+             /shift-secrets \
+    && chown -R shift:shift /var/lib/shift /tmp/streaming-spill /shift-secrets /app
 
 # IMPORTANTE: o usuario shift precisa ser membro do grupo 'docker' do HOST
 # para acessar /var/run/docker.sock. O GID do grupo docker varia por distro
 # (Ubuntu=999, Debian=998, etc). Usamos 'docker' como nome e mapeamos no
 # entrypoint via lookup do GID do socket.
 COPY --chown=shift:shift docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+COPY --chown=shift:shift bootstrap-secrets.py /usr/local/bin/bootstrap-secrets.py
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh /usr/local/bin/bootstrap-secrets.py
 
 # Codigo da aplicacao — copiado por ultimo para nao invalidar cache acima.
 COPY --chown=shift:shift . /app
+
+# --- Segredos embutidos (CI da Shift) ---
+# Esses valores sao IGUAIS para todos os clientes (chave da Shift, OAuth
+# Client ID da Shift, etc). A CI da Shift recebe-os via secrets do GitHub
+# Actions e injeta como --build-arg. O cliente final NUNCA edita nem ve
+# essas variaveis no .env — config.py le de /etc/shift/embedded.env como
+# uma das fontes de env_file (ver app/core/config.py).
+#
+# Valores default vazios — em dev local, builds sem secrets resultam em
+# arquivo vazio (defaults do config.py prevalecem). Em prod, a CI passa
+# todos os build-args.
+#
+# Build com:
+#   docker build \
+#     --build-arg LLM_API_KEY="sk-ant-..." \
+#     --build-arg GOOGLE_CLIENT_ID="..." \
+#     --build-arg RESEND_API_KEY="re_..." \
+#     --build-arg EMAIL_FROM="noreply@shift.app" \
+#     -t shift-backend:tag .
+ARG LLM_API_KEY=""
+ARG LLM_REASONING_MODEL=""
+ARG GOOGLE_CLIENT_ID=""
+ARG RESEND_API_KEY=""
+ARG EMAIL_FROM=""
+ARG LANGSMITH_API_KEY=""
+
+RUN mkdir -p /etc/shift \
+    && printf '# Segredos e configs embutidos no build pela CI da Shift. NAO editar.\n' > /etc/shift/embedded.env \
+    && [ -z "$LLM_API_KEY" ]          || printf 'LLM_API_KEY=%s\n'          "$LLM_API_KEY"          >> /etc/shift/embedded.env \
+    && [ -z "$LLM_REASONING_MODEL" ]  || printf 'LLM_REASONING_MODEL=%s\n'  "$LLM_REASONING_MODEL"  >> /etc/shift/embedded.env \
+    && [ -z "$GOOGLE_CLIENT_ID" ]     || printf 'GOOGLE_CLIENT_ID=%s\n'     "$GOOGLE_CLIENT_ID"     >> /etc/shift/embedded.env \
+    && [ -z "$RESEND_API_KEY" ]       || printf 'RESEND_API_KEY=%s\n'       "$RESEND_API_KEY"       >> /etc/shift/embedded.env \
+    && [ -z "$EMAIL_FROM" ]           || printf 'EMAIL_FROM=%s\n'           "$EMAIL_FROM"           >> /etc/shift/embedded.env \
+    && [ -z "$LANGSMITH_API_KEY" ]    || printf 'LANGSMITH_API_KEY=%s\n'    "$LANGSMITH_API_KEY"    >> /etc/shift/embedded.env \
+    && chown -R shift:shift /etc/shift \
+    && chmod 640 /etc/shift/embedded.env
 
 EXPOSE 8000
 

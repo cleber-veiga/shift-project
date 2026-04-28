@@ -532,7 +532,25 @@
       "Bash(python -m pytest tests/unit/ -v --tb=short)",
       "Bash(python -m pytest tests/unit/ tests/integration/test_connections_diagnose_endpoint.py::test_diagnose_payload_unauthenticated_returns_401 tests/integration/test_connections_diagnose_endpoint.py::test_diagnose_payload_rate_limit -v)",
       "Bash(python -m pytest tests/integration/test_connections_diagnose_endpoint.py -v)",
-      "PowerShell(Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue)"
+      "PowerShell(Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue)",
+      "Bash(DATABASE_URL=test docker compose -f D:/Labs/shift-project/tester-package/docker-compose.yml config --quiet)",
+      "Bash(python -c \"from app.core.config import settings; print\\('SECRET_KEY len:', len\\(settings.SECRET_KEY\\)\\); print\\('ENCRYPTION_KEY len:', len\\(settings.ENCRYPTION_KEY\\)\\); print\\('LLM_MODEL:', settings.LLM_MODEL\\)\")",
+      "Bash(git -C D:/Labs/shift-project remote -v)",
+      "Bash(DATABASE_URL=test docker compose -f tester-package/docker-compose.yml config --quiet)",
+      "Bash(python -c \"from app.core.config import settings; print\\('[OK] config.py', 'SECRET_KEY len=', len\\(settings.SECRET_KEY\\)\\)\")",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3000/login)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3000/icon.svg)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3000/brand/shift-icon.svg)",
+      "Bash(curl -s http://localhost:3000/onboarding)",
+      "Read(//tmp/**)",
+      "Bash(curl -s http://localhost:3000/brand/shift-icon.svg)",
+      "Bash(curl -s http://localhost:3000/icon.svg)",
+      "Bash(bash -n shift-backend/docker-entrypoint.sh)",
+      "Bash(bash -n scripts/build-and-publish.sh)",
+      "PowerShell($ErrorActionPreference='Stop'; $tokens = $null; $errs = $null; [System.Management.Automation.PSParser]::Tokenize\\(\\(Get-Content -Raw 'D:\\\\Labs\\\\shift-project\\\\scripts\\\\build-and-publish.ps1'\\), [ref]$errs\\) | Out-Null; if \\($errs.Count -gt 0\\) { Write-Output \"ERROS:\"; $errs | ForEach-Object { Write-Output $_ } } else { Write-Output \"[OK] Sintaxe valida\" })",
+      "Bash(DATABASE_URL=test docker compose config --quiet)",
+      "Bash(DATABASE_URL=test docker compose --profile firebird-legacy config --quiet)",
+      "Bash(DATABASE_URL=test docker compose --profile firebird-legacy config --services)"
     ]
   }
 }

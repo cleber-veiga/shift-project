@@ -60,7 +60,7 @@ Para validar o critério `3-6× speedup`:
    já suporta esses dialetos via `_server_side_execution_options`).
 
 Os mocks unit-tests em
-[`tests/test_streaming_cursors.py`](../../shift-backend/tests/test_streaming_cursors.py)
+[`tests/test_streaming_cursors.py`](https://github.com/cleber-veiga/shift-project/blob/main/shift-backend/tests/test_streaming_cursors.py)
 já garantem que `stream_results=True` + `arraysize`/`prefetchrows` são
 aplicados por driver — em Postgres/Oracle reais isso traduz em cursor
 server-side de fato concorrente, sem buffering eager.

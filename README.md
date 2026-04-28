@@ -39,6 +39,14 @@ shift-project/
 
 Cada diretório possui seu próprio README com instruções de setup e execução.
 
+## Configuração
+
+Existem múltiplos arquivos `.env*` no repo, um para cada audiência (dev local, build, tester, MCP, etc). O ponto de entrada único é:
+
+→ **[docs/configuration.md](docs/configuration.md)** — mapa completo, hierarquia de fontes, e qual arquivo editar em cada situação.
+
+Para publicar imagens no Docker Hub, ver [BUILD-AND-PUBLISH.md](BUILD-AND-PUBLISH.md).
+
 ## Suporte a Firebird
 
 A Shift trata Firebird como cidadão de primeira classe — comum em ERPs brasileiros legados (Viasoft, Linx, etc). Suporta 3 cenários de deploy:

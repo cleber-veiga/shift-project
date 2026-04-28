@@ -3,9 +3,11 @@
 .env
 .env.local
 .env.*.local
+.env.build
 **/.env
 **/.env.local
 !**/.env.example
+!**/.env.build.example
 
 # IDE / editores
 .vscode/

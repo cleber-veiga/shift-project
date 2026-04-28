@@ -5,6 +5,7 @@ import Link from "next/link"
 import { ArrowLeft, ArrowRight, KeyRound, Mail, ShieldCheck } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { MorphLoader } from "@/components/ui/morph-loader"
+import { ShiftBrand } from "@/components/ui/shift-brand"
 import { forgotPassword, resetPassword, verifyResetCode } from "@/lib/auth"
 
 type Step = "email" | "sent" | "reset" | "done"
@@ -115,9 +116,7 @@ export default function ResetPasswordPage() {
 
       <div className="relative z-10 w-full max-w-sm px-4">
         <div className="mb-8 flex justify-center">
-          <div className="flex size-11 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-lg font-bold text-white shadow-lg">
-            A
-          </div>
+          <ShiftBrand size={52} />
         </div>
 
         {/* ── Passo 1: Email ── */}

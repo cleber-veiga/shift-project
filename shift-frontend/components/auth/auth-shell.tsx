@@ -2,6 +2,7 @@ import type { ReactNode } from "react"
 import Link from "next/link"
 import { ArrowUpRight, Database, Sparkles, Workflow } from "lucide-react"
 import { ThemeToggle } from "@/components/auth/theme-toggle"
+import { ShiftMarkAdaptive } from "@/components/ui/shift-mark"
 
 type AuthShellProps = {
   eyebrow: string
@@ -46,9 +47,7 @@ export function AuthShell({
             href="/login"
             className="inline-flex items-center gap-3 rounded-full border border-border/70 bg-card/80 px-3 py-2 backdrop-blur"
           >
-            <span className="inline-flex size-9 items-center justify-center rounded-full bg-primary text-sm font-semibold text-primary-foreground">
-              S
-            </span>
+            <ShiftMarkAdaptive size={36} />
             <span className="text-sm font-semibold tracking-[0.24em] text-foreground">
               SHIFT
             </span>

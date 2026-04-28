@@ -16,10 +16,11 @@ Stack pra rodar a plataforma Shift na sua maquina via Docker.
    cp .env.example .env
    ```
 
-2. **Edite o `.env`** preenchendo os campos `__FILL_ME__`:
+2. **Edite o `.env`** preenchendo o unico campo `__FILL_ME__`:
    - `DATABASE_URL` — string de conexao recebida.
-   - `SECRET_KEY` e `ENCRYPTION_KEY` — instrucoes de geracao no proprio arquivo.
-   - `LLM_API_KEY` (opcional, so se for testar IA).
+
+   `SECRET_KEY` e `ENCRYPTION_KEY` sao **geradas automaticamente** no
+   primeiro `up` e persistidas em um volume Docker. Nao precisa gerar nada.
 
 3. **Puxe as imagens do Docker Hub:**
    ```bash
@@ -56,6 +57,59 @@ Quando ver `Application startup complete`, abra:
 | Ver logs do frontend          | `docker compose logs -f shift-frontend`    |
 | Status dos containers         | `docker compose ps`                        |
 
+## Conectar a um Firebird (3 cenarios)
+
+### Cenario A — voce tem so o arquivo `.fdb`
+
+Use os Firebird bundled da Shift (containers FB 2.5 e 3.0). **Este cenario
+exige um compose adicional** (`docker-compose.firebird.yml`) que sobe os
+servidores e adiciona o bind dos arquivos.
+
+1. Crie uma pasta no host para os arquivos (ex: `C:\Shift\Data` ou `/opt/shift/data`).
+2. Copie os `.fdb` para essa pasta.
+3. Edite `.env` descomentando e preenchendo:
+   ```
+   FIREBIRD_LEGACY_DATA_DIR=C:/Shift/Data
+   FIREBIRD_LEGACY_PASSWORD=masterkey
+   ```
+4. Suba combinando os dois compose files:
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.firebird.yml up -d
+   ```
+
+   > Dica: para nao ter que repetir o `-f` em todo comando, use a env var
+   > `COMPOSE_FILE`:
+   > ```bash
+   > # bash
+   > export COMPOSE_FILE=docker-compose.yml:docker-compose.firebird.yml
+   > # PowerShell
+   > $env:COMPOSE_FILE = "docker-compose.yml;docker-compose.firebird.yml"
+   > ```
+   > Depois `docker compose up -d`, `down`, `logs`, etc usam os dois files.
+
+5. Na UI, ao criar a Connection:
+   - **Host:** `firebird25` (para ODS 11.x — FB 2.5) ou `firebird30` (para ODS 12+)
+   - **Port:** `3050`
+   - **Path:** `/firebird/data/<nome>.FDB`
+   - **User/Password:** `SYSDBA` / `masterkey` (ou o que voce setou)
+
+### Cenario B — Firebird Server ja roda no seu Windows/macOS
+
+Sobe normal (so o compose base):
+```bash
+docker compose up -d
+```
+
+Na UI, ao criar a Connection:
+- **Host:** `host.docker.internal`
+- **Port:** `3050`
+- **Path:** caminho do `.fdb` no seu host (ex: `C:\dados\base.fdb`)
+
+### Cenario C — Firebird em servidor remoto na rede
+
+Sobe normal (so o compose base). Conecte direto pelo IP/hostname do
+servidor — nao precisa de nada especial.
+
 ## Problemas comuns
 
 **Backend reinicia em loop / erro de conexao com o banco**
@@ -67,8 +121,10 @@ novo, rode uma vez:
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 ```
 
-**`ENCRYPTION_KEY obrigatorio` no startup**
-Voce esqueceu de gerar a chave. Veja `.env.example` para o comando.
+**Perdi as chaves auto-geradas (apaguei o volume com `down -v`)**
+As credenciais de connections gravadas antes ficam ilegiveis. Recrie as
+connections via UI — nao tem como recuperar a `ENCRYPTION_KEY` antiga.
+Para evitar: use `docker compose down` (sem `-v`) sempre que possivel.
 
 **Sandbox falha com `permission denied` em `/var/run/docker.sock` (Linux/WSL2)**
 Ajuste `DOCKER_GID` no `.env` rodando:

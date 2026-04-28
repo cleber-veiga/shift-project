@@ -14,6 +14,7 @@ import {
 } from "@/lib/auth"
 import { cn } from "@/lib/utils"
 import { MorphLoader } from "@/components/ui/morph-loader"
+import { ShiftBrand } from "@/components/ui/shift-brand"
 
 type Step = "org" | "workspace" | "project" | "done"
 
@@ -118,9 +119,7 @@ export default function OnboardingPage() {
 
       <div className="relative z-10 w-full max-w-md px-4">
         <div className="mb-8 flex justify-center">
-          <div className="flex size-11 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-lg font-bold text-white shadow-lg">
-            A
-          </div>
+          <ShiftBrand size={48} showWordmark={false} />
         </div>
 
         {step !== "done" ? (

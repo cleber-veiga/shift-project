@@ -13,7 +13,6 @@ import { cn } from "@/lib/utils"
 import { RoleBadge } from "@/components/dashboard/role-badge"
 import { hasWorkspacePermission } from "@/lib/permissions"
 import {
-  Building2,
   Check,
   ChevronDown,
   FolderKanban,
@@ -22,6 +21,7 @@ import {
   Trash2,
   X,
 } from "lucide-react"
+import { ShiftMarkAdaptive } from "@/components/ui/shift-mark"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useEffect, useRef, useState } from "react"
@@ -282,9 +282,7 @@ export function Sidebar() {
     <aside className="hidden w-64 border-r border-border bg-card/88 lg:flex lg:flex-col">
       <div className="border-b border-border px-4 py-3">
         <Link href="/home" className="inline-flex items-center gap-2 rounded-md px-0.5 py-0.5">
-          <div className="inline-flex size-8 items-center justify-center rounded-md bg-gradient-to-br from-indigo-500 to-violet-600 shadow-sm">
-            <Building2 className="size-4 text-white" />
-          </div>
+          <ShiftMarkAdaptive size={32} />
           <span className="text-base font-semibold">SHIFT</span>
         </Link>
       </div>

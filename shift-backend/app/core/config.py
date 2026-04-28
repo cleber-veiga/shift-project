@@ -1,6 +1,22 @@
 """
 Configuracoes centrais da aplicacao Shift.
 Carrega variaveis de ambiente via Pydantic BaseSettings.
+
+Fontes de configuracao, em ordem de precedencia (mais forte -> mais fraco):
+  1. Variavel de ambiente explicita (override consciente, dev local).
+  2. /shift-secrets/secrets.env — gerado pelo bootstrap-secrets.py na
+     primeira subida do stack. Contem SECRET_KEY (JWT) e ENCRYPTION_KEY
+     (Fernet). Unico por instalacao, nunca compartilhado entre clientes.
+  3. /etc/shift/embedded.env — embutido na imagem Docker no build pela
+     CI da Shift. Contem segredos comuns a todos os clientes (LLM_API_KEY,
+     GOOGLE_CLIENT_ID, RESEND_API_KEY, etc). Os clientes nunca veem nem
+     editam estes valores.
+  4. .env — para dev local rodando uvicorn fora do Docker.
+  5. Defaults definidos nas classes Settings abaixo.
+
+Pydantic-settings: dentro de env_file=tuple, o ULTIMO arquivo vence. Env
+vars sempre vencem qualquer env_file. Arquivos nao-existentes sao
+ignorados silenciosamente.
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -10,7 +26,7 @@ class Settings(BaseSettings):
     """Configuracoes carregadas de variaveis de ambiente ou arquivo .env."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(".env", "/etc/shift/embedded.env", "/shift-secrets/secrets.env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )

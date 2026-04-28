@@ -67,7 +67,7 @@ Pergunte ao cliente nesta ordem:
 
 O wizard do frontend (modal de conexao Firebird) tem cards correspondentes
 e auto-preenche `host`/`port` para A e B. Veja
-[connection-form-modal.tsx](../shift-frontend/components/dashboard/connection-form-modal.tsx).
+[connection-form-modal.tsx](https://github.com/cleber-veiga/shift-project/blob/main/shift-frontend/components/dashboard/connection-form-modal.tsx).
 
 ---
 
@@ -332,7 +332,7 @@ Marque tudo antes de declarar o deploy concluido:
 ## 6. Troubleshooting
 
 A camada de diagnostico do backend
-([firebird_diagnostics.py](../shift-backend/app/services/firebird_diagnostics.py))
+([firebird_diagnostics.py](https://github.com/cleber-veiga/shift-project/blob/main/shift-backend/app/services/firebird_diagnostics.py))
 roda 4 etapas em ordem. Use a `etapa que falha` para localizar a causa
 rapidamente.
 
@@ -405,17 +405,17 @@ print(json.dumps(steps, indent=2, default=str))
 ### Como funciona internamente
 
 1. **Frontend** (modal de conexao) detecta o cenario via wizard
-   ([connection-form-modal.tsx](../shift-frontend/components/dashboard/connection-form-modal.tsx))
+   ([connection-form-modal.tsx](https://github.com/cleber-veiga/shift-project/blob/main/shift-frontend/components/dashboard/connection-form-modal.tsx))
    e auto-preenche `host`/`port`. Pre-validacao do `database` por cenario.
 
 2. **Backend** recebe a conexao e, na hora de conectar:
    - `connection_service.build_connection_string()`
-     ([connection_service.py](../shift-backend/app/services/connection_service.py))
+     ([connection_service.py](https://github.com/cleber-veiga/shift-project/blob/main/shift-backend/app/services/connection_service.py))
      decide o dialect SA (`firebird+firebird` para FB 3+, `firebird+fdb`
      para FB 2.5) e faz a traducao de path **somente** quando o host e
      bundled.
    - `firebird_client.connect_firebird()`
-     ([firebird_client.py](../shift-backend/app/services/firebird_client.py))
+     ([firebird_client.py](https://github.com/cleber-veiga/shift-project/blob/main/shift-backend/app/services/firebird_client.py))
      escolhe o driver (`firebird-driver` ou `fdb`) e a libfbclient correta.
 
 3. **Diagnostico** (`/connections/diagnose` e `/connections/{id}/diagnose`):
@@ -433,15 +433,15 @@ print(json.dumps(steps, indent=2, default=str))
 
 | Componente                          | Arquivo                                                                 |
 | ----------------------------------- | ----------------------------------------------------------------------- |
-| Driver wrapper FB 2.5 / FB 3+       | [shift-backend/app/services/firebird_client.py](../shift-backend/app/services/firebird_client.py) |
-| Pipeline de diagnostico (4 etapas)  | [shift-backend/app/services/firebird_diagnostics.py](../shift-backend/app/services/firebird_diagnostics.py) |
-| Classificador de erros + hints      | [shift-backend/app/services/firebird_error_classifier.py](../shift-backend/app/services/firebird_error_classifier.py) |
-| Service CRUD + test/diagnose        | [shift-backend/app/services/connection_service.py](../shift-backend/app/services/connection_service.py) |
-| Endpoints REST                      | [shift-backend/app/api/v1/connections.py](../shift-backend/app/api/v1/connections.py) |
-| Wizard de cenario (UI)              | [shift-frontend/components/dashboard/firebird-scenario-selector.tsx](../shift-frontend/components/dashboard/firebird-scenario-selector.tsx) |
-| Modal de conexao + DiagnosticPanel  | [shift-frontend/components/dashboard/connection-form-modal.tsx](../shift-frontend/components/dashboard/connection-form-modal.tsx) |
-| Compose dos servidores bundled      | [docker-compose.yml](../docker-compose.yml) (services `firebird25` e `firebird30`, profile `firebird-legacy`) |
-| Build da libfbclient 2.5            | [shift-backend/Dockerfile](../shift-backend/Dockerfile) (extracao do tarball R2_5_9 + `patchelf` para RPATH) |
+| Driver wrapper FB 2.5 / FB 3+       | [shift-backend/app/services/firebird_client.py](https://github.com/cleber-veiga/shift-project/blob/main/shift-backend/app/services/firebird_client.py) |
+| Pipeline de diagnostico (4 etapas)  | [shift-backend/app/services/firebird_diagnostics.py](https://github.com/cleber-veiga/shift-project/blob/main/shift-backend/app/services/firebird_diagnostics.py) |
+| Classificador de erros + hints      | [shift-backend/app/services/firebird_error_classifier.py](https://github.com/cleber-veiga/shift-project/blob/main/shift-backend/app/services/firebird_error_classifier.py) |
+| Service CRUD + test/diagnose        | [shift-backend/app/services/connection_service.py](https://github.com/cleber-veiga/shift-project/blob/main/shift-backend/app/services/connection_service.py) |
+| Endpoints REST                      | [shift-backend/app/api/v1/connections.py](https://github.com/cleber-veiga/shift-project/blob/main/shift-backend/app/api/v1/connections.py) |
+| Wizard de cenario (UI)              | [shift-frontend/components/dashboard/firebird-scenario-selector.tsx](https://github.com/cleber-veiga/shift-project/blob/main/shift-frontend/components/dashboard/firebird-scenario-selector.tsx) |
+| Modal de conexao + DiagnosticPanel  | [shift-frontend/components/dashboard/connection-form-modal.tsx](https://github.com/cleber-veiga/shift-project/blob/main/shift-frontend/components/dashboard/connection-form-modal.tsx) |
+| Compose dos servidores bundled      | [docker-compose.yml](https://github.com/cleber-veiga/shift-project/blob/main/docker-compose.yml) (services `firebird25` e `firebird30`, profile `firebird-legacy`) |
+| Build da libfbclient 2.5            | [shift-backend/Dockerfile](https://github.com/cleber-veiga/shift-project/blob/main/shift-backend/Dockerfile) (extracao do tarball R2_5_9 + `patchelf` para RPATH) |
 
 ### Decisoes de design
 
@@ -508,7 +508,7 @@ pytest -m firebird --tb=short -v
 - libfbclient disponivel no processo de teste:
   - **Linux/WSL no container backend**: `apt-get install libfbclient2` (FB 3+)
     + `/opt/firebird-2.5/lib/libfbclient.so.2` (FB 2.5, instalado pelo
-    [Dockerfile](../shift-backend/Dockerfile)).
+    [Dockerfile](https://github.com/cleber-veiga/shift-project/blob/main/shift-backend/Dockerfile)).
   - **Windows host**: instalar Firebird 2.5 e/ou 3.0+ client.
 
 Sem libfbclient, `test_a_fb25_*` falha com mensagem clara apontando o
@@ -561,8 +561,8 @@ e ~30s em runs subsequentes (containers reusados via `scope="session"`).
 
 ## Referencias rapidas
 
-- [docker-compose.yml](../docker-compose.yml) — services `firebird25`, `firebird30`, `shift-backend` com `extra_hosts`.
-- [.env.example](../.env.example) — variaveis de ambiente necessarias.
-- [firebird_diagnostics.py](../shift-backend/app/services/firebird_diagnostics.py) — pipeline de diagnostico.
-- [firebird_error_classifier.py](../shift-backend/app/services/firebird_error_classifier.py) — error classes + hints.
+- [docker-compose.yml](https://github.com/cleber-veiga/shift-project/blob/main/docker-compose.yml) — services `firebird25`, `firebird30`, `shift-backend` com `extra_hosts`.
+- [.env.example](https://github.com/cleber-veiga/shift-project/blob/main/.env.example) — variaveis de ambiente necessarias.
+- [firebird_diagnostics.py](https://github.com/cleber-veiga/shift-project/blob/main/shift-backend/app/services/firebird_diagnostics.py) — pipeline de diagnostico.
+- [firebird_error_classifier.py](https://github.com/cleber-veiga/shift-project/blob/main/shift-backend/app/services/firebird_error_classifier.py) — error classes + hints.
 - Suite de testes: `cd shift-backend && pytest -m firebird -v`

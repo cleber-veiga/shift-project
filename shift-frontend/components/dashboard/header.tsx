@@ -30,6 +30,7 @@ import { useState, useRef, useEffect } from "react"
 import { usePathname, useRouter } from "next/navigation"
 import { MorphLoader } from "@/components/ui/morph-loader"
 import { Tooltip } from "@/components/ui/tooltip"
+import { ShiftMarkAdaptive } from "@/components/ui/shift-mark"
 
 
 interface HeaderProps {
@@ -294,9 +295,7 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
               href="/home"
               className="inline-flex items-center gap-2.5 rounded-md border-r border-border pr-6"
             >
-              <div className="inline-flex size-7 items-center justify-center rounded-md bg-gradient-to-br from-indigo-500 to-violet-600 shadow-sm">
-                <Building2 className="size-4 text-white" />
-              </div>
+              <ShiftMarkAdaptive size={28} />
               <span className="text-[13px] font-semibold tracking-tight text-foreground">SHIFT</span>
             </Link>
           ) : null}

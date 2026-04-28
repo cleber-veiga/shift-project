@@ -1,0 +1,70 @@
+# Shift — Firebird bundled (Cenario A).
+#
+# Override do docker-compose.yml para o caso onde voce tem APENAS o
+# arquivo .fdb e precisa que a Shift suba os servidores Firebird 2.5
+# e 3.0 em containers.
+#
+# Uso:
+#   1) Crie a pasta no host (ex: C:\Shift\Data ou /opt/shift/data).
+#   2) Copie os arquivos .fdb dos clientes para essa pasta.
+#   3) No .env, descomente:
+#        FIREBIRD_LEGACY_DATA_DIR=C:/Shift/Data
+#        FIREBIRD_LEGACY_PASSWORD=masterkey
+#   4) Suba combinando os dois compose files:
+#        docker compose -f docker-compose.yml -f docker-compose.firebird.yml up -d
+#
+# Cenarios B e C: NAO use este compose. O docker-compose.yml puro ja basta.
+
+services:
+
+  firebird25:
+    image: jacobalberty/firebird:2.5-ss
+    environment:
+      ISC_PASSWORD: ${FIREBIRD_LEGACY_PASSWORD:?FIREBIRD_LEGACY_PASSWORD obrigatorio em .env quando usar este compose}
+      EnableLegacyClientAuth: "true"
+    volumes:
+      - "${FIREBIRD_LEGACY_DATA_DIR:?FIREBIRD_LEGACY_DATA_DIR obrigatorio em .env}:/firebird/data"
+    ports:
+      - "3051:3050"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/3050' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    mem_limit: 256m
+    networks: [shift-net]
+
+  firebird30:
+    image: jacobalberty/firebird:v3.0.10
+    environment:
+      ISC_PASSWORD: ${FIREBIRD_LEGACY_PASSWORD:?FIREBIRD_LEGACY_PASSWORD obrigatorio em .env quando usar este compose}
+    volumes:
+      - "${FIREBIRD_LEGACY_DATA_DIR:?FIREBIRD_LEGACY_DATA_DIR obrigatorio em .env}:/firebird/data"
+    ports:
+      - "3052:3050"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/3050' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    mem_limit: 256m
+    networks: [shift-net]
+
+  # Override do shift-backend (definido no docker-compose.yml base):
+  # adiciona bind read-only dos .fdb e env var para auto-deteccao de ODS.
+  shift-backend:
+    environment:
+      # Caminho do host onde estao os .fdb. Usado pelo
+      # translate_host_path_to_container para converter o caminho que
+      # o usuario digita no UI (ex: C:\Shift\Data\X.FDB) para o caminho
+      # dentro do container (/firebird/data/X.FDB).
+      FIREBIRD_HOST_MOUNT_ROOT: ${FIREBIRD_LEGACY_DATA_DIR}
+    volumes:
+      # Acesso read-only aos .fdb para auto-deteccao de ODS.
+      # Os servidores firebird25/firebird30 (acima) tem o mesmo bind
+      # read-write para de fato servir o banco.
+      - "${FIREBIRD_LEGACY_DATA_DIR}:/firebird/data:ro"

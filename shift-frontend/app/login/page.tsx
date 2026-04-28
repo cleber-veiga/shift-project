@@ -7,6 +7,7 @@ import { ArrowRight, Eye, EyeOff, Github } from "lucide-react"
 import { getValidSession, listOrganizations, login } from "@/lib/auth"
 import { cn } from "@/lib/utils"
 import { MorphLoader } from "@/components/ui/morph-loader"
+import { ShiftBrand } from "@/components/ui/shift-brand"
 
 export default function LoginPage() {
   return (
@@ -73,10 +74,8 @@ function LoginPageInner() {
       <div className="pointer-events-none absolute left-1/2 top-0 h-[300px] w-[600px] -translate-x-1/2 rounded-full bg-white/[0.03] blur-3xl" />
 
       <div className="relative z-10 w-full max-w-sm px-4">
-        <div className="mb-8 flex flex-col items-center gap-4">
-          <div className="flex size-11 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-lg font-bold text-white shadow-lg">
-            A
-          </div>
+        <div className="mb-8 flex flex-col items-center gap-5">
+          <ShiftBrand size={52} />
           <div className="text-center">
             <h1 className="text-xl font-semibold text-white">Faça login no Shift</h1>
             <p className="mt-1 text-sm text-neutral-500">Entre com suas credenciais para continuar.</p>
