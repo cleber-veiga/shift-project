@@ -30,7 +30,7 @@ import { useState, useRef, useEffect } from "react"
 import { usePathname, useRouter } from "next/navigation"
 import { MorphLoader } from "@/components/ui/morph-loader"
 import { Tooltip } from "@/components/ui/tooltip"
-import { ShiftMarkAdaptive } from "@/components/ui/shift-mark"
+import { ShiftWordmark } from "@/components/ui/shift-mark"
 
 
 interface HeaderProps {
@@ -293,10 +293,14 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
           {!sidebarVisible ? (
             <Link
               href="/home"
-              className="inline-flex items-center gap-2.5 rounded-md border-r border-border pr-6"
+              className="inline-flex items-center rounded-md border-r border-border pr-6"
             >
-              <ShiftMarkAdaptive size={28} />
-              <span className="text-[13px] font-semibold tracking-tight text-foreground">SHIFT</span>
+              <span className="block dark:hidden">
+                <ShiftWordmark scale={0.32} variant="light" />
+              </span>
+              <span className="hidden dark:block">
+                <ShiftWordmark scale={0.32} variant="dark" />
+              </span>
             </Link>
           ) : null}
 

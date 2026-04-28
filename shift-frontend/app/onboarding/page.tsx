@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
-import { ArrowRight, Briefcase, Building2, CheckCircle2, FolderOpen, SkipForward } from "lucide-react"
+import { SkipForward } from "lucide-react"
 import {
   createOrganization,
   createWorkspace,
@@ -12,17 +12,27 @@ import {
   setSelectedWorkspaceId,
   setSelectedProjectId,
 } from "@/lib/auth"
-import { cn } from "@/lib/utils"
 import { MorphLoader } from "@/components/ui/morph-loader"
-import { ShiftBrand } from "@/components/ui/shift-brand"
+import {
+  ArrowRight,
+  AUTH_TOKENS,
+  AuthShell,
+  CheckIcon,
+  PaperCard,
+  PaperField,
+  PrimaryCta,
+  ValueProps,
+} from "@/components/auth/auth-shell"
+
+const { ACCENT, BORDER_PAPER, INK } = AUTH_TOKENS
 
 type Step = "org" | "workspace" | "project" | "done"
 
 const STEPS = [
-  { key: "org" as const, label: "Organização" },
-  { key: "workspace" as const, label: "Workspace" },
-  { key: "projeto" as const, label: "Projeto" },
-]
+  { key: "org", label: "Organização" },
+  { key: "workspace", label: "Workspace" },
+  { key: "project", label: "Projeto" },
+] as const
 
 export default function OnboardingPage() {
   const router = useRouter()
@@ -32,11 +42,9 @@ export default function OnboardingPage() {
 
   const [orgName, setOrgName] = useState("")
   const [orgId, setOrgId] = useState("")
-
   const [workspaceName, setWorkspaceName] = useState("")
   const [erpId, setErpId] = useState("")
   const [workspaceId, setWorkspaceId] = useState("")
-
   const [projectName, setProjectName] = useState("")
 
   useEffect(() => {
@@ -47,7 +55,7 @@ export default function OnboardingPage() {
     checkSession()
   }, [router])
 
-  const currentIndex = STEPS.findIndex((s) => s.key === step || (step === "done" && s.key === "projeto"))
+  const currentIndex = STEPS.findIndex((s) => s.key === step)
 
   async function handleCreateOrg(e: React.FormEvent) {
     e.preventDefault()
@@ -103,269 +111,244 @@ export default function OnboardingPage() {
     }
   }
 
+  const heroByStep = (() => {
+    switch (step) {
+      case "org":
+        return {
+          eyebrow: "Onboarding · 1 de 3",
+          title: (
+            <>
+              Comece pela{" "}
+              <em style={{ fontStyle: "italic", fontWeight: 500, color: ACCENT }}>organização</em>.
+            </>
+          ),
+          body: "Uma organização agrupa workspaces, projetos e membros. Em geral, ela representa sua empresa.",
+        }
+      case "workspace":
+        return {
+          eyebrow: "Onboarding · 2 de 3",
+          title: (
+            <>
+              Crie um{" "}
+              <em style={{ fontStyle: "italic", fontWeight: 500, color: ACCENT }}>workspace</em>.
+            </>
+          ),
+          body: "Workspaces guardam configurações de ERP, conexões e fluxos. Comece com um e depois evolua.",
+        }
+      case "project":
+        return {
+          eyebrow: "Onboarding · 3 de 3",
+          title: (
+            <>
+              Adicione um{" "}
+              <em style={{ fontStyle: "italic", fontWeight: 500, color: ACCENT }}>projeto</em>.
+            </>
+          ),
+          body: "Projetos organizam fluxos por cliente, escopo ou contrato. É opcional — pode pular.",
+        }
+      case "done":
+        return {
+          eyebrow: "Tudo pronto",
+          title: (
+            <>
+              Bem-vindo ao{" "}
+              <em style={{ fontStyle: "italic", fontWeight: 500, color: ACCENT }}>Shift</em>.
+            </>
+          ),
+          body: "Sua estrutura está configurada. Você pode adicionar mais workspaces e projetos a qualquer momento.",
+          support: (
+            <ValueProps
+              items={[
+                `Organização: ${orgName}`,
+                `Workspace: ${workspaceName}`,
+                projectName ? `Projeto: ${projectName}` : "Sem projeto inicial — você pode criar depois.",
+              ]}
+            />
+          ),
+        }
+    }
+  })()
+
   return (
-    <div className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden bg-[#0a0a0a]">
-      <div
-        className="pointer-events-none absolute inset-0"
-        style={{
-          backgroundImage: `
-            linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px)
-          `,
-          backgroundSize: "64px 64px",
-        }}
-      />
-      <div className="pointer-events-none absolute left-1/2 top-0 h-[300px] w-[600px] -translate-x-1/2 rounded-full bg-white/[0.03] blur-3xl" />
-
-      <div className="relative z-10 w-full max-w-md px-4">
-        <div className="mb-8 flex justify-center">
-          <ShiftBrand size={48} showWordmark={false} />
-        </div>
-
+    <AuthShell
+      heroEyebrow={heroByStep.eyebrow}
+      heroTitle={heroByStep.title}
+      heroBody={heroByStep.body}
+      heroSupport={heroByStep.support}
+    >
+      <PaperCard
+        eyebrow={
+          step === "done" ? "Estrutura criada" : `Passo ${currentIndex + 1} de ${STEPS.length}`
+        }
+      >
         {step !== "done" ? (
-          <>
-            {/* Progress indicator */}
-            <div className="mb-8 flex items-center">
-              {STEPS.map((s, i) => (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 24 }}>
+            {STEPS.map((s, i) => {
+              const reached = i <= currentIndex
+              return (
                 <React.Fragment key={s.key}>
-                  <div className="flex flex-col items-center">
-                    <div
-                      className={cn(
-                        "flex size-8 items-center justify-center rounded-full border text-xs font-bold transition-all",
-                        i < currentIndex
-                          ? "border-emerald-500 bg-emerald-500/20 text-emerald-400"
-                          : i === currentIndex
-                          ? "border-white bg-white text-neutral-900"
-                          : "border-white/20 bg-white/5 text-neutral-600"
-                      )}
-                    >
-                      {i < currentIndex ? "✓" : i + 1}
-                    </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span
-                      className={cn(
-                        "mt-1.5 text-[10px] font-medium",
-                        i === currentIndex
-                          ? "text-white"
-                          : i < currentIndex
-                          ? "text-emerald-400"
-                          : "text-neutral-600"
-                      )}
+                      style={{
+                        width: 22,
+                        height: 22,
+                        borderRadius: "50%",
+                        border: `1px solid ${reached ? ACCENT : "#d1d5db"}`,
+                        background: reached ? ACCENT : "transparent",
+                        color: reached ? "white" : "#9ca3af",
+                        fontSize: 11,
+                        fontWeight: 700,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                      }}
+                    >
+                      {i < currentIndex ? <CheckIcon size={11} /> : i + 1}
+                    </span>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: i === currentIndex ? INK : "#9ca3af",
+                        fontWeight: i === currentIndex ? 600 : 400,
+                      }}
                     >
                       {s.label}
                     </span>
                   </div>
                   {i < STEPS.length - 1 ? (
                     <div
-                      className={cn(
-                        "mb-4 h-px flex-1 mx-2 transition-all",
-                        i < currentIndex ? "bg-emerald-500/50" : "bg-white/10"
-                      )}
+                      style={{
+                        flex: 1,
+                        height: 1,
+                        background: i < currentIndex ? ACCENT : "#d1d5db",
+                      }}
                     />
                   ) : null}
                 </React.Fragment>
-              ))}
-            </div>
-
-            {/* Step 1: Organização */}
-            {step === "org" ? (
-              <div>
-                <div className="mb-6 text-center">
-                  <div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-full border border-white/10 bg-white/5">
-                    <Building2 className="size-5 text-neutral-300" />
-                  </div>
-                  <h1 className="text-xl font-semibold text-white">Configure sua organização</h1>
-                  <p className="mt-2 text-sm text-neutral-500">
-                    Uma organização agrupa seus workspaces e projetos.
-                  </p>
-                </div>
-                <form onSubmit={handleCreateOrg} className="space-y-4">
-                  <div>
-                    <label className="mb-1.5 block text-xs font-medium text-neutral-400">
-                      Nome da organização
-                    </label>
-                    <input
-                      type="text"
-                      value={orgName}
-                      onChange={(e) => setOrgName(e.target.value)}
-                      placeholder="Ex: Minha Empresa"
-                      className="w-full rounded-lg border border-white/10 bg-white/5 px-3.5 py-2.5 text-sm text-white placeholder-neutral-600 outline-none transition-all focus:border-white/30 focus:ring-2 focus:ring-white/10"
-                      required
-                      minLength={2}
-                    />
-                  </div>
-                  {error ? <p className="text-sm text-red-400">{error}</p> : null}
-                  <button
-                    type="submit"
-                    disabled={isLoading || orgName.trim().length < 2}
-                    className={cn(
-                      "flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-all",
-                      "bg-white text-neutral-900 hover:bg-neutral-100",
-                      "disabled:cursor-not-allowed disabled:opacity-60"
-                    )}
-                  >
-                    {isLoading ? (
-                      <MorphLoader className="size-4" />
-                    ) : (
-                      <>Continuar <ArrowRight className="size-4" /></>
-                    )}
-                  </button>
-                </form>
-              </div>
-            ) : null}
-
-            {/* Step 2: Workspace */}
-            {step === "workspace" ? (
-              <div>
-                <div className="mb-6 text-center">
-                  <div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-full border border-white/10 bg-white/5">
-                    <Briefcase className="size-5 text-neutral-300" />
-                  </div>
-                  <h1 className="text-xl font-semibold text-white">Crie seu workspace</h1>
-                  <p className="mt-2 text-sm text-neutral-500">
-                    Workspaces organizam seus projetos e configurações de integração.
-                  </p>
-                </div>
-                <form onSubmit={handleCreateWorkspace} className="space-y-4">
-                  <div>
-                    <label className="mb-1.5 block text-xs font-medium text-neutral-400">
-                      Nome do workspace
-                    </label>
-                    <input
-                      type="text"
-                      value={workspaceName}
-                      onChange={(e) => setWorkspaceName(e.target.value)}
-                      placeholder="Ex: Produção"
-                      className="w-full rounded-lg border border-white/10 bg-white/5 px-3.5 py-2.5 text-sm text-white placeholder-neutral-600 outline-none transition-all focus:border-white/30 focus:ring-2 focus:ring-white/10"
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block text-xs font-medium text-neutral-400">
-                      ERP ID{" "}
-                      <span className="font-normal text-neutral-600">(opcional)</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={erpId}
-                      onChange={(e) => setErpId(e.target.value)}
-                      placeholder="Identificador do ERP"
-                      className="w-full rounded-lg border border-white/10 bg-white/5 px-3.5 py-2.5 text-sm text-white placeholder-neutral-600 outline-none transition-all focus:border-white/30 focus:ring-2 focus:ring-white/10"
-                    />
-                  </div>
-                  {error ? <p className="text-sm text-red-400">{error}</p> : null}
-                  <button
-                    type="submit"
-                    disabled={isLoading || !workspaceName.trim()}
-                    className={cn(
-                      "flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-all",
-                      "bg-white text-neutral-900 hover:bg-neutral-100",
-                      "disabled:cursor-not-allowed disabled:opacity-60"
-                    )}
-                  >
-                    {isLoading ? (
-                      <MorphLoader className="size-4" />
-                    ) : (
-                      <>Continuar <ArrowRight className="size-4" /></>
-                    )}
-                  </button>
-                </form>
-              </div>
-            ) : null}
-
-            {/* Step 3: Projeto (opcional) */}
-            {step === "project" ? (
-              <div>
-                <div className="mb-6 text-center">
-                  <div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-full border border-white/10 bg-white/5">
-                    <FolderOpen className="size-5 text-neutral-300" />
-                  </div>
-                  <h1 className="text-xl font-semibold text-white">Adicione um projeto</h1>
-                  <p className="mt-2 text-sm text-neutral-500">
-                    Opcional — você pode criar projetos a qualquer momento no painel.
-                  </p>
-                </div>
-                <form onSubmit={handleCreateProject} className="space-y-4">
-                  <div>
-                    <label className="mb-1.5 block text-xs font-medium text-neutral-400">
-                      Nome do projeto
-                    </label>
-                    <input
-                      type="text"
-                      value={projectName}
-                      onChange={(e) => setProjectName(e.target.value)}
-                      placeholder="Ex: Migração Q1"
-                      className="w-full rounded-lg border border-white/10 bg-white/5 px-3.5 py-2.5 text-sm text-white placeholder-neutral-600 outline-none transition-all focus:border-white/30 focus:ring-2 focus:ring-white/10"
-                    />
-                  </div>
-                  {error ? <p className="text-sm text-red-400">{error}</p> : null}
-                  <div className="flex gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setStep("done")}
-                      disabled={isLoading}
-                      className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-neutral-400 transition-all hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      <SkipForward className="size-4" /> Pular
-                    </button>
-                    <button
-                      type="submit"
-                      disabled={isLoading || !projectName.trim()}
-                      className={cn(
-                        "flex flex-1 items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-all",
-                        "bg-white text-neutral-900 hover:bg-neutral-100",
-                        "disabled:cursor-not-allowed disabled:opacity-60"
-                      )}
-                    >
-                      {isLoading ? (
-                        <MorphLoader className="size-4" />
-                      ) : (
-                        <>Criar <ArrowRight className="size-4" /></>
-                      )}
-                    </button>
-                  </div>
-                </form>
-              </div>
-            ) : null}
-          </>
-        ) : (
-          /* Done */
-          <div className="text-center">
-            <div className="mx-auto mb-6 flex size-16 items-center justify-center rounded-full border border-emerald-500/30 bg-emerald-500/10">
-              <CheckCircle2 className="size-7 text-emerald-400" />
-            </div>
-            <h1 className="text-2xl font-bold text-white">Tudo pronto!</h1>
-            <p className="mt-2 text-sm text-neutral-500">
-              Sua estrutura está configurada. Você pode criar mais workspaces e projetos a qualquer
-              momento.
-            </p>
-
-            <div className="mt-6 space-y-2 rounded-xl border border-white/10 bg-white/5 p-4 text-left text-sm">
-              <div className="flex items-center gap-2 text-neutral-300">
-                <Building2 className="size-4 shrink-0 text-neutral-500" />
-                <span className="font-medium">{orgName}</span>
-              </div>
-              <div className="ml-6 flex items-center gap-2 text-neutral-400">
-                <Briefcase className="size-3.5 shrink-0 text-neutral-600" />
-                <span>{workspaceName}</span>
-              </div>
-              {projectName ? (
-                <div className="ml-10 flex items-center gap-2 text-neutral-500">
-                  <FolderOpen className="size-3.5 shrink-0 text-neutral-700" />
-                  <span>{projectName}</span>
-                </div>
-              ) : null}
-            </div>
-
-            <button
-              type="button"
-              onClick={() => router.push("/home")}
-              className="mt-6 flex w-full items-center justify-center gap-2 rounded-lg bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 transition-all hover:bg-neutral-100"
-            >
-              Acessar o painel <ArrowRight className="size-4" />
-            </button>
+              )
+            })}
           </div>
-        )}
-      </div>
-    </div>
+        ) : null}
+
+        {step === "org" ? (
+          <form onSubmit={handleCreateOrg} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <PaperField
+              label="Nome da organização"
+              placeholder="Ex: Minha Empresa"
+              value={orgName}
+              onChange={setOrgName}
+              required
+              minLength={2}
+            />
+            {error ? <p style={{ margin: 0, fontSize: 13, color: "#dc2626" }}>{error}</p> : null}
+            <PrimaryCta type="submit" disabled={isLoading || orgName.trim().length < 2}>
+              {isLoading ? <MorphLoader className="size-4" /> : <>Continuar <ArrowRight /></>}
+            </PrimaryCta>
+          </form>
+        ) : null}
+
+        {step === "workspace" ? (
+          <form onSubmit={handleCreateWorkspace} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <PaperField
+              label="Nome do workspace"
+              placeholder="Ex: Produção"
+              value={workspaceName}
+              onChange={setWorkspaceName}
+              required
+            />
+            <PaperField
+              label="ERP ID (opcional)"
+              placeholder="Identificador do ERP"
+              value={erpId}
+              onChange={setErpId}
+            />
+            {error ? <p style={{ margin: 0, fontSize: 13, color: "#dc2626" }}>{error}</p> : null}
+            <PrimaryCta type="submit" disabled={isLoading || !workspaceName.trim()}>
+              {isLoading ? <MorphLoader className="size-4" /> : <>Continuar <ArrowRight /></>}
+            </PrimaryCta>
+          </form>
+        ) : null}
+
+        {step === "project" ? (
+          <form onSubmit={handleCreateProject} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <PaperField
+              label="Nome do projeto"
+              placeholder="Ex: Migração Q1"
+              value={projectName}
+              onChange={setProjectName}
+            />
+            {error ? <p style={{ margin: 0, fontSize: 13, color: "#dc2626" }}>{error}</p> : null}
+            <div style={{ display: "flex", gap: 12 }}>
+              <button
+                type="button"
+                onClick={() => setStep("done")}
+                disabled={isLoading}
+                style={{
+                  flex: 1,
+                  height: 48,
+                  background: "transparent",
+                  border: `1px solid ${BORDER_PAPER}`,
+                  borderRadius: 8,
+                  fontSize: 14,
+                  fontWeight: 500,
+                  color: "#4b5563",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                <SkipForward size={14} /> Pular
+              </button>
+              <div style={{ flex: 1 }}>
+                <PrimaryCta type="submit" disabled={isLoading || !projectName.trim()}>
+                  {isLoading ? <MorphLoader className="size-4" /> : <>Criar <ArrowRight /></>}
+                </PrimaryCta>
+              </div>
+            </div>
+          </form>
+        ) : null}
+
+        {step === "done" ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                padding: 16,
+                background: "rgba(99,102,241,0.06)",
+                border: "1px solid rgba(99,102,241,0.18)",
+                borderRadius: 8,
+                fontSize: 14,
+                color: INK,
+              }}
+            >
+              <span
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: "50%",
+                  background: ACCENT,
+                  color: "white",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flex: "0 0 auto",
+                }}
+              >
+                <CheckIcon size={14} />
+              </span>
+              Estrutura criada com sucesso.
+            </div>
+            <PrimaryCta type="button" onClick={() => router.push("/home")}>
+              Acessar o painel <ArrowRight />
+            </PrimaryCta>
+          </div>
+        ) : null}
+      </PaperCard>
+    </AuthShell>
   )
 }

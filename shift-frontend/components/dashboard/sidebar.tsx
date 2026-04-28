@@ -21,7 +21,7 @@ import {
   Trash2,
   X,
 } from "lucide-react"
-import { ShiftMarkAdaptive } from "@/components/ui/shift-mark"
+import { ShiftWordmark } from "@/components/ui/shift-mark"
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useEffect, useRef, useState } from "react"
@@ -280,10 +280,14 @@ export function Sidebar() {
 
   return (
     <aside className="hidden w-64 border-r border-border bg-card/88 lg:flex lg:flex-col">
-      <div className="border-b border-border px-4 py-3">
-        <Link href="/home" className="inline-flex items-center gap-2 rounded-md px-0.5 py-0.5">
-          <ShiftMarkAdaptive size={32} />
-          <span className="text-base font-semibold">SHIFT</span>
+      <div className="flex h-14 items-center justify-center border-b border-border px-4">
+        <Link href="/home" className="inline-flex items-center rounded-md">
+          <span className="block dark:hidden">
+            <ShiftWordmark scale={0.3} variant="light" />
+          </span>
+          <span className="hidden dark:block">
+            <ShiftWordmark scale={0.3} variant="dark" />
+          </span>
         </Link>
       </div>
 

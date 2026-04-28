@@ -1,15 +1,9 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { useToast } from "@/lib/context/toast-context"
 import { useRouter } from "next/navigation"
-import {
-  ArrowRight,
-  Building2,
-  LogOut,
-  Plus,
-  X,
-} from "lucide-react"
+import { Building2, LogOut, Plus, X } from "lucide-react"
+import { useToast } from "@/lib/context/toast-context"
 import {
   createOrganization,
   getSelectedOrganizationId,
@@ -22,8 +16,17 @@ import {
   type Organization,
   type OrganizationRole,
 } from "@/lib/auth"
-import { cn } from "@/lib/utils"
 import { MorphLoader } from "@/components/ui/morph-loader"
+import {
+  ArrowRight,
+  AUTH_TOKENS,
+  AuthShell,
+  PaperCard,
+  PaperField,
+  PrimaryCta,
+} from "@/components/auth/auth-shell"
+
+const { ACCENT, BORDER_PAPER, INK, PAPER_INSET } = AUTH_TOKENS
 
 type LoadState = "loading" | "ready" | "error"
 
@@ -58,9 +61,7 @@ export default function DashboardPage() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
   const [isCreatingOrg, setIsCreatingOrg] = useState(false)
 
-  const canCreateOrg = useMemo(() => {
-    return orgName.trim().length >= 2
-  }, [orgName])
+  const canCreateOrg = useMemo(() => orgName.trim().length >= 2, [orgName])
 
   const loadOrganizations = useCallback(async () => {
     const session = await getValidSession()
@@ -70,7 +71,6 @@ export default function DashboardPage() {
     }
 
     const orgs = await listOrganizations()
-
     const orgsWithRoles = orgs.map((org) => ({
       ...org,
       role: (org.my_role ?? "MEMBER") as OrganizationRole | "MEMBER",
@@ -79,22 +79,15 @@ export default function DashboardPage() {
     setOrganizations(orgsWithRoles)
     setSelectedOrganizationId((currentId) => {
       const storedOrganizationId = getSelectedOrganizationId()
-
-      if (currentId && orgsWithRoles.some((organization) => organization.id === currentId)) {
-        return currentId
-      }
-
-      if (storedOrganizationId && orgsWithRoles.some((organization) => organization.id === storedOrganizationId)) {
+      if (currentId && orgsWithRoles.some((o) => o.id === currentId)) return currentId
+      if (storedOrganizationId && orgsWithRoles.some((o) => o.id === storedOrganizationId))
         return storedOrganizationId
-      }
-
       return orgsWithRoles[0]?.id ?? null
     })
   }, [router])
 
   useEffect(() => {
     let active = true
-
     async function load() {
       try {
         await loadOrganizations()
@@ -102,13 +95,11 @@ export default function DashboardPage() {
         setState("ready")
       } catch (err) {
         if (!active) return
-        setError(err instanceof Error ? err.message : "Falha ao carregar organizacoes.")
+        setError(err instanceof Error ? err.message : "Falha ao carregar organizações.")
         setState("error")
       }
     }
-
     load()
-
     return () => {
       active = false
     }
@@ -116,23 +107,17 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!isCreateModalOpen) return
-
-    function handleEscape(event: KeyboardEvent) {
-      if (event.key === "Escape" && !isCreatingOrg) {
-        setIsCreateModalOpen(false)
-      }
+    function onKeydown(event: KeyboardEvent) {
+      if (event.key === "Escape" && !isCreatingOrg) setIsCreateModalOpen(false)
     }
-
-    window.addEventListener("keydown", handleEscape)
-    return () => window.removeEventListener("keydown", handleEscape)
+    window.addEventListener("keydown", onKeydown)
+    return () => window.removeEventListener("keydown", onKeydown)
   }, [isCreateModalOpen, isCreatingOrg])
 
   useEffect(() => {
     if (!isCreateModalOpen) return
-
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = "hidden"
-
     return () => {
       document.body.style.overflow = previousOverflow
     }
@@ -155,21 +140,21 @@ export default function DashboardPage() {
 
   async function handleCreateOrganization(event: React.FormEvent) {
     event.preventDefault()
-
     if (!canCreateOrg) return
 
     setIsCreatingOrg(true)
-
     try {
-      const createdOrganization = await createOrganization({ name: orgName.trim() })
-
+      const created = await createOrganization({ name: orgName.trim() })
       setOrgName("")
-      setSelectedOrganizationId(createdOrganization.id)
+      setSelectedOrganizationId(created.id)
       setIsCreateModalOpen(false)
       await loadOrganizations()
-      toast.success("Organização criada", `"${createdOrganization.name}" foi cadastrada com sucesso.`)
+      toast.success("Organização criada", `"${created.name}" foi cadastrada com sucesso.`)
     } catch (err) {
-      toast.error("Erro ao criar organização", err instanceof Error ? err.message : "Falha ao criar organização.")
+      toast.error(
+        "Erro ao criar organização",
+        err instanceof Error ? err.message : "Falha ao criar organização.",
+      )
     } finally {
       setIsCreatingOrg(false)
     }
@@ -179,234 +164,390 @@ export default function DashboardPage() {
     setSelectedOrganizationId(organization.id)
     setIsRoutingHome(true)
     setError("")
-
     try {
       const workspaces = await listOrganizationWorkspaces(organization.id)
       if (workspaces.length === 0) {
-        setError("Esta organizacao ainda nao possui workspace. Crie um para continuar.")
+        setError("Esta organização ainda não possui workspace. Crie um para continuar.")
         return
       }
-
       persistSelectedOrganizationId(organization.id)
       setSelectedWorkspaceId(workspaces[0].id)
       router.push("/home")
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Falha ao carregar workspaces da organizacao.")
+      setError(err instanceof Error ? err.message : "Falha ao carregar workspaces da organização.")
     } finally {
       setIsRoutingHome(false)
     }
   }
 
   return (
-    <>
-      <main className="dark auth-shell min-h-screen" style={{ colorScheme: "dark" }}>
-        <div className="auth-grid pointer-events-none absolute inset-0 opacity-30" />
+    <AuthShell
+      heroEyebrow="Bem-vindo de volta"
+      heroTitle={
+        <>
+          Selecione sua{" "}
+          <em style={{ fontStyle: "italic", fontWeight: 500, color: ACCENT }}>organização</em>.
+        </>
+      }
+      heroBody="Cada organização tem seus próprios workspaces, conexões e fluxos de ETL. Escolha onde você quer continuar agora."
+    >
+      <PaperCard
+        eyebrow={
+          organizations.length > 0
+            ? `${organizations.length} ${organizations.length === 1 ? "organização" : "organizações"}`
+            : "Nenhuma organização"
+        }
+      >
+        {state === "loading" ? (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: 16,
+              fontSize: 14,
+              color: "#6b7280",
+            }}
+          >
+            <MorphLoader className="size-4" /> Carregando organizações...
+          </div>
+        ) : null}
 
-        <div className="relative mx-auto flex min-h-screen w-full max-w-3xl items-center px-4 py-8 sm:px-6">
-          <section className="w-full rounded-3xl border border-border/70 bg-[linear-gradient(160deg,rgba(16,16,16,0.96),rgba(10,10,10,0.94))] p-4 shadow-[0_35px_90px_rgba(0,0,0,0.55)] backdrop-blur sm:p-5">
-            <div className="mb-6 text-center">
-              <h1 className="text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
-                Bem-vindo de volta!
-              </h1>
-              <p className="mt-2 text-sm text-muted-foreground">
-                Selecione uma organizacao para acessar o painel.
-              </p>
-            </div>
+        {state === "error" ? (
+          <p
+            style={{
+              margin: 0,
+              padding: 12,
+              borderRadius: 8,
+              background: "rgba(239,68,68,0.06)",
+              border: "1px solid rgba(239,68,68,0.18)",
+              fontSize: 13,
+              color: "#dc2626",
+            }}
+          >
+            {error}
+          </p>
+        ) : null}
 
-            <div className="rounded-2xl border border-border/70 bg-background/45 p-3.5 sm:p-4">
-              <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border/60 pb-4">
-                <div className="flex items-center gap-3">
-                  <span className="inline-flex size-8 items-center justify-center rounded-xl border border-border/70 bg-muted/45 text-foreground">
-                    <Building2 className="size-3.5" />
+        {state === "ready" && organizations.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {organizations.map((organization) => {
+              const isSelected = organization.id === selectedOrganizationId
+              return (
+                <button
+                  key={organization.id}
+                  type="button"
+                  onClick={() => handleSelectOrganization(organization)}
+                  disabled={isRoutingHome}
+                  style={{
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "12px 14px",
+                    background: PAPER_INSET,
+                    border: `1px solid ${isSelected ? ACCENT : "transparent"}`,
+                    borderRadius: 8,
+                    cursor: isRoutingHome ? "not-allowed" : "pointer",
+                    opacity: isRoutingHome ? 0.6 : 1,
+                    textAlign: "left",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 32,
+                      height: 32,
+                      borderRadius: 8,
+                      background: "white",
+                      border: `1px solid ${BORDER_PAPER}`,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flex: "0 0 auto",
+                      color: "#4b5563",
+                    }}
+                  >
+                    <Building2 className="size-4" />
                   </span>
-                  <div>
-                    <p className="text-base font-semibold leading-none text-foreground">
-                      Minhas Organizacoes
-                    </p>
-                    <p className="mt-1 text-[10px] text-muted-foreground">
-                      {organizations.length > 0
-                        ? `${organizations.length} organizacao${organizations.length > 1 ? "oes" : ""}`
-                        : "Nenhuma organizacao"}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={openCreateModal}
-                    disabled={isRoutingHome}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-xl border border-white/20 bg-primary px-3 text-xs font-bold text-primary-foreground shadow-[0_0_15px_rgba(255,255,255,0.12)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <Plus className="size-3" />
-                    Nova
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleLogout}
-                    disabled={isLoggingOut || isRoutingHome}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-xl border border-border/80 bg-card/70 px-3 text-xs font-medium text-foreground transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {isLoggingOut ? (
-                      <MorphLoader className="size-3" />
-                    ) : (
-                      <LogOut className="size-3" />
-                    )}
-                    Sair
-                  </button>
-                </div>
-              </div>
-
-              <div className="mt-4">
-                {state === "loading" ? (
-                  <div className="rounded-xl border border-border/70 bg-background/50 px-3 py-2 text-xs text-muted-foreground">
-                    <span className="inline-flex items-center gap-2">
-                      <MorphLoader className="size-3.5 morph-muted" />
-                      Carregando organizacoes...
-                    </span>
-                  </div>
-                ) : null}
-
-                {isRoutingHome ? (
-                  <div className="mb-2 rounded-xl border border-border/70 bg-background/50 px-3 py-2 text-xs text-muted-foreground">
-                    <span className="inline-flex items-center gap-2">
-                      <MorphLoader className="size-3.5 morph-muted" />
-                      Abrindo workspace...
-                    </span>
-                  </div>
-                ) : null}
-
-                {state === "error" ? (
-                  <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                    {error}
-                  </div>
-                ) : null}
-
-                {state === "ready" && organizations.length > 0 ? (
-                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                    {organizations.map((organization) => {
-                      const isSelected = organization.id === selectedOrganizationId
-
-                      return (
-                        <button
-                          key={organization.id}
-                          type="button"
-                          onClick={() => handleSelectOrganization(organization)}
-                          disabled={isRoutingHome}
-                          className={cn(
-                            "group flex w-full flex-col justify-between gap-3 rounded-2xl border px-3.5 py-3 text-left transition-all duration-300 hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:translate-y-0",
-                            isSelected
-                              ? "border-foreground/40 bg-foreground/10 shadow-[0_0_20px_rgba(255,255,255,0.06)]"
-                              : "border-border/60 bg-background/20 hover:border-foreground/20 hover:bg-background/40 hover:shadow-[0_8px_30px_rgba(0,0,0,0.4)]"
-                          )}
-                        >
-                          <div className="flex items-start justify-between">
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm font-bold text-foreground">
-                                {organization.name}
-                              </p>
-                              <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                                <span className="rounded-md bg-muted/80 px-1.5 py-0.5 text-[9px] font-bold tracking-tight text-foreground uppercase">
-                                  {getRoleLabel(organization.role)}
-                                </span>
-                              </div>
-                            </div>
-                            <span className={cn(
-                              "flex size-7 shrink-0 items-center justify-center rounded-full border transition-all duration-200",
-                              isSelected 
-                                ? "border-foreground/30 bg-foreground/10 text-foreground" 
-                                : "border-border/60 bg-muted/30 text-muted-foreground group-hover:border-border group-hover:bg-muted/50"
-                            )}>
-                              <ArrowRight className="size-3.5" />
-                            </span>
-                          </div>
-
-                        </button>
-                      )
-                    })}
-                  </div>
-                ) : null}
-
-                {state === "ready" && organizations.length === 0 ? (
-                  <div className="rounded-xl border border-dashed border-border bg-background/45 px-4 py-6 text-center">
-                    <p className="mb-3 text-sm text-muted-foreground">
-                      Nenhuma organização encontrada.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => router.push("/onboarding")}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-xl border border-white/20 bg-primary px-3 text-xs font-bold text-primary-foreground shadow-[0_0_15px_rgba(255,255,255,0.12)] transition hover:opacity-90"
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <p
+                      style={{
+                        margin: 0,
+                        fontSize: 14,
+                        fontWeight: 600,
+                        color: INK,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
                     >
-                      <Plus className="size-3" /> Configurar agora
-                    </button>
+                      {organization.name}
+                    </p>
+                    <span
+                      style={{
+                        marginTop: 2,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        padding: "1px 6px",
+                        borderRadius: 999,
+                        background: "rgba(99,102,241,0.12)",
+                        color: ACCENT,
+                        fontSize: 10,
+                        fontWeight: 600,
+                        letterSpacing: "0.04em",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      {getRoleLabel(organization.role)}
+                    </span>
                   </div>
-                ) : null}
-              </div>
-            </div>
-          </section>
+                  <span style={{ color: "#9ca3af", display: "inline-flex" }}>
+                    {isRoutingHome && isSelected ? (
+                      <MorphLoader className="size-4" />
+                    ) : (
+                      <ArrowRight />
+                    )}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        ) : null}
+
+        {state === "ready" && organizations.length === 0 ? (
+          <div
+            style={{
+              padding: 24,
+              borderRadius: 8,
+              background: PAPER_INSET,
+              textAlign: "center",
+              fontSize: 13,
+              color: "#6b7280",
+            }}
+          >
+            Nenhuma organização encontrada.
+            <button
+              type="button"
+              onClick={() => router.push("/onboarding")}
+              style={{
+                display: "block",
+                margin: "12px auto 0",
+                background: "none",
+                border: "none",
+                color: ACCENT,
+                fontWeight: 600,
+                fontSize: 13,
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              Configurar agora →
+            </button>
+          </div>
+        ) : null}
+
+        <div
+          style={{
+            marginTop: 24,
+            paddingTop: 20,
+            borderTop: `1px solid ${BORDER_PAPER}`,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 12,
+          }}
+        >
+          <button
+            type="button"
+            onClick={openCreateModal}
+            disabled={isRoutingHome}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              background: "none",
+              border: "none",
+              color: ACCENT,
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: "pointer",
+              padding: 0,
+              fontFamily: "inherit",
+            }}
+          >
+            <Plus className="size-4" /> Nova organização
+          </button>
+
+          <button
+            type="button"
+            onClick={handleLogout}
+            disabled={isLoggingOut || isRoutingHome}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              background: "none",
+              border: "none",
+              color: "#6b7280",
+              fontSize: 13,
+              fontWeight: 500,
+              cursor: "pointer",
+              padding: 0,
+              fontFamily: "inherit",
+            }}
+          >
+            {isLoggingOut ? <MorphLoader className="size-3.5" /> : <LogOut className="size-3.5" />}
+            Sair
+          </button>
         </div>
-      </main>
+      </PaperCard>
 
       {isCreateModalOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 py-6 backdrop-blur-sm">
-          <div className="w-full max-w-sm rounded-[1.25rem] border border-border bg-card p-4 shadow-2xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-muted-foreground">
-                  Nova organizacao
-                </p>
-                <h2 className="mt-0.5 text-base font-bold text-foreground">Criar workspace</h2>
-              </div>
-              <button
-                type="button"
-                onClick={closeCreateModal}
-                disabled={isCreatingOrg}
-                className="inline-flex size-7 items-center justify-center rounded-full border border-border text-muted-foreground transition hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-                aria-label="Fechar modal"
-              >
-                <X className="size-3" />
-              </button>
-            </div>
-
-            <form onSubmit={handleCreateOrganization} className="mt-4 space-y-3">
-              <div>
-                <label className="mb-1 block text-[10px] font-semibold text-foreground uppercase tracking-wider">
-                  Nome da organizacao
-                </label>
-                <input
-                  type="text"
-                  value={orgName}
-                  onChange={(event) => setOrgName(event.target.value)}
-                  placeholder="Ex: Minha Empresa"
-                  className="h-9 w-full rounded-xl border border-input bg-background/70 px-3 text-sm text-foreground placeholder:text-muted-foreground outline-none transition focus:border-ring focus:ring-2 focus:ring-ring/20"
-                  minLength={2}
-                  required
-                />
-              </div>
-
-
-              <div className="flex justify-end gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={closeCreateModal}
-                  disabled={isCreatingOrg}
-                  className="inline-flex h-8 items-center justify-center rounded-xl border border-border bg-card px-4 text-xs font-medium text-foreground transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={isCreatingOrg || !canCreateOrg}
-                  className="inline-flex h-8 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-xs font-bold text-primary-foreground transition hover:opacity-90 shadow-[0_0_15px_rgba(255,255,255,0.1)] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isCreatingOrg ? <MorphLoader className="size-3" /> : <Plus className="size-3" />}
-                  Criar workspace
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <CreateOrgModal
+          orgName={orgName}
+          setOrgName={setOrgName}
+          isCreating={isCreatingOrg}
+          canSubmit={canCreateOrg}
+          onClose={closeCreateModal}
+          onSubmit={handleCreateOrganization}
+        />
       ) : null}
-    </>
+    </AuthShell>
+  )
+}
+
+function CreateOrgModal({
+  orgName,
+  setOrgName,
+  isCreating,
+  canSubmit,
+  onClose,
+  onSubmit,
+}: {
+  orgName: string
+  setOrgName: (value: string) => void
+  isCreating: boolean
+  canSubmit: boolean
+  onClose: () => void
+  onSubmit: (event: React.FormEvent) => Promise<void>
+}) {
+  return (
+    <div
+      role="presentation"
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 50,
+        background: "rgba(14,18,32,0.4)",
+        backdropFilter: "blur(2px)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Criar organização"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: "min(480px, 96vw)",
+          background: AUTH_TOKENS.PAPER,
+          borderRadius: 12,
+          padding: 32,
+          boxShadow:
+            "0 1px 0 rgba(14,18,32,0.04), 0 24px 48px -16px rgba(14,18,32,0.18), 0 2px 6px rgba(14,18,32,0.04)",
+          color: INK,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            paddingBottom: 16,
+            marginBottom: 20,
+            borderBottom: `1px solid ${BORDER_PAPER}`,
+          }}
+        >
+          <div>
+            <p
+              style={{
+                margin: 0,
+                fontSize: 11,
+                fontFamily: AUTH_TOKENS.monoFamily,
+                color: "#6b7280",
+                letterSpacing: "0.12em",
+                textTransform: "uppercase",
+                fontWeight: 500,
+              }}
+            >
+              Nova organização
+            </p>
+            <p style={{ margin: "4px 0 0", fontSize: 16, fontWeight: 600 }}>Cadastrar organização</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={isCreating}
+            aria-label="Fechar"
+            style={{
+              width: 32,
+              height: 32,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "transparent",
+              border: "none",
+              color: "#6b7280",
+              cursor: isCreating ? "not-allowed" : "pointer",
+              borderRadius: 6,
+            }}
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+
+        <form onSubmit={onSubmit} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <PaperField
+            label="Nome da organização"
+            placeholder="Ex: Minha Empresa"
+            value={orgName}
+            onChange={setOrgName}
+            required
+            minLength={2}
+          />
+          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isCreating}
+              style={{
+                height: 40,
+                padding: "0 16px",
+                background: "transparent",
+                border: `1px solid ${BORDER_PAPER}`,
+                borderRadius: 8,
+                fontSize: 13,
+                fontWeight: 500,
+                color: "#4b5563",
+                cursor: isCreating ? "not-allowed" : "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              Cancelar
+            </button>
+            <div style={{ width: 200 }}>
+              <PrimaryCta type="submit" disabled={isCreating || !canSubmit}>
+                {isCreating ? <MorphLoader className="size-4" /> : <>Criar <ArrowRight /></>}
+              </PrimaryCta>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
   )
 }

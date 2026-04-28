@@ -2,13 +2,30 @@
 
 import { useRef, useState } from "react"
 import Link from "next/link"
-import { ArrowLeft, ArrowRight, KeyRound, Mail, ShieldCheck } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { ArrowLeft } from "lucide-react"
 import { MorphLoader } from "@/components/ui/morph-loader"
-import { ShiftBrand } from "@/components/ui/shift-brand"
 import { forgotPassword, resetPassword, verifyResetCode } from "@/lib/auth"
+import {
+  ArrowRight,
+  AUTH_TOKENS,
+  AuthShell,
+  CheckIcon,
+  NoteBlock,
+  PaperCard,
+  PaperField,
+  PrimaryCta,
+  Requirements,
+} from "@/components/auth/auth-shell"
+
+const { ACCENT, BORDER_PAPER, INK, PAPER_INSET } = AUTH_TOKENS
 
 type Step = "email" | "sent" | "reset" | "done"
+
+const passwordRules = [
+  { label: "Pelo menos 8 caracteres", test: (v: string) => v.length >= 8 },
+  { label: "Uma letra maiúscula", test: (v: string) => /[A-Z]/.test(v) },
+  { label: "Um número ou símbolo", test: (v: string) => /[\d^A-Za-z0-9]/.test(v) || /[^A-Za-z0-9]/.test(v) },
+]
 
 export default function ResetPasswordPage() {
   const [step, setStep] = useState<Step>("email")
@@ -21,8 +38,6 @@ export default function ResetPasswordPage() {
   const codeRefs = useRef<Array<HTMLInputElement | null>>([])
 
   const codeString = code.join("")
-
-  // ── Passo 1: enviar email ──────────────────────────────────────────────────
 
   const handleEmail = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -38,16 +53,12 @@ export default function ResetPasswordPage() {
     }
   }
 
-  // ── Passo 2: verificar código ──────────────────────────────────────────────
-
   const handleCodeInput = (index: number, value: string) => {
     const digit = value.replace(/\D/g, "").slice(-1)
     const next = [...code]
     next[index] = digit
     setCode(next)
-    if (digit && index < 5) {
-      codeRefs.current[index + 1]?.focus()
-    }
+    if (digit && index < 5) codeRefs.current[index + 1]?.focus()
   }
 
   const handleCodeKeyDown = (index: number, event: React.KeyboardEvent) => {
@@ -83,8 +94,6 @@ export default function ResetPasswordPage() {
     }
   }
 
-  // ── Passo 3: redefinir senha ───────────────────────────────────────────────
-
   const handleReset = async (event: React.FormEvent) => {
     event.preventDefault()
     if (password !== confirm) return
@@ -100,233 +109,294 @@ export default function ResetPasswordPage() {
     }
   }
 
-  return (
-    <div className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden bg-[#0a0a0a]">
-      <div
-        className="pointer-events-none absolute inset-0"
-        style={{
-          backgroundImage: `
-            linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
-            linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px)
-          `,
-          backgroundSize: "64px 64px",
-        }}
-      />
-      <div className="pointer-events-none absolute left-1/2 top-0 h-[300px] w-[600px] -translate-x-1/2 rounded-full bg-white/[0.03] blur-3xl" />
-
-      <div className="relative z-10 w-full max-w-sm px-4">
-        <div className="mb-8 flex justify-center">
-          <ShiftBrand size={52} />
-        </div>
-
-        {/* ── Passo 1: Email ── */}
-        {step === "email" ? (
-          <div>
-            <div className="mb-8 text-center">
-              <div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-full border border-white/10 bg-white/5">
-                <KeyRound className="size-5 text-neutral-300" />
-              </div>
-              <h1 className="text-xl font-semibold text-white">Esqueceu a senha?</h1>
-              <p className="mt-2 text-sm text-neutral-500">
-                Insira seu email e enviaremos um código de verificação.
-              </p>
-            </div>
-            <form onSubmit={handleEmail} className="space-y-4">
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-neutral-400">
-                  Endereço de email
-                </label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  placeholder="email@example.com"
-                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3.5 py-2.5 text-sm text-white placeholder-neutral-600 outline-none transition-all focus:border-white/30 focus:ring-2 focus:ring-white/10"
-                  required
-                />
-              </div>
-              {error ? <p className="text-sm text-red-400">{error}</p> : null}
-              <button
-                type="submit"
-                disabled={isLoading}
-                className={cn(
-                  "flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-all",
-                  "bg-white text-neutral-900 hover:bg-neutral-100 active:bg-neutral-200",
-                  "disabled:cursor-not-allowed disabled:opacity-60"
-                )}
-              >
-                {isLoading ? (
-                  <MorphLoader className="size-4" />
-                ) : (
-                  <>Enviar código <ArrowRight className="size-4" /></>
-                )}
-              </button>
-            </form>
-            <div className="mt-6 flex justify-center">
-              <Link
-                href="/login"
-                className="flex items-center gap-1.5 text-xs text-neutral-500 transition-colors hover:text-white"
-              >
-                <ArrowLeft className="size-3.5" /> Voltar para login
-              </Link>
-            </div>
-          </div>
-        ) : null}
-
-        {/* ── Passo 2: Código ── */}
-        {step === "sent" ? (
-          <div className="text-center">
-            <div className="mx-auto mb-6 flex size-14 items-center justify-center rounded-full border border-white/10 bg-white/5">
-              <Mail className="size-6 text-neutral-300" />
-            </div>
-            <h1 className="text-xl font-semibold text-white">Verifique seu email</h1>
-            <p className="mt-2 text-sm text-neutral-500">
-              Enviamos um código de 6 dígitos para{" "}
-              <span className="font-medium text-neutral-300">{email}</span>
-            </p>
-
-            <form onSubmit={handleVerifyCode}>
-              <div
-                className="my-8 flex items-center justify-center gap-2"
-                onPaste={handleCodePaste}
-              >
-                {code.map((digit, index) => (
-                  <input
-                    key={index}
-                    ref={(el) => { codeRefs.current[index] = el }}
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={1}
-                    value={digit}
-                    onChange={(event) => handleCodeInput(index, event.target.value)}
-                    onKeyDown={(event) => handleCodeKeyDown(index, event)}
-                    className="size-11 rounded-lg border border-white/10 bg-white/5 text-center text-lg font-semibold text-white outline-none transition-all focus:border-white/30 focus:ring-2 focus:ring-white/10"
-                  />
-                ))}
-              </div>
-
-              {error ? <p className="mb-4 text-sm text-red-400">{error}</p> : null}
-
-              <button
-                type="submit"
-                disabled={isLoading || codeString.length < 6}
-                className="flex w-full items-center justify-center gap-2 rounded-lg bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 transition-all hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isLoading ? (
-                  <MorphLoader className="size-4" />
-                ) : (
-                  <>Verificar código <ArrowRight className="size-4" /></>
-                )}
-              </button>
-            </form>
-
-            <p className="mt-4 text-xs text-neutral-600">
-              Não recebeu o código?{" "}
+  const heroByStep = (() => {
+    switch (step) {
+      case "email":
+        return {
+          eyebrow: "Recuperação",
+          title: (
+            <>
+              Esqueceu
+              <br />
+              sua{" "}
+              <em style={{ fontStyle: "italic", fontWeight: 500, color: ACCENT }}>senha</em>?
+            </>
+          ),
+          body: "Sem problema. Informe o e-mail associado à sua conta e enviaremos um código de verificação.",
+          support: (
+            <NoteBlock>
+              Por segurança, o código expira em <strong style={{ color: INK }}>30 minutos</strong>. Se não chegar, verifique a pasta de spam.
+            </NoteBlock>
+          ),
+        }
+      case "sent":
+        return {
+          eyebrow: "Verificação",
+          title: (
+            <>
+              Confirme o
+              <br />
+              <em style={{ fontStyle: "italic", fontWeight: 500, color: ACCENT }}>código</em> de 6 dígitos.
+            </>
+          ),
+          body: (
+            <>
+              Enviamos um código para <strong style={{ color: INK }}>{email}</strong>. Cole ou digite os 6 dígitos para continuar.
+            </>
+          ),
+          support: (
+            <NoteBlock>
+              O código expira em 30 minutos. Não recebeu?{" "}
               <button
                 type="button"
-                onClick={() => { setCode(["", "", "", "", "", ""]); setStep("email") }}
-                className="text-neutral-400 underline-offset-4 transition-colors hover:text-white hover:underline"
+                onClick={() => {
+                  setCode(["", "", "", "", "", ""])
+                  setStep("email")
+                }}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: ACCENT,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                  padding: 0,
+                  fontFamily: "inherit",
+                  fontSize: "inherit",
+                }}
               >
-                Tentar novamente
+                Reenviar
               </button>
-            </p>
-            <div className="mt-4 flex justify-center">
-              <Link
-                href="/login"
-                className="flex items-center gap-1.5 text-xs text-neutral-500 transition-colors hover:text-white"
-              >
-                <ArrowLeft className="size-3.5" /> Voltar para login
-              </Link>
-            </div>
-          </div>
+              .
+            </NoteBlock>
+          ),
+        }
+      case "reset":
+        return {
+          eyebrow: "Nova senha",
+          title: (
+            <>
+              Defina sua
+              <br />
+              <em style={{ fontStyle: "italic", fontWeight: 500, color: ACCENT }}>nova</em> senha.
+            </>
+          ),
+          body: "Escolha uma senha forte. Você poderá entrar imediatamente após confirmar.",
+          support: (
+            <Requirements
+              items={passwordRules.map((r) => ({ label: r.label, ok: r.test(password) }))}
+            />
+          ),
+        }
+      case "done":
+        return {
+          eyebrow: "Concluído",
+          title: (
+            <>
+              Tudo certo. Sua{" "}
+              <em style={{ fontStyle: "italic", fontWeight: 500, color: ACCENT }}>senha</em> foi atualizada.
+            </>
+          ),
+          body: "Você já pode entrar com a nova senha. Te direcionamos abaixo.",
+        }
+    }
+  })()
+
+  return (
+    <AuthShell
+      heroEyebrow={heroByStep.eyebrow}
+      heroTitle={heroByStep.title}
+      heroBody={heroByStep.body}
+      heroSupport={heroByStep.support}
+    >
+      <PaperCard eyebrow={step === "done" ? "Senha redefinida" : "Recuperar acesso"}>
+        {step === "email" ? (
+          <form onSubmit={handleEmail} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <PaperField
+              label="E-mail"
+              placeholder="voce@empresa.com"
+              type="email"
+              value={email}
+              onChange={setEmail}
+              required
+              autoComplete="email"
+            />
+            {error ? (
+              <p style={{ margin: 0, fontSize: 13, color: "#dc2626" }}>{error}</p>
+            ) : null}
+            <PrimaryCta type="submit" disabled={isLoading}>
+              {isLoading ? <MorphLoader className="size-4" /> : <>Enviar código <ArrowRight /></>}
+            </PrimaryCta>
+          </form>
         ) : null}
 
-        {/* ── Passo 3: Nova senha ── */}
+        {step === "sent" ? (
+          <form
+            onSubmit={handleVerifyCode}
+            style={{ display: "flex", flexDirection: "column", gap: 16 }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 8,
+              }}
+              onPaste={handleCodePaste}
+            >
+              {code.map((digit, index) => (
+                <input
+                  key={index}
+                  ref={(el) => {
+                    codeRefs.current[index] = el
+                  }}
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={1}
+                  value={digit}
+                  onChange={(event) => handleCodeInput(index, event.target.value)}
+                  onKeyDown={(event) => handleCodeKeyDown(index, event)}
+                  style={{
+                    width: 52,
+                    height: 56,
+                    background: PAPER_INSET,
+                    border: "1px solid transparent",
+                    borderRadius: 8,
+                    textAlign: "center",
+                    fontSize: 22,
+                    fontWeight: 600,
+                    color: INK,
+                    outline: "none",
+                    fontFamily: "inherit",
+                  }}
+                />
+              ))}
+            </div>
+            {error ? (
+              <p style={{ margin: 0, fontSize: 13, color: "#dc2626" }}>{error}</p>
+            ) : null}
+            <PrimaryCta type="submit" disabled={isLoading || codeString.length < 6}>
+              {isLoading ? <MorphLoader className="size-4" /> : <>Verificar código <ArrowRight /></>}
+            </PrimaryCta>
+          </form>
+        ) : null}
+
         {step === "reset" ? (
-          <div>
-            <div className="mb-8 text-center">
-              <div className="mx-auto mb-4 flex size-12 items-center justify-center rounded-full border border-white/10 bg-white/5">
-                <ShieldCheck className="size-5 text-neutral-300" />
-              </div>
-              <h1 className="text-xl font-semibold text-white">Nova senha</h1>
-              <p className="mt-2 text-sm text-neutral-500">
-                Mínimo 8 caracteres, incluindo um número e um caractere especial.
-              </p>
-            </div>
-            <form onSubmit={handleReset} className="space-y-4">
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-neutral-400">
-                  Nova senha
-                </label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  placeholder="********"
-                  className="w-full rounded-lg border border-white/10 bg-white/5 px-3.5 py-2.5 text-sm text-white placeholder-neutral-600 outline-none transition-all focus:border-white/30 focus:ring-2 focus:ring-white/10"
-                  required
-                />
-              </div>
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-neutral-400">
-                  Confirmar nova senha
-                </label>
-                <input
-                  type="password"
-                  value={confirm}
-                  onChange={(event) => setConfirm(event.target.value)}
-                  placeholder="********"
-                  className={cn(
-                    "w-full rounded-lg border bg-white/5 px-3.5 py-2.5 text-sm text-white placeholder-neutral-600 outline-none transition-all focus:ring-2 focus:ring-white/10",
-                    confirm.length > 0 && confirm !== password
-                      ? "border-red-500/50 focus:border-red-500/70"
-                      : "border-white/10 focus:border-white/30"
-                  )}
-                  required
-                />
-                {confirm.length > 0 && confirm !== password ? (
-                  <p className="mt-1.5 text-xs text-red-400">Senhas não coincidem</p>
-                ) : null}
-              </div>
-              {error ? <p className="text-sm text-red-400">{error}</p> : null}
-              <button
-                type="submit"
-                disabled={isLoading || password !== confirm || password.length < 8}
-                className={cn(
-                  "flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold transition-all",
-                  "bg-white text-neutral-900 hover:bg-neutral-100 active:bg-neutral-200",
-                  "disabled:cursor-not-allowed disabled:opacity-60"
-                )}
-              >
-                {isLoading ? (
-                  <MorphLoader className="size-4" />
-                ) : (
-                  <><ShieldCheck className="size-4" /> Redefinir senha</>
-                )}
-              </button>
-            </form>
-          </div>
+          <form onSubmit={handleReset} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <PaperField
+              label="Nova senha"
+              placeholder="Mínimo 8 caracteres"
+              type="password"
+              value={password}
+              onChange={setPassword}
+              required
+              minLength={8}
+              autoComplete="new-password"
+            />
+            <PaperField
+              label="Confirmar senha"
+              placeholder="Repita a nova senha"
+              type="password"
+              value={confirm}
+              onChange={setConfirm}
+              required
+              autoComplete="new-password"
+              invalid={confirm.length > 0 && confirm !== password}
+            />
+            {confirm.length > 0 && confirm !== password ? (
+              <p style={{ margin: 0, fontSize: 13, color: "#dc2626" }}>Senhas não coincidem.</p>
+            ) : null}
+            {error ? (
+              <p style={{ margin: 0, fontSize: 13, color: "#dc2626" }}>{error}</p>
+            ) : null}
+            <PrimaryCta
+              type="submit"
+              disabled={isLoading || password !== confirm || password.length < 8}
+            >
+              {isLoading ? <MorphLoader className="size-4" /> : <>Atualizar senha <ArrowRight /></>}
+            </PrimaryCta>
+          </form>
         ) : null}
 
-        {/* ── Passo 4: Concluído ── */}
         {step === "done" ? (
-          <div className="text-center">
-            <div className="mx-auto mb-6 flex size-14 items-center justify-center rounded-full border border-emerald-500/30 bg-emerald-500/10">
-              <ShieldCheck className="size-6 text-emerald-400" />
+          <div style={{ display: "flex", flexDirection: "column", gap: 16, alignItems: "stretch" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                padding: 16,
+                background: "rgba(99,102,241,0.06)",
+                border: "1px solid rgba(99,102,241,0.18)",
+                borderRadius: 8,
+                fontSize: 14,
+                color: INK,
+              }}
+            >
+              <span
+                style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: "50%",
+                  background: ACCENT,
+                  color: "white",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flex: "0 0 auto",
+                }}
+              >
+                <CheckIcon size={14} />
+              </span>
+              Senha atualizada com sucesso.
             </div>
-            <h1 className="text-xl font-semibold text-white">Senha redefinida!</h1>
-            <p className="mt-2 text-sm text-neutral-500">
-              Sua senha foi redefinida com sucesso. Faça login para continuar.
-            </p>
             <Link
               href="/login"
-              className="mt-8 flex items-center justify-center gap-2 rounded-lg bg-white px-4 py-2.5 text-sm font-semibold text-neutral-900 transition-all hover:bg-neutral-100"
+              style={{
+                marginTop: 8,
+                height: 48,
+                background: INK,
+                color: "white",
+                borderRadius: 8,
+                fontSize: 14,
+                fontWeight: 600,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                textDecoration: "none",
+              }}
             >
-              Ir para login <ArrowRight className="size-4" />
+              Ir para login <ArrowRight />
             </Link>
           </div>
         ) : null}
-      </div>
-    </div>
+
+        <div
+          style={{
+            marginTop: 28,
+            paddingTop: 20,
+            borderTop: `1px solid ${BORDER_PAPER}`,
+            fontSize: 13,
+            color: "#6b7280",
+            textAlign: "center",
+          }}
+        >
+          {step === "done" ? null : (
+            <Link
+              href="/login"
+              style={{
+                color: INK,
+                fontWeight: 600,
+                textDecoration: "none",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              <ArrowLeft size={14} /> Voltar ao login
+            </Link>
+          )}
+        </div>
+      </PaperCard>
+    </AuthShell>
   )
 }

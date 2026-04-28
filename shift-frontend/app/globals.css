@@ -2,6 +2,14 @@
 @import "tw-animate-css";
 @import "../components/workflow/workflow-nodes.css";
 
+@font-face {
+  font-family: "Viasoft Regular";
+  src: url("/fonts/Viasoft-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 :root {
