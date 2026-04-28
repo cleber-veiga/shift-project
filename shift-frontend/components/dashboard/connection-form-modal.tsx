@@ -6,11 +6,23 @@ import type {
   Connection,
   ConnectionType,
   CreateConnectionPayload,
+  DiagnosticStep,
   UpdateConnectionPayload,
   WorkspacePlayer,
   WorkspacePlayerDatabaseType,
 } from "@/lib/auth"
-import { testConnection, listWorkspacePlayers } from "@/lib/auth"
+import {
+  diagnoseConnectionById,
+  diagnoseConnectionPayload,
+  testConnection,
+  listWorkspacePlayers,
+} from "@/lib/auth"
+import { DiagnosticPanel } from "@/components/dashboard/diagnostic-panel"
+import {
+  FirebirdScenarioSelector,
+  inferScenarioFromHost,
+  type FirebirdScenario,
+} from "@/components/dashboard/firebird-scenario-selector"
 import type { DashboardScope } from "@/lib/dashboard-navigation"
 import { MorphLoader } from "@/components/ui/morph-loader"
 import {
@@ -55,6 +67,8 @@ interface ParsedFirebirdUrl {
   host: string
   port: number
   database: string
+  /** Cenario inferido do host parseado — ajuda o wizard a se manter sincronizado. */
+  scenario?: FirebirdScenario
   error?: string
 }
 
@@ -67,14 +81,25 @@ function parseFirebirdUrl(raw: string): ParsedFirebirdUrl {
     const database = url.slice(1)
     if (!database)
       return { host: "", port: 3050, database: "", error: "Informe o caminho do arquivo .fdb." }
-    return { host: "localhost", port: 3050, database }
+    return {
+      host: "localhost",
+      port: 3050,
+      database,
+      scenario: inferScenarioFromHost("localhost"),
+    }
   }
 
   const slashIdx = url.indexOf("/")
   if (slashIdx === -1) {
     const looksLikePath =
       /^[a-zA-Z]:[\\\/]/.test(url) || url.includes("\\") || url.includes("/")
-    if (looksLikePath) return { host: "localhost", port: 3050, database: url }
+    if (looksLikePath)
+      return {
+        host: "localhost",
+        port: 3050,
+        database: url,
+        scenario: inferScenarioFromHost("localhost"),
+      }
     return {
       host: "",
       port: 3050,
@@ -94,14 +119,26 @@ function parseFirebirdUrl(raw: string): ParsedFirebirdUrl {
     }
 
   const colonIdx = hostPart.lastIndexOf(":")
-  if (colonIdx === -1) return { host: hostPart, port: 3050, database }
+  if (colonIdx === -1)
+    return {
+      host: hostPart,
+      port: 3050,
+      database,
+      scenario: inferScenarioFromHost(hostPart),
+    }
 
   const portStr = hostPart.slice(colonIdx + 1)
   const port = parseInt(portStr, 10)
   if (isNaN(port) || port < 1 || port > 65535)
     return { host: "", port: 3050, database: "", error: `Porta inválida: ${portStr}` }
 
-  return { host: hostPart.slice(0, colonIdx), port, database }
+  const finalHost = hostPart.slice(0, colonIdx)
+  return {
+    host: finalHost,
+    port,
+    database,
+    scenario: inferScenarioFromHost(finalHost),
+  }
 }
 
 function getPathDirectory(path: string): string {
@@ -126,6 +163,55 @@ function getSelectedFileAbsolutePath(input: HTMLInputElement, file: File): strin
 // ─── Tipos internos ───────────────────────────────────────────────────────────
 
 type FirebirdMode = "fields" | "url"
+type FirebirdVersion = "auto" | "3+" | "2.5"
+
+const FIREBIRD_VERSIONS: { value: FirebirdVersion; label: string }[] = [
+  { value: "auto", label: "Auto-detectar" },
+  { value: "3+", label: "Firebird 3.0 ou superior" },
+  { value: "2.5", label: "Firebird 2.5" },
+]
+
+/** Dica contextual quando uma etapa do diagnostico falha — combina o
+ * cenario escolhido com a error_class para apontar a causa mais provavel. */
+function scenarioContextualHint(
+  scenario: FirebirdScenario,
+  errorClass: string | null,
+  database: string,
+): string | null {
+  if (!errorClass) return null
+  if (scenario === "windows-host" && errorClass === "port_closed") {
+    return "Verifique o Windows Firewall (comando PowerShell acima)."
+  }
+  if (scenario === "bundled" && errorClass === "path_not_found") {
+    const fileName =
+      database
+        .split(/[\\/]/)
+        .filter(Boolean)
+        .pop() || "arquivo.fdb"
+    return `O arquivo precisa estar em FIREBIRD_LEGACY_DATA_DIR. Caminho dentro do container: /firebird/data/${fileName}.`
+  }
+  if (scenario === "bundled" && errorClass === "wrong_ods") {
+    return "Mude a versão do servidor — o arquivo é ODS de uma versão diferente da selecionada."
+  }
+  if (scenario === "bundled" && errorClass === "database_locked") {
+    return (
+      "O arquivo .fdb está sendo segurado por outro processo (geralmente o " +
+      "Firebird Server local do Windows ou uma sessão DBeaver/IBExpert ativa). " +
+      "Solução rápida: faça uma cópia dedicada para a Shift (`Copy-Item " +
+      "C:\\Shift\\Data\\X.FDB C:\\Shift\\Data\\X_SHIFT.FDB`) e use o nome novo " +
+      "no campo 'Caminho do arquivo .fdb'."
+    )
+  }
+  return null
+}
+
+function normalizeFirebirdVersion(raw: unknown): FirebirdVersion {
+  const s = String(raw ?? "").trim().toLowerCase()
+  if (s === "2.5" || s === "2" || s === "fb2" || s === "fb2.5" || s === "fdb") return "2.5"
+  if (s === "3+" || s === "3" || s === "3.0") return "3+"
+  // Default = auto. Backend le o ODS do arquivo e decide.
+  return "auto"
+}
 
 interface ConnectionFormModalProps {
   open: boolean
@@ -172,6 +258,16 @@ export function ConnectionFormModal({
   const [firebirdMode, setFirebirdMode] = useState<FirebirdMode>("fields")
   const [firebirdUrl, setFirebirdUrl] = useState("")
   const [urlParseError, setUrlParseError] = useState("")
+  // Lazy initializer le direto da prop. Combinado com `key` no parent que
+  // forca remontagem ao trocar de conexao, garante que o valor inicial seja
+  // sempre o que veio do backend — sem depender do useEffect.
+  const [firebirdVersion, setFirebirdVersion] = useState<FirebirdVersion>(
+    () => normalizeFirebirdVersion(connection?.extra_params?.firebird_version),
+  )
+  // Cenario do wizard. Inicializa por inferencia do host quando editando.
+  const [firebirdScenario, setFirebirdScenario] = useState<FirebirdScenario>(
+    () => inferScenarioFromHost(connection?.host),
+  )
 
   // ── Firebird: builder inline de caminho ──
   const [pickedFileName, setPickedFileName] = useState<string | null>(null)
@@ -186,6 +282,7 @@ export function ConnectionFormModal({
 
   // ── Teste de conexão ──
   const [testing, setTesting] = useState(false)
+  const [diagnosticSteps, setDiagnosticSteps] = useState<DiagnosticStep[]>([])
 
   /** Player atualmente selecionado (objeto completo) */
   const selectedPlayer = players.find((p) => p.id === selectedPlayerId) ?? null
@@ -207,6 +304,10 @@ export function ConnectionFormModal({
 
   useEffect(() => {
     if (!open) return
+    // firebirdVersion ja foi inicializado da prop via lazy useState — nao
+    // sobrescrever aqui senao seria redundante e re-executaria a cada mudanca
+    // de prop. Os outros campos sao seguros pra setar via useEffect porque
+    // nao tem o mesmo padrao de Select controlado.
     if (connection) {
       setName(connection.name)
       setIsPublic(connection.is_public)
@@ -220,6 +321,7 @@ export function ConnectionFormModal({
       setIncludeSchemasRaw(connection.include_schemas?.join(", ") ?? "")
       setFirebirdMode("fields")
       setFirebirdUrl("")
+      setFirebirdScenario(inferScenarioFromHost(connection.host))
     } else {
       setName("")
       setIsPublic(true)
@@ -233,12 +335,14 @@ export function ConnectionFormModal({
       setIncludeSchemasRaw("")
       setFirebirdMode("fields")
       setFirebirdUrl("")
+      setFirebirdScenario("bundled")
     }
     setError("")
     setUrlParseError("")
     setShowPassword(false)
     setPickedFileName(null)
     setBuilderDir("")
+    setDiagnosticSteps([])
   }, [open, connection])
 
   // ─── Keyboard / body overflow ───────────────────────────────────────────────
@@ -349,22 +453,183 @@ export function ConnectionFormModal({
         setHost(parsed.host)
         setPort(parsed.port)
         setDatabase(parsed.database)
+        // Mantem o wizard alinhado com o que o usuario digitou na URL.
+        if (parsed.scenario && parsed.scenario !== firebirdScenario) {
+          setFirebirdScenario(parsed.scenario)
+        }
       }
     }
   }
 
+  /** Host bundled correspondente a versao escolhida. */
+  function bundledHostFor(version: FirebirdVersion): string {
+    return version === "2.5" ? "firebird25" : "firebird30"
+  }
+
+  /** Aplica os defaults do cenario aos campos host/port. Preserva
+   * username/password/name/database (apenas sobrescreve se database era
+   * tipico do cenario anterior — caso contrario respeita o que o usuario
+   * digitou). */
+  function applyScenarioDefaults(scenario: FirebirdScenario) {
+    if (scenario === "bundled") {
+      setHost(bundledHostFor(firebirdVersion))
+      setPort(3050)
+    } else if (scenario === "windows-host") {
+      setHost("host.docker.internal")
+      setPort(3050)
+    } else {
+      // remote-server: limpa o host se vinha de um cenario com auto-fill
+      // para o usuario nao confundir com um placeholder.
+      const h = host.trim().toLowerCase()
+      if (
+        h === "host.docker.internal" ||
+        h === "firebird25" ||
+        h === "firebird30"
+      ) {
+        setHost("")
+      }
+    }
+  }
+
+  function handleScenarioChange(next: FirebirdScenario) {
+    setFirebirdScenario(next)
+    applyScenarioDefaults(next)
+  }
+
+  // Quando muda a versao FB no cenario bundled, sincroniza o host
+  // (firebird25 <-> firebird30). Nao mexe nos demais cenarios.
+  useEffect(() => {
+    if (!isFirebird) return
+    if (firebirdScenario !== "bundled") return
+    const expected = bundledHostFor(firebirdVersion)
+    if (host !== expected) setHost(expected)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [firebirdVersion, firebirdScenario, isFirebird])
+
+  /** Monta extra_params do Firebird preservando chaves existentes da conexao
+   * (ex: fb_library_name custom) e gravando firebird_version conforme a
+   * escolha do usuario. "auto" remove a chave para o backend usar o default. */
+  function buildFirebirdExtraParams(): Record<string, unknown> | null {
+    const baseParams: Record<string, unknown> = connection?.extra_params
+      ? { ...connection.extra_params }
+      : {}
+    if (firebirdVersion === "auto") {
+      delete baseParams.firebird_version
+    } else {
+      baseParams.firebird_version = firebirdVersion
+    }
+    return Object.keys(baseParams).length > 0 ? baseParams : null
+  }
+
+  /** Resolve host/port/database considerando o modo URL do Firebird. */
+  function resolveTargetFields():
+    | { host: string; port: number; database: string }
+    | { error: string } {
+    let resolvedHost = host
+    let resolvedPort = port
+    let resolvedDatabase = database
+
+    if (isFirebird && firebirdMode === "url") {
+      const parsed = parseFirebirdUrl(firebirdUrl)
+      if (parsed.error) return { error: parsed.error }
+      resolvedHost = parsed.host
+      resolvedPort = parsed.port
+      resolvedDatabase = parsed.database
+    }
+
+    if (!resolvedHost.trim()) return { error: "Informe o host." }
+    if (!resolvedDatabase.trim())
+      return {
+        error: isFirebird
+          ? "Informe o caminho do arquivo .fdb."
+          : "Informe o banco de dados.",
+      }
+    return {
+      host: resolvedHost.trim(),
+      port: resolvedPort,
+      database: resolvedDatabase.trim(),
+    }
+  }
+
+  /** Habilita o botao "Testar" quando ha campos minimos preenchidos.
+   * Para Firebird, aplica validacoes especificas do cenario selecionado. */
+  const canTest = (() => {
+    if (testing || loading) return false
+    if (!username.trim()) return false
+    if (!isEditing && !password) return false
+    if (isFirebird && firebirdMode === "url") return firebirdUrl.trim().length > 0
+
+    const dbTrim = database.trim()
+    const hostTrim = host.trim()
+    if (!hostTrim || !dbTrim) return false
+
+    if (isFirebird) {
+      if (firebirdScenario === "bundled") {
+        return /\.fdb$/i.test(dbTrim)
+      }
+      if (firebirdScenario === "windows-host") {
+        return /^[A-Za-z]:[\\/]/.test(dbTrim)
+      }
+      // remote-server: host obrigatorio (ja validado), nada alem disso.
+      return true
+    }
+    return true
+  })()
+
   async function handleTest() {
-    if (!connection) return
+    setError("")
+    setDiagnosticSteps([])
     setTesting(true)
     try {
-      const result = await testConnection(connection.id)
-      if (result.success) {
-        toast.success("Conexão bem-sucedida", result.message)
-      } else {
-        toast.error("Falha na conexão", result.message)
+      if (isEditing && connection) {
+        // Modo edicao: para Firebird, usa o pipeline de 4 etapas via
+        // /connections/{id}/diagnose. Para outros tipos, o backend
+        // retorna 400 e caimos no /connections/{id}/test legacy (1 step).
+        try {
+          const report = await diagnoseConnectionById(connection.id)
+          setDiagnosticSteps(report.steps)
+          return
+        } catch {
+          // Fallback intencional: cobre nao-Firebird (400) e qualquer
+          // outro erro — pior caso, mostra 1 step com a mensagem do
+          // backend, sem perder a informacao do erro real.
+          const result = await testConnection(connection.id)
+          setDiagnosticSteps([
+            {
+              stage: "test",
+              ok: result.success,
+              latency_ms: null,
+              error_class: result.success ? null : "unknown",
+              error_msg: result.success ? null : result.message,
+              hint: result.success ? null : result.message,
+            },
+          ])
+          return
+        }
       }
+
+      // Modo criacao: testa o payload atual sem persistir.
+      const target = resolveTargetFields()
+      if ("error" in target) {
+        setError(target.error)
+        return
+      }
+      const extraParams = isFirebird ? buildFirebirdExtraParams() : null
+      const report = await diagnoseConnectionPayload({
+        type,
+        host: target.host,
+        port: target.port,
+        database: target.database,
+        username: username.trim(),
+        password,
+        extra_params: extraParams,
+      })
+      setDiagnosticSteps(report.steps)
     } catch (err) {
-      toast.error("Falha na conexão", err instanceof Error ? err.message : "Erro ao testar conexão.")
+      toast.error(
+        "Falha na conexão",
+        err instanceof Error ? err.message : "Erro ao testar conexão.",
+      )
     } finally {
       setTesting(false)
     }
@@ -437,6 +702,7 @@ export function ConnectionFormModal({
           include_schemas: includeSchemas,
           is_public: isPublic,
         }
+        if (isFirebird) payload.extra_params = buildFirebirdExtraParams()
         if (password) payload.password = password
         await onSubmit(payload)
       } else {
@@ -452,6 +718,7 @@ export function ConnectionFormModal({
           include_schemas: includeSchemas,
           is_public: isPublic,
         }
+        if (isFirebird) payload.extra_params = buildFirebirdExtraParams()
         if (scope === "space" && workspaceId) {
           payload.workspace_id = workspaceId
         } else if (projectId) {
@@ -476,7 +743,7 @@ export function ConnectionFormModal({
 
   const databaseLabel = isFirebird ? "Caminho do arquivo .fdb" : "Banco de dados"
   const databasePlaceholder = isFirebird
-    ? "Ex: D:\\Data\\MYDB.FDB ou /opt/firebird/MYDB.FDB"
+    ? "Ex: C:\\Shift\\Data\\MYDB.FDB  ou  /opt/shift/data/MYDB.FDB"
     : "Ex: erp_prod"
 
   return (
@@ -489,7 +756,7 @@ export function ConnectionFormModal({
         role="dialog"
         aria-modal="true"
         aria-label={isEditing ? "Editar conexão" : "Nova conexão"}
-        className="flex w-[min(580px,96vw)] max-h-[90vh] flex-col rounded-2xl border border-border bg-card shadow-2xl"
+        className="flex w-[min(960px,96vw)] max-h-[92vh] flex-col rounded-2xl border border-border bg-card shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -519,20 +786,33 @@ export function ConnectionFormModal({
 
         {/* Form */}
         <form onSubmit={(e) => void handleSubmit(e)} className="flex min-h-0 flex-1 flex-col">
-          <div className="flex-1 space-y-4 overflow-y-auto px-5 py-4">
+          <div className="flex-1 overflow-y-auto px-6 py-5">
 
-            {/* Nome */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Nome *</label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Ex: ERP Produção"
-                disabled={loading}
-                className={inputClass}
-              />
-            </div>
+            {/* Layout em 2 colunas — esquerda: identificacao + credenciais.
+                Direita: como conectar (mais denso, dominante). */}
+            <div className="grid grid-cols-1 gap-x-6 gap-y-5 md:grid-cols-2">
+
+            {/* ╔═ COLUNA 1 ═══════════════════════════════════════════════ */}
+            <div className="space-y-5">
+
+            {/* ── SEÇÃO: Identificação ─────────────────────────────────── */}
+            <div className="space-y-3">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                Identificação
+              </p>
+
+              {/* Nome */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted-foreground">Nome *</label>
+                <input
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Ex: ERP Produção"
+                  disabled={loading}
+                  className={inputClass}
+                />
+              </div>
 
             {/* Sistema */}
             <div className="space-y-1.5">
@@ -641,41 +921,171 @@ export function ConnectionFormModal({
                 </Select>
               </div>
             )}
+            </div>
+            {/* ── /SEÇÃO Identificação ─────────────────────────────────── */}
 
-            {/* ── Firebird: toggle URL / Campos ── */}
-            {isFirebird && (
-              <div className="space-y-3">
+            {/* ── SEÇÃO: Credenciais (coluna 1) ────────────────────────── */}
+            <div className="space-y-3">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                Credenciais
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                {/* Usuário */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">Usuário *</label>
+                  <input
+                    type="text"
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    placeholder="Ex: sysdba"
+                    disabled={loading}
+                    className={inputClass}
+                  />
+                </div>
+                {/* Senha */}
                 <div className="space-y-1.5">
                   <label className="text-xs font-medium text-muted-foreground">
-                    Modo de conexão
+                    Senha {isEditing ? <span className="text-muted-foreground/60">(em branco mantém)</span> : "*"}
                   </label>
-                  <div className="inline-flex w-full items-center rounded-md border border-border bg-background p-1">
+                  <div className="relative">
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder={isEditing ? "••••••••" : "Senha"}
+                      disabled={loading}
+                      className={`${inputClass} pr-10`}
+                    />
                     <button
                       type="button"
-                      onClick={() => handleFirebirdModeChange("fields")}
-                      disabled={loading}
-                      className={`flex-1 rounded px-3 py-1.5 text-xs font-medium transition-colors ${
-                        firebirdMode === "fields"
-                          ? "bg-accent text-foreground"
-                          : "text-muted-foreground hover:text-foreground"
-                      }`}
+                      onClick={() => setShowPassword((v) => !v)}
+                      tabIndex={-1}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
                     >
-                      Por Campos (Host + Caminho)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleFirebirdModeChange("url")}
-                      disabled={loading}
-                      className={`flex-1 rounded px-3 py-1.5 text-xs font-medium transition-colors ${
-                        firebirdMode === "url"
-                          ? "bg-accent text-foreground"
-                          : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      Por URL
+                      {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
                     </button>
                   </div>
                 </div>
+              </div>
+            </div>
+            {/* ── /SEÇÃO Credenciais ──────────────────────────────────── */}
+
+            </div>
+            {/* ╚═ /COLUNA 1 ════════════════════════════════════════════ */}
+
+            {/* ╔═ COLUNA 2 ═══════════════════════════════════════════════ */}
+            <div className="space-y-5">
+
+            {/* ── SEÇÃO: Como conectar ─────────────────────────────────── */}
+            <div className="space-y-3">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                Como conectar
+              </p>
+
+            {/* ── Firebird: wizard de cenário + URL/Campos ── */}
+            {isFirebird && (
+              <div className="space-y-3">
+                {/* Wizard de cenário — direciona como o backend vai conectar */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-muted-foreground">
+                    Como o Firebird está disponível?
+                  </label>
+                  <FirebirdScenarioSelector
+                    value={firebirdScenario}
+                    onChange={handleScenarioChange}
+                    disabled={loading}
+                  />
+                </div>
+
+                {firebirdScenario === "bundled" && (
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    Coloque o <span className="font-mono text-foreground/90">.fdb</span> em{" "}
+                    <span className="font-mono text-foreground/90">C:\Shift\Data</span>{" "}
+                    <span className="text-muted-foreground/60">(Windows)</span> ou{" "}
+                    <span className="font-mono text-foreground/90">/opt/shift/data</span>{" "}
+                    <span className="text-muted-foreground/60">(Linux)</span>. Suba o stack com{" "}
+                    <span className="font-mono text-foreground/90">
+                      docker compose --profile firebird-legacy up -d
+                    </span>
+                    .
+                  </p>
+                )}
+                {firebirdScenario === "windows-host" && (
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    Garanta que o serviço Firebird está rodando e libere a porta 3050 no Firewall:{" "}
+                    <span className="font-mono text-foreground/90">
+                      New-NetFirewallRule -DisplayName Firebird-3050 -Direction Inbound -Protocol TCP -LocalPort 3050 -Action Allow
+                    </span>
+                  </p>
+                )}
+                {firebirdScenario === "remote-server" && (
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    Informe IP ou hostname do servidor Firebird na rede. O caminho do arquivo deve ser{" "}
+                    <span className="font-medium text-foreground/90">conforme visto pelo servidor</span>.
+                  </p>
+                )}
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-muted-foreground">
+                      Versão Firebird
+                    </label>
+                    <Select
+                      value={firebirdVersion}
+                      onValueChange={(v) => setFirebirdVersion(v as FirebirdVersion)}
+                      disabled={loading}
+                    >
+                      <SelectTrigger className="w-full bg-background">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {FIREBIRD_VERSIONS.map((v) => (
+                          <SelectItem key={v.value} value={v.value}>
+                            {v.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-muted-foreground">
+                      Modo de entrada
+                    </label>
+                    <div className="inline-flex h-9 w-full items-center rounded-md border border-border bg-background p-1">
+                      <button
+                        type="button"
+                        onClick={() => handleFirebirdModeChange("fields")}
+                        disabled={loading}
+                        className={`flex-1 rounded px-2 py-1 text-xs font-medium transition-colors ${
+                          firebirdMode === "fields"
+                            ? "bg-accent text-foreground"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        Campos
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleFirebirdModeChange("url")}
+                        disabled={loading}
+                        className={`flex-1 rounded px-2 py-1 text-xs font-medium transition-colors ${
+                          firebirdMode === "url"
+                            ? "bg-accent text-foreground"
+                            : "text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        URL
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                {firebirdVersion === "auto" && (
+                  <p className="text-[11px] italic text-muted-foreground">
+                    Auto-detectar lê o cabeçalho do <span className="font-mono">.fdb</span> e escolhe
+                    o servidor embutido compatível (FB 2.5 ou 3.0+).
+                  </p>
+                )}
 
                 {firebirdMode === "url" ? (
                   <div className="space-y-1.5">
@@ -694,15 +1104,21 @@ export function ConnectionFormModal({
                       <p className="font-medium text-foreground/80">Formatos aceitos:</p>
                       <p>
                         <span className="font-mono text-foreground/70">
-                          192.168.1.1:3050/D:\Data\MYDB.FDB
+                          192.168.1.1:3050/C:\Sistemas\MYDB.FDB
                         </span>{" "}
                         — remoto
                       </p>
                       <p>
                         <span className="font-mono text-foreground/70">
-                          /opt/firebird/MYDB.FDB
+                          /C:\Shift\Data\MYDB.FDB
                         </span>{" "}
-                        — local (servidor)
+                        — bundled (Windows, pasta padrão Shift)
+                      </p>
+                      <p>
+                        <span className="font-mono text-foreground/70">
+                          /opt/shift/data/MYDB.FDB
+                        </span>{" "}
+                        — bundled (Linux, pasta padrão Shift)
                       </p>
                     </div>
                     {firebirdUrl.trim() &&
@@ -738,14 +1154,38 @@ export function ConnectionFormModal({
                   <>
                     <div className="grid grid-cols-[1fr_100px] gap-3">
                       <div className="space-y-1.5">
-                        <label className="text-xs font-medium text-muted-foreground">Host *</label>
+                        <div className="flex items-center justify-between">
+                          <label className="text-xs font-medium text-muted-foreground">
+                            Host *
+                          </label>
+                          {firebirdScenario === "bundled" && (
+                            <span className="inline-flex items-center rounded-sm bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
+                              Embutido
+                            </span>
+                          )}
+                          {firebirdScenario === "windows-host" && (
+                            <span className="inline-flex items-center rounded-sm bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
+                              Host Docker
+                            </span>
+                          )}
+                        </div>
                         <input
                           type="text"
                           value={host}
                           onChange={(e) => setHost(e.target.value)}
-                          placeholder="Ex: 192.168.1.100 ou localhost"
+                          placeholder={
+                            firebirdScenario === "remote-server"
+                              ? "Ex: 192.168.1.100"
+                              : "Auto-preenchido"
+                          }
                           disabled={loading}
-                          className={inputClass}
+                          readOnly={firebirdScenario !== "remote-server"}
+                          aria-readonly={firebirdScenario !== "remote-server"}
+                          className={`${inputClass} ${
+                            firebirdScenario !== "remote-server"
+                              ? "cursor-not-allowed bg-muted/40 text-foreground/70"
+                              : ""
+                          }`}
                         />
                       </div>
                       <div className="space-y-1.5">
@@ -759,7 +1199,13 @@ export function ConnectionFormModal({
                           min={1}
                           max={65535}
                           disabled={loading}
-                          className={inputClass}
+                          readOnly={firebirdScenario === "bundled"}
+                          aria-readonly={firebirdScenario === "bundled"}
+                          className={`${inputClass} ${
+                            firebirdScenario === "bundled"
+                              ? "cursor-not-allowed bg-muted/40 text-foreground/70"
+                              : ""
+                          }`}
                         />
                       </div>
                     </div>
@@ -773,7 +1219,11 @@ export function ConnectionFormModal({
                           type="text"
                           value={database}
                           onChange={(e) => { setDatabase(e.target.value); dismissBuilder() }}
-                          placeholder="Ex: D:\Data\EMPRESA.FDB  ou  /opt/firebird/EMPRESA.FDB"
+                          placeholder={
+                            firebirdScenario === "bundled"
+                              ? "Ex: C:\\Shift\\Data\\EMPRESA.FDB  ou  /opt/shift/data/EMPRESA.FDB"
+                              : "Ex: C:\\Sistemas\\ERP\\EMPRESA.FDB (path do servidor)"
+                          }
                           disabled={loading}
                           className={inputClass}
                         />
@@ -826,7 +1276,11 @@ export function ConnectionFormModal({
                               type="text"
                               value={builderDir}
                               onChange={(e) => handleBuilderDirChange(e.target.value)}
-                              placeholder="Ex: D:\Firebird\Data  ou  /opt/firebird/databases"
+                              placeholder={
+                                firebirdScenario === "bundled"
+                                  ? "Ex: C:\\Shift\\Data  ou  /opt/shift/data"
+                                  : "Ex: C:\\Sistemas\\ERP  (path no servidor remoto)"
+                              }
                               disabled={loading}
                               className={inputClass}
                               autoFocus
@@ -843,11 +1297,20 @@ export function ConnectionFormModal({
                         </div>
                       )}
 
-                      {!pickedFileName && (
+                      {!pickedFileName && firebirdScenario === "bundled" && (
                         <p className="text-[11px] text-muted-foreground">
-                          Informe o <span className="font-medium text-foreground">caminho absoluto</span> no servidor.
-                          Windows: <span className="font-mono text-foreground/70">D:\Data\EMPRESA.FDB</span> —
-                          Linux: <span className="font-mono text-foreground/70">/opt/firebird/EMPRESA.FDB</span>
+                          Coloque o <span className="font-mono text-foreground/70">.fdb</span> em{" "}
+                          <span className="font-mono text-foreground">C:\Shift\Data</span>{" "}
+                          (Windows) ou{" "}
+                          <span className="font-mono text-foreground">/opt/shift/data</span>{" "}
+                          (Linux) e informe o caminho absoluto.
+                        </p>
+                      )}
+
+                      {!pickedFileName && firebirdScenario !== "bundled" && (
+                        <p className="text-[11px] text-muted-foreground">
+                          Informe o <span className="font-medium text-foreground">caminho absoluto</span> conforme o servidor remoto enxerga
+                          (ex: <span className="font-mono text-foreground/70">C:\Sistemas\ERP\EMPRESA.FDB</span>).
                         </p>
                       )}
 
@@ -923,78 +1386,68 @@ export function ConnectionFormModal({
                   disabled={loading}
                   className={inputClass}
                 />
-                <p className="text-[11px] text-muted-foreground">
-                  Separe por vírgula. As tabelas desses schemas aparecerão como{" "}
-                  <span className="font-mono text-foreground/70">SCHEMA.TABELA</span> no catálogo.
-                  Útil no Oracle quando o usuário conectado acessa tabelas de outros schemas.
+                <p className="text-[11px] italic text-muted-foreground">
+                  Separe por vírgula. As tabelas aparecerão como{" "}
+                  <span className="font-mono">SCHEMA.TABELA</span> no catálogo. Útil para Oracle.
                 </p>
               </div>
             )}
-
-            {/* Usuário */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">Usuário *</label>
-              <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="Ex: sysdba"
-                disabled={loading}
-                className={inputClass}
-              />
             </div>
+            {/* ── /SEÇÃO Como conectar ─────────────────────────────────── */}
 
-            {/* Senha */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground">
-                Senha {isEditing ? "(deixe em branco para manter)" : "*"}
-              </label>
-              <div className="relative">
-                <input
-                  type={showPassword ? "text" : "password"}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder={isEditing ? "••••••••" : "Senha de acesso"}
-                  disabled={loading}
-                  className={`${inputClass} pr-10`}
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((v) => !v)}
-                  tabIndex={-1}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
-                >
-                  {showPassword ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                </button>
-              </div>
             </div>
+            {/* ╚═ /COLUNA 2 ════════════════════════════════════════════ */}
 
-            {/* Erro */}
+            </div>
+            {/* /grid 2-cols */}
+
+            {/* Erro de validação do form (não é erro de teste) */}
             {error && (
-              <p className="rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
+              <p className="mt-5 rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
                 {error}
               </p>
+            )}
+
+            {/* Resultado do teste de conexão */}
+            {(diagnosticSteps.length > 0 || testing) && (
+              <div className="mt-5 space-y-2 border-t border-border pt-4">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/70">
+                  Resultado do teste
+                </p>
+                <DiagnosticPanel steps={diagnosticSteps} running={testing} />
+                {isFirebird && (() => {
+                  const failure = diagnosticSteps.find((s) => !s.ok)
+                  if (!failure) return null
+                  const hint = scenarioContextualHint(firebirdScenario, failure.error_class, database)
+                  if (!hint) return null
+                  return (
+                    <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[12px] text-amber-700 dark:text-amber-400">
+                      <span className="font-medium">Dica para este cenário: </span>
+                      {hint}
+                    </div>
+                  )
+                })()}
+              </div>
             )}
 
           </div>
 
           {/* Footer fixo */}
           <div className="flex items-center justify-between gap-2 border-t border-border px-5 py-3">
-            {/* Testar (só no editar) */}
-            {isEditing ? (
-              <button
-                type="button"
-                onClick={() => void handleTest()}
-                disabled={loading || testing}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-              >
-                {testing ? <MorphLoader className="size-3.5" /> : <Play className="size-3.5" />}
-                Testar conexão
-              </button>
-            ) : (
-              <span />
-            )}
+            <button
+              type="button"
+              onClick={() => void handleTest()}
+              disabled={!canTest}
+              title={
+                canTest
+                  ? "Testar conexão"
+                  : "Preencha host, banco, usuário e senha para testar"
+              }
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+            >
+              {testing ? <MorphLoader className="size-3.5" /> : <Play className="size-3.5" />}
+              Testar conexão
+            </button>
 
             <div className="flex items-center gap-2">
               <button

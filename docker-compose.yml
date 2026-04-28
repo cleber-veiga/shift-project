@@ -102,6 +102,13 @@ x-backend-env: &backend-env
   RESEND_API_KEY: ${RESEND_API_KEY:-}
   EMAIL_FROM: ${EMAIL_FROM:-noreply@shift.app}
 
+  # === Firebird (passa o mount root do host para o backend) ===
+  # Permite que translate_host_path_to_container converta o caminho que o
+  # usuario digita (ex: C:\Shift\Data\X.FDB) para o caminho dentro do
+  # container (/firebird/data/X.FDB), independente de o mount estar na
+  # raiz de um drive ou em subpasta.
+  FIREBIRD_HOST_MOUNT_ROOT: ${FIREBIRD_LEGACY_DATA_DIR:-./firebird-data}
+
 # ---------------------------------------------------------------------------
 # Services
 # ---------------------------------------------------------------------------
@@ -123,6 +130,81 @@ services:
     restart: "no"
 
   # =========================================================================
+  # firebird25 — servidor Firebird 2.5 embutido (legado).
+  #
+  # Por que existe: o Shift e um migrador. Bancos de origem vem de ERPs
+  # antigos (Viasoft, Linx, etc) frequentemente em FB 2.5 (ODS 11.2). O
+  # servidor FB 3.0+/4 que o cliente costuma ter instalado se RECUSA a
+  # abrir ODS 11.2 — comportamento documentado da Firebird, nao tem driver
+  # client que contorne. Solucao: o Shift traz um FB 2.5 server proprio.
+  #
+  # Como usar: o cliente coloca o .fdb em FIREBIRD_LEGACY_DATA_DIR (no
+  # .env, default ./firebird-data). Esse diretorio e bind-montado em
+  # /firebird/data dentro deste container, e fica acessivel ao shift-backend
+  # via DNS interno do compose (host=firebird25, port=3050). Tambem expoe
+  # 3051 no host pra debug com DBeaver/IBExpert.
+  #
+  # Profile "firebird-legacy" — so sobe quando o cliente tem fontes legadas.
+  # Para ativar: docker compose --profile firebird-legacy up -d
+  # =========================================================================
+  firebird25:
+    profiles: ["firebird-legacy"]
+    image: jacobalberty/firebird:2.5-ss
+    environment:
+      # Senha do SYSDBA — em prod sobrescrever via .env.
+      ISC_PASSWORD: ${FIREBIRD_LEGACY_PASSWORD:-masterkey}
+      # Aceita o EULA da imagem (obrigatorio para 2.5-ss).
+      EnableLegacyClientAuth: "true"
+    volumes:
+      # Bind do diretorio do host com os .fdb dos clientes — o caminho do
+      # arquivo no container fica /firebird/data/<nome>.FDB.
+      - "${FIREBIRD_LEGACY_DATA_DIR:-./firebird-data}:/firebird/data"
+    ports:
+      # Expoe so para debug local. Em prod, comentar — backend conecta via
+      # rede interna do compose (firebird25:3050) e nao precisa de port
+      # mapping no host.
+      - "3051:3050"
+    # Healthcheck via TCP probe (bash builtin /dev/tcp). Nao depende de
+    # employee.fdb existir no bind-mount nem de senha — so valida que o
+    # processo Firebird esta aceitando conexoes na 3050. A imagem
+    # jacobalberty/firebird:2.5-ss e baseada em phusion/baseimage (Ubuntu)
+    # e tem bash, entao /dev/tcp funciona.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/3050' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    mem_limit: 256m
+    networks: [shift-net]
+
+  # =========================================================================
+  # firebird30 — servidor Firebird 3.0 (para FB 3.0 files com servidor
+  # cliente em FB 4+ que nao quer fazer attach por algum motivo).
+  # Mesma ideia do firebird25 — opcional, profile "firebird-legacy".
+  # =========================================================================
+  firebird30:
+    profiles: ["firebird-legacy"]
+    image: jacobalberty/firebird:v3.0.10
+    environment:
+      ISC_PASSWORD: ${FIREBIRD_LEGACY_PASSWORD:-masterkey}
+    volumes:
+      - "${FIREBIRD_LEGACY_DATA_DIR:-./firebird-data}:/firebird/data"
+    ports:
+      - "3052:3050"
+    # Mesmo TCP probe do firebird25 — ver comentario acima.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/3050' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    mem_limit: 256m
+    networks: [shift-net]
+
+  # =========================================================================
   # shift-backend — FastAPI + APScheduler in-process
   # =========================================================================
   shift-backend:
@@ -142,6 +224,11 @@ services:
       # docker-py cria/destroi containers. Em prod-real, trocar por
       # Sysbox/gVisor/Kata. Documentado no README-DEPLOY.
       - /var/run/docker.sock:/var/run/docker.sock
+      # Acesso aos arquivos .fdb dos clientes (mesma mount dos servidores
+      # firebird25/firebird30). Read-only — backend so precisa LER o header
+      # do arquivo para detectar ODS e decidir qual servidor bundled usar.
+      # Os servidores Firebird (que escrevem/leem) tem mount read-write proprio.
+      - "${FIREBIRD_LEGACY_DATA_DIR:-./firebird-data}:/firebird/data:ro"
       # Persistencia da plataforma
       - shift_checkpoints:/var/lib/shift/checkpoints
       - shift_extract_cache:/var/lib/shift/extract-cache
@@ -152,6 +239,14 @@ services:
     # 999 (Debian/Ubuntu). Override em .env via DOCKER_GID se diferente.
     group_add:
       - "${DOCKER_GID:-999}"
+    # 'host-gateway' e uma sentinela do Docker (>=20.10) que resolve para o
+    # IP do host. Em Docker Desktop, host.docker.internal ja resolve sozinho;
+    # em Docker Engine puro (WSL2 / Linux nativo) NAO resolve sem isso. Aqui
+    # garantimos o mesmo nome em todos os ambientes — backend conecta em
+    # servidores Firebird/SQL Server rodando no Windows host via
+    # host.docker.internal:3050.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
       interval: 10s

@@ -8,7 +8,7 @@ O frontend deve tratar o campo como write-only.
 import uuid
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -111,3 +111,45 @@ class ConnectionListResponse(BaseModel):
     total: int
     page: int
     size: int
+
+
+class DiagnosticStepSchema(BaseModel):
+    """Uma etapa do pipeline de diagnostico.
+
+    'dns'|'tcp'|'greeting'|'auth_query' sao etapas do pipeline Firebird.
+    'test' e usado como stage unico para tipos de banco que ainda nao tem
+    pipeline em etapas (Postgres, Oracle, etc) — apenas tenta conectar via
+    SQLAlchemy e devolve sucesso/falha.
+    """
+
+    stage: Literal["dns", "tcp", "greeting", "auth_query", "test"]
+    ok: bool
+    latency_ms: int | None = None
+    error_class: str | None = None
+    error_msg: str | None = None
+    hint: str | None = None
+
+
+class DiagnosticReport(BaseModel):
+    """Resultado do pipeline de diagnostico (1 ou 4 etapas)."""
+
+    overall_ok: bool
+    first_failure_stage: str | None = None
+    steps: list[DiagnosticStepSchema]
+
+
+class ConnectionDiagnosePayload(BaseModel):
+    """Payload stateless para testar uma conexao SEM persistir.
+
+    Usado durante o fluxo de criacao no frontend, antes do usuario clicar
+    em 'Salvar'. So contem o necessario para abrir conexao — sem name,
+    workspace_id, etc.
+    """
+
+    type: ConnectionType
+    host: str = Field(..., min_length=1, max_length=255)
+    port: int = Field(..., gt=0, lt=65536)
+    database: str = Field(..., min_length=1)
+    username: str = Field(..., min_length=1, max_length=255)
+    password: str = Field(..., min_length=1)
+    extra_params: dict[str, Any] | None = None

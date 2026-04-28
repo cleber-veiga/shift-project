@@ -62,8 +62,10 @@ RUN pip install --upgrade pip setuptools wheel \
         "httpx>=0.28" \
         "cryptography>=43.0" \
         "pyodbc>=5.0" \
+        "oracledb>=2.0,<3.0" \
         "sqlalchemy-firebird>=2.0" \
         "firebird-driver>=2.0" \
+        "fdb>=2.0" \
         "openpyxl>=3.1" \
         "google-auth[requests]>=2.38,<3.0" \
         "litellm>=1.40,<2.0" \
@@ -94,17 +96,65 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # Apenas runtime libs — sem -dev, sem build-essential.
 # curl: usado pelo healthcheck do compose.
+# libfbclient2 (Debian) e Firebird 4.0 — usado pelo firebird-driver (FB 3.0+).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq5 \
         postgresql-client \
         libfbclient2 \
         unixodbc \
         curl \
+        gnupg \
         ca-certificates \
         tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 1000 shift \
     && useradd --uid 1000 --gid shift --shell /bin/bash --create-home shift
+
+# Microsoft ODBC Driver 17 for SQL Server.
+# Necessario para conectar em SQL Server via pyodbc — connection_service.py
+# injeta automaticamente "driver=ODBC Driver 17 for SQL Server" na URL.
+# A imagem base e Debian 13 (trixie); a Microsoft ainda nao publica pacote
+# para trixie, mas o pacote do bookworm (Debian 12) funciona — depende
+# apenas de unixodbc e libssl que sao ABI-compativeis.
+# ACCEPT_EULA=Y aceita os termos da Microsoft (necessario non-interactive).
+RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
+        | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" \
+        > /etc/apt/sources.list.d/mssql-release.list \
+    && apt-get update \
+    && ACCEPT_EULA=Y apt-get install -y --no-install-recommends msodbcsql17 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Firebird 2.5 client library — para conectar em servidores legados (ERPs
+# antigos tipo Viasoft, Linx ainda rodam FB 2.5). firebird-driver so suporta
+# FB 3.0+; para FB 2.5 o app usa o driver fdb (Python) carregando esta lib
+# via fb_library_name. A lib traz ICU 3.0 bundled (libicu*.so.30) — nao
+# conflita com o ICU moderno do sistema (SONAMEs diferentes).
+# RPATH setado via patchelf garante que a lib ache suas deps internas SEM
+# precisar de LD_LIBRARY_PATH (que mascararia a libfbclient 4.0 do sistema).
+RUN apt-get update && apt-get install -y --no-install-recommends patchelf \
+    && curl -fL --retry 3 -o /tmp/fb25.tar.gz \
+        "https://github.com/FirebirdSQL/firebird/releases/download/R2_5_9/FirebirdCS-2.5.9.27139-0.amd64.tar.gz" \
+    && cd /tmp \
+    && tar xzf fb25.tar.gz \
+    && cd FirebirdCS-2.5.9.27139-0.amd64 \
+    && tar xzf buildroot.tar.gz \
+    && mkdir -p /opt/firebird-2.5/lib \
+    && cp -d opt/firebird/lib/lib*.so* /opt/firebird-2.5/lib/ \
+    && for f in /opt/firebird-2.5/lib/*.so*; do \
+         if [ ! -L "$f" ]; then \
+             patchelf --set-rpath '/opt/firebird-2.5/lib' "$f" 2>/dev/null || true; \
+         fi; \
+       done \
+    && ln -sf /usr/lib/x86_64-linux-gnu/libncursesw.so.6 /opt/firebird-2.5/lib/libncurses.so.5 \
+    && apt-get purge -y patchelf \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/* /tmp/fb25.tar.gz /tmp/FirebirdCS-2.5.9.27139-0.amd64
+
+# Shim para libncurses.so.5 — a libfbclient 2.5 foi compilada na era CentOS
+# 5 e linkou contra ncurses 5; Debian 13 so tem ncurses 6. O symlink acima
+# (no mesmo RPATH /opt/firebird-2.5/lib) faz o loader achar libncursesw.so.6
+# quando algo pede libncurses.so.5 — os simbolos basicos sao ABI-compativeis.
 
 # Copia o virtualenv pronto do builder.
 COPY --from=builder /opt/venv /opt/venv

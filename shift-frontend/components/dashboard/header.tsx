@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ChevronRight,
   Edit2,
+  HelpCircle,
   LogOut,
   PanelLeft,
   Plus,
@@ -15,6 +16,7 @@ import {
   UserRound,
   X,
 } from "lucide-react"
+import Link from "next/link"
 import { AIPanelToggle } from "@/components/agent/ai-panel-toggle"
 import { cn } from "@/lib/utils"
 import { roleLabel, roleTextClass } from "@/components/dashboard/role-badge"
@@ -28,7 +30,6 @@ import { useState, useRef, useEffect } from "react"
 import { usePathname, useRouter } from "next/navigation"
 import { MorphLoader } from "@/components/ui/morph-loader"
 import { Tooltip } from "@/components/ui/tooltip"
-import Link from "next/link"
 
 
 interface HeaderProps {
@@ -445,6 +446,15 @@ export function Header({ sidebarVisible, setSidebarVisible }: HeaderProps) {
               </div>
             ) : null}
           </div>
+
+          <Link
+            href="/ajuda"
+            className="inline-flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+            aria-label="Ajuda"
+            title="Ajuda"
+          >
+            <HelpCircle className="size-4" />
+          </Link>
 
           <button
             type="button"

@@ -12,11 +12,14 @@ from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy import func, or_, select
+from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.connection import Connection
 from app.schemas.connection import (
     ConnectionCreate,
+    ConnectionDiagnosePayload,
     ConnectionType,
     ConnectionUpdate,
     TestConnectionResult,
@@ -31,7 +34,54 @@ _SA_DRIVERS: dict[str, str] = {
     ConnectionType.mysql.value: "mysql+pymysql",
 }
 
-_TEST_TIMEOUT_SECONDS: float = 5.0
+# Caminho da libfbclient 2.5 dentro do container — definido pelo Dockerfile.
+# Usado quando extra_params.firebird_version == "2.5".
+_FB25_LIB_PATH = "/opt/firebird-2.5/lib/libfbclient.so.2"
+
+
+def _firebird_version(conn: "Connection") -> str:
+    """Le firebird_version de extra_params. "2.5", "3+" ou "auto" (default "3+").
+
+    "auto" significa que o backend devera detectar a versao a partir do
+    ODS do arquivo .fdb no momento da conexao (via firebird_client.py).
+    """
+    raw = ""
+    if conn.extra_params:
+        raw = str(conn.extra_params.get("firebird_version") or "").strip().lower()
+    if raw in {"2.5", "2", "fb2", "fb2.5", "fdb"}:
+        return "2.5"
+    if raw in {"auto", "autodetect", "detectar"}:
+        return "auto"
+    return "3+"
+
+
+def _resolve_firebird_version_for_conn(conn: "Connection") -> str:
+    """Resolve "auto" lendo ODS do arquivo. Devolve sempre "2.5" ou "3+".
+
+    Necessario na build_connection_string porque la nao da pra adiar a
+    decisao para o connect (precisamos saber qual dialect SA usar). Se a
+    deteccao falhar, default seguro = "3+".
+    """
+    version = _firebird_version(conn)
+    if version != "auto":
+        return version
+
+    from app.services.firebird_client import (
+        _is_bundled_host,
+        resolve_firebird_version_from_path,
+        translate_host_path_to_container,
+    )
+
+    # Auto-deteccao via filesystem so e possivel quando o arquivo .fdb esta
+    # acessivel via mount /firebird/data — caso dos servidores bundled. Para
+    # servidor remoto nao temos acesso ao arquivo; default seguro = "3+".
+    if not _is_bundled_host(conn.host):
+        return "3+"
+
+    container_path = translate_host_path_to_container(conn.database, conn.host)
+    detected = resolve_firebird_version_from_path(container_path)
+    return detected or "3+"
+
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
@@ -204,7 +254,12 @@ class ConnectionService:
         # entrem em vigor na proxima get_engine().
         previous_key = self._engine_cache_key_for(conn)
 
-        updates = data.model_dump(exclude_none=True)
+        # exclude_unset=True (nao exclude_none): respeita null explicito como
+        # "limpa este campo" — necessario pra UI conseguir remover extra_params
+        # ao trocar firebird_version 2.5 -> 3+, ou limpar include_schemas, etc.
+        # Campos que o frontend nao mandou no JSON simplesmente nao aparecem
+        # no dump e ficam intactos.
+        updates = data.model_dump(exclude_unset=True)
 
         for field, value in updates.items():
             setattr(conn, field, value)
@@ -259,6 +314,143 @@ class ConnectionService:
         except Exception:  # noqa: BLE001 — invalidacao nao pode bloquear o CRUD
             pass
 
+    async def diagnose_payload(
+        self,
+        payload: ConnectionDiagnosePayload,
+    ) -> dict[str, Any]:
+        """Diagnostico stateless — testa um payload sem persistir.
+
+        Para Firebird: roda o pipeline em 4 etapas via diagnose().
+        Para outros tipos: monta a connection string em memoria e roda
+        _test_sync, devolvendo 1 step ('test') compativel com o mesmo
+        formato do pipeline Firebird.
+        """
+        from app.services.firebird_diagnostics import (
+            diagnose,
+            first_failure,
+            overall_ok,
+        )
+
+        if payload.type == ConnectionType.firebird:
+            extra = dict(payload.extra_params) if payload.extra_params else {}
+            steps = await asyncio.wait_for(
+                asyncio.to_thread(
+                    diagnose,
+                    host=payload.host,
+                    port=int(payload.port),
+                    database=payload.database,
+                    username=payload.username,
+                    password=payload.password,
+                    firebird_version=str(extra.get("firebird_version") or "3+"),
+                    charset=str(extra.get("charset") or "WIN1252"),
+                    role=extra.get("role") or None,
+                ),
+                timeout=settings.CONNECTION_TEST_TIMEOUT_SECONDS,
+            )
+            failure = first_failure(steps)
+            return {
+                "overall_ok": overall_ok(steps),
+                "first_failure_stage": failure["stage"] if failure else None,
+                "steps": steps,
+            }
+
+        # Demais tipos: 1 step "test" via SQLAlchemy. Reutiliza
+        # build_connection_string instanciando um Connection efemero (em
+        # memoria, nao adicionado a sessao) — mesmo path de URL building
+        # usado por conexoes persistidas.
+        ephemeral = Connection(
+            workspace_id=None,
+            project_id=None,
+            player_id=None,
+            name="__diagnose_payload__",
+            type=payload.type.value,
+            host=payload.host,
+            port=int(payload.port),
+            database=payload.database,
+            username=payload.username,
+            password=payload.password,
+            extra_params=payload.extra_params,
+            include_schemas=None,
+            is_public=False,
+            created_by_id=None,
+        )
+        url = self.build_connection_string(ephemeral)
+
+        import time
+        t0 = time.monotonic()
+        try:
+            success, message = await asyncio.wait_for(
+                asyncio.to_thread(self._test_sync, url, payload.type.value),
+                timeout=settings.CONNECTION_TEST_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            success = False
+            message = (
+                f"Timeout ao conectar ({int(settings.CONNECTION_TEST_TIMEOUT_SECONDS)}s)."
+            )
+        latency_ms = int((time.monotonic() - t0) * 1000)
+
+        step = {
+            "stage": "test",
+            "ok": success,
+            "latency_ms": latency_ms,
+            "error_class": None if success else "unknown",
+            "error_msg": None if success else message,
+            "hint": None if success else message,
+        }
+        return {
+            "overall_ok": success,
+            "first_failure_stage": None if success else "test",
+            "steps": [step],
+        }
+
+    async def diagnose_connection(
+        self,
+        db: AsyncSession,
+        connection_id: UUID,
+    ) -> dict[str, Any]:
+        """Roda o pipeline de diagnostico Firebird (4 etapas).
+
+        Devolve dict no formato {overall_ok, first_failure_stage, steps}.
+        Para conexoes nao-Firebird, retorna estrutura vazia com mensagem.
+        """
+        from app.services.firebird_diagnostics import (
+            diagnose,
+            first_failure,
+            overall_ok,
+        )
+
+        conn = await self.get(db, connection_id)
+        if conn is None:
+            raise LookupError("Conexao nao encontrada.")
+        if conn.type != ConnectionType.firebird.value:
+            raise ValueError(
+                "Diagnostico estruturado esta disponivel apenas para conexoes Firebird."
+            )
+
+        extra = dict(conn.extra_params) if conn.extra_params else {}
+
+        steps = await asyncio.wait_for(
+            asyncio.to_thread(
+                diagnose,
+                host=conn.host or "",
+                port=int(conn.port or 0),
+                database=conn.database or "",
+                username=conn.username or "",
+                password=conn.password or "",
+                firebird_version=str(extra.get("firebird_version") or "3+"),
+                charset=str(extra.get("charset") or "WIN1252"),
+                role=extra.get("role") or None,
+            ),
+            timeout=settings.CONNECTION_TEST_TIMEOUT_SECONDS,
+        )
+        failure = first_failure(steps)
+        return {
+            "overall_ok": overall_ok(steps),
+            "first_failure_stage": failure["stage"] if failure else None,
+            "steps": steps,
+        }
+
     async def test_connection(
         self,
         db: AsyncSession,
@@ -280,12 +472,12 @@ class ConnectionService:
             extra = {"conn_type": conn.type} if worker is self._test_sync else {}
             success, message = await asyncio.wait_for(
                 asyncio.to_thread(worker, target, **extra),
-                timeout=_TEST_TIMEOUT_SECONDS,
+                timeout=settings.CONNECTION_TEST_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
             return TestConnectionResult(
                 success=False,
-                message=f"Timeout ao conectar ({int(_TEST_TIMEOUT_SECONDS)}s).",
+                message=f"Timeout ao conectar ({int(settings.CONNECTION_TEST_TIMEOUT_SECONDS)}s).",
             )
 
         return TestConnectionResult(success=success, message=message)
@@ -310,51 +502,76 @@ class ConnectionService:
 
     @staticmethod
     def _test_firebird_sync(conn: "Connection") -> tuple[bool, str]:
-        """Testa Firebird via driver direto — sem SQLAlchemy URL parsing."""
-        from app.services.firebird_client import connect_firebird
+        """Testa Firebird rodando o pipeline de diagnostico (DNS->TCP->
+        greeting->auth_query). Em caso de falha, devolve o hint PT-BR
+        acionavel da etapa que quebrou — em vez do str(exc) cru."""
+        from app.services.firebird_diagnostics import (
+            diagnose,
+            first_failure,
+            overall_ok,
+        )
 
-        config: dict[str, Any] = {
-            "host": conn.host,
-            "port": conn.port,
-            "database": conn.database,
-            "username": conn.username,
-        }
-        # extra_params pode conter: role, charset, client_library_path, dsn, connection_url
-        if conn.extra_params:
-            config.update(conn.extra_params)
-
-        secret = {"password": conn.password}
-
-        fb_conn = None
-        try:
-            fb_conn = connect_firebird(config=config, secret=secret)
-            cur = fb_conn.cursor()
-            cur.execute("select 1 from rdb$database")
-            cur.fetchone()
-            cur.close()
+        extra = dict(conn.extra_params) if conn.extra_params else {}
+        steps = diagnose(
+            host=conn.host or "",
+            port=int(conn.port or 0),
+            database=conn.database or "",
+            username=conn.username or "",
+            password=conn.password or "",
+            firebird_version=str(extra.get("firebird_version") or "3+"),
+            charset=str(extra.get("charset") or "WIN1252"),
+            role=extra.get("role") or None,
+        )
+        if overall_ok(steps):
             return True, "Conexao bem-sucedida."
-        except Exception as exc:
-            return False, str(exc)
-        finally:
-            if fb_conn is not None:
-                try:
-                    fb_conn.close()
-                except Exception:
-                    pass
+        failure = first_failure(steps)
+        return False, (failure["hint"] if failure and failure["hint"] else "Falha desconhecida.")
 
     def build_connection_string(self, conn: Connection) -> str:
         driver = _SA_DRIVERS.get(conn.type, conn.type)
+        # EncryptedString retorna None quando a descriptografia falha (ex: a
+        # ENCRYPTION_KEY do .env mudou desde que a senha foi salva). Antes
+        # quebrava em quote_plus(None) com 'expected bytes' — mensagem inutil.
+        if conn.password is None:
+            raise ValueError(
+                f"Senha da conexao '{conn.name}' nao pode ser descriptografada. "
+                "Verifique se ENCRYPTION_KEY no .env nao mudou desde que a "
+                "conexao foi salva — se mudou, edite a conexao e reinforme a senha."
+            )
         password_encoded = quote_plus(conn.password)
 
-        # Firebird: o campo 'database' é um caminho do sistema de arquivos que pode
-        # conter barras invertidas e letras de drive (Windows).  Usamos o formato
-        # clássico host/port:path, codificando apenas o password.
+        # Firebird: o campo 'database' e um caminho do sistema de arquivos que
+        # pode conter ':' e '\' (Windows). quote_plus quebra porque SA nao
+        # decodifica url.database de volta — driver recebe a string encoded e
+        # tenta abrir um arquivo literalmente chamado 'D%3A%5C...'. URL.create
+        # trata o database como campo bruto e o render_as_string + make_url
+        # round-trip preserva o path.
+        #
+        # Versao do servidor decide qual dialect/driver usar:
+        #   - "3+" -> firebird+firebird (firebird-driver, suporta FB 3.0+)
+        #   - "2.5" -> firebird+fdb     (fdb legado, suporta FB 2.5)
+        # Para fdb, fb_library_name aponta para a libfbclient 2.5 instalada
+        # no container — sem isso, fdb cai no libfbclient do sistema (4.0)
+        # que rejeita ODS 11.2 com "unsupported on-disk structure".
         if conn.type == ConnectionType.firebird.value:
-            db_encoded = quote_plus(conn.database)
-            base = (
-                f"{driver}://{conn.username}:{password_encoded}"
-                f"@{conn.host}:{conn.port}/{db_encoded}"
-            )
+            from app.services.firebird_client import translate_host_path_to_container
+            # Resolve "auto" lendo o ODS do arquivo (se acessivel via mount).
+            fb_version = _resolve_firebird_version_for_conn(conn)
+            fb_driver_name = "firebird+fdb" if fb_version == "2.5" else "firebird+firebird"
+            # Traducao do path: usuario informa 'D:\Data\X.FDB' (como ele ve
+            # no Windows). Convertemos para o caminho dentro do container
+            # (/firebird/data/Data/X.FDB) que e onde os servidores bundled
+            # firebird25/firebird30 acham o arquivo. Para host remoto a
+            # funcao preserva o path original.
+            db_translated = translate_host_path_to_container(conn.database, conn.host)
+            base = URL.create(
+                drivername=fb_driver_name,
+                username=conn.username,
+                password=conn.password,
+                host=conn.host,
+                port=conn.port,
+                database=db_translated,
+            ).render_as_string(hide_password=False)
         elif conn.type == ConnectionType.oracle.value:
             # SQLAlchemy+oracledb interpreta "host:port/name" como SID.
             # Para SERVICE_NAME (padrão moderno), o campo database vai como
@@ -372,10 +589,25 @@ class ConnectionService:
 
         extra_params = dict(conn.extra_params) if conn.extra_params else {}
 
+        # firebird_version e config interna do app (define qual driver usar) —
+        # nao deve vazar pra URL final, o dialect nao reconhece.
+        extra_params.pop("firebird_version", None)
+
         # SQL Server via pyodbc exige que o driver ODBC seja especificado.
         # Injeta um padrão se o usuário não tiver configurado nenhum.
         if conn.type == ConnectionType.sqlserver.value and "driver" not in extra_params:
             extra_params["driver"] = "ODBC Driver 17 for SQL Server"
+
+        # Firebird 2.5 (dialect +fdb): injeta fb_library_name apontando para a
+        # libfbclient 2.5 do container, se nao foi configurado. fdb passa esse
+        # kwarg direto pra fdb.connect(), que carrega a lib indicada em vez de
+        # cair no libfbclient do sistema (que e FB 4.0 e rejeita ODS 2.5).
+        if (
+            conn.type == ConnectionType.firebird.value
+            and _firebird_version(conn) == "2.5"
+            and "fb_library_name" not in extra_params
+        ):
+            extra_params["fb_library_name"] = _FB25_LIB_PATH
 
         if extra_params:
             sep = "&" if "?" in base else "?"

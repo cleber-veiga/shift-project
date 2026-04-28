@@ -139,7 +139,7 @@ export function InputModelPicker({
           {filtered.length === 0 && (
             <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
               <FileText className="size-3" />
-              Nenhum modelo {fileType.toUpperCase()} cadastrado no workspace.
+              Nenhum modelo {fileType.toUpperCase()} cadastrado no workspace. Crie em <strong className="font-medium">Modelos de Entrada</strong>.
             </p>
           )}
           {value && selectedExists && (

@@ -10,13 +10,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user, get_db
+from app.core.rate_limit import _user_key_func, limiter
 from app.core.security import authorization_service, require_permission
 from app.models import Project, User
 from app.schemas.connection import (
     ConnectionCreate,
+    ConnectionDiagnosePayload,
     ConnectionListResponse,
     ConnectionResponse,
     ConnectionUpdate,
+    DiagnosticReport,
     TestConnectionResult,
 )
 from app.services.connection_service import connection_service
@@ -215,3 +218,62 @@ async def test_connection(
 ) -> TestConnectionResult:
     """Testa a conexao executando SELECT 1 com timeout de 5 segundos."""
     return await connection_service.test_connection(db, connection_id)
+
+
+@router.post(
+    "/connections/diagnose",
+    response_model=DiagnosticReport,
+    summary="Diagnostico stateless — testa um payload sem persistir",
+)
+@limiter.limit("10/minute", key_func=_user_key_func)
+async def diagnose_connection_payload(
+    request: Request,
+    payload: ConnectionDiagnosePayload,
+    _: User = Depends(get_current_user),
+) -> DiagnosticReport:
+    """Testa uma conexao a partir do payload completo, sem salvar.
+
+    Usado pelo modal de criacao do frontend para iterar host/porta/path
+    antes de persistir. Para Firebird, devolve as 4 etapas do pipeline.
+    Para outros tipos, devolve 1 step 'test' via SQLAlchemy.
+
+    Auth: usuario logado. Rate limit: 10 req/min por IP — evita uso como
+    port scanner.
+    """
+    try:
+        result = await connection_service.diagnose_payload(payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+    return DiagnosticReport(**result)
+
+
+@router.post(
+    "/connections/{connection_id}/diagnose",
+    response_model=DiagnosticReport,
+    summary="Diagnostico estruturado de conectividade Firebird (DNS -> TCP -> greeting -> auth_query)",
+)
+async def diagnose_connection(
+    connection_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(_require_connection_owner_permission("CLIENT", "VIEWER")),
+) -> DiagnosticReport:
+    """Roda pipeline em etapas e devolve a primeira que falhou + hint PT-BR.
+
+    Disponivel apenas para conexoes Firebird — outros tipos retornam 400.
+    """
+    try:
+        result = await connection_service.diagnose_connection(db, connection_id)
+    except LookupError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conexao nao encontrada.",
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+    return DiagnosticReport(**result)

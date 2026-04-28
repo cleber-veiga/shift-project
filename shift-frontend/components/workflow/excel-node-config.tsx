@@ -17,6 +17,7 @@ import type { InputModel } from "@/lib/auth"
 import { FilePickerInput } from "@/components/workflow/file-picker-input"
 import { InputModelPicker } from "@/components/workflow/input-model-picker"
 import { ExcelSheetPicker } from "@/components/workflow/excel-sheet-picker"
+import { HelpTip } from "@/components/ui/help-tip"
 
 type Data = Record<string, unknown>
 
@@ -48,7 +49,11 @@ export function ExcelNodeConfig({ workflowId, data, update }: ExcelNodeConfigPro
 
   return (
     <>
-      <ConfigField label="Arquivo Excel">
+      <ConfigField
+        label="Arquivo Excel"
+        help="4 modos: URL/Path direto, Do projeto (uploads salvos), Enviar (upload novo) ou Variável (arquivo solicitado em runtime)."
+        helpArticle="variaveis-arquivos"
+      >
         <FilePickerInput
           value={(data.url as string) ?? ""}
           onChange={(next) => update("url", next)}
@@ -57,7 +62,11 @@ export function ExcelNodeConfig({ workflowId, data, update }: ExcelNodeConfigPro
           placeholder="https://... ou /path/to/file.xlsx"
         />
       </ConfigField>
-      <ConfigField label="Modelo de entrada (opcional)">
+      <ConfigField
+        label="Modelo de entrada (opcional)"
+        help="Define o cabeçalho esperado da planilha. Vinculado, valida na execução e o Nome da Aba passa a vir do modelo."
+        helpArticle="modelos-entrada"
+      >
         <InputModelPicker
           workflowId={workflowId}
           value={(data.input_model_id as string | null | undefined) ?? null}
@@ -66,7 +75,10 @@ export function ExcelNodeConfig({ workflowId, data, update }: ExcelNodeConfigPro
           onModelChange={setSelectedModel}
         />
       </ConfigField>
-      <ConfigField label="Nome da Aba">
+      <ConfigField
+        label="Nome da Aba"
+        help="Auto-detectado do arquivo (sem modelo) ou derivado das sheets do modelo (com modelo). Pra ler múltiplas abas, crie um nó Excel pra cada."
+      >
         <ExcelSheetPicker
           workflowId={workflowId}
           fileRef={(data.url as string) ?? ""}
@@ -84,14 +96,21 @@ export function ExcelNodeConfig({ workflowId, data, update }: ExcelNodeConfigPro
 // importado por outros lugares).
 function ConfigField({
   label,
+  help,
+  helpArticle,
   children,
 }: {
   label: string
+  help?: React.ReactNode
+  helpArticle?: string
   children: React.ReactNode
 }) {
   return (
     <div className="space-y-1.5">
-      <label className="text-xs font-medium text-muted-foreground">{label}</label>
+      <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        {label}
+        {help && <HelpTip article={helpArticle}>{help}</HelpTip>}
+      </label>
       {children}
     </div>
   )

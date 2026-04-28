@@ -352,6 +352,40 @@ export type TestConnectionResult = {
   message: string
 }
 
+// ─── Diagnostico estruturado ───────────────────────────────────────────────
+
+export type DiagnosticStage =
+  | "dns"
+  | "tcp"
+  | "greeting"
+  | "auth_query"
+  | "test"
+
+export type DiagnosticStep = {
+  stage: DiagnosticStage
+  ok: boolean
+  latency_ms: number | null
+  error_class: string | null
+  error_msg: string | null
+  hint: string | null
+}
+
+export type DiagnosticResult = {
+  overall_ok: boolean
+  first_failure_stage: DiagnosticStage | null
+  steps: DiagnosticStep[]
+}
+
+export type DiagnosePayload = {
+  type: ConnectionType
+  host: string
+  port: number
+  database: string
+  username: string
+  password: string
+  extra_params?: Record<string, unknown> | null
+}
+
 // ─── Sessão local ──────────────────────────────────────────────────────────────
 
 const SESSION_STORAGE_KEY = "shift.auth.session"
@@ -973,6 +1007,30 @@ export async function testConnection(
   return authorizedRequest<TestConnectionResult>(
     `/connections/${connectionId}/test`,
     { method: "POST" }
+  )
+}
+
+export async function diagnoseConnectionPayload(
+  payload: DiagnosePayload
+): Promise<DiagnosticResult> {
+  return authorizedRequest<DiagnosticResult>(
+    `/connections/diagnose`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  )
+}
+
+/** Diagnostico estruturado de uma conexao ja persistida (id-based).
+ * Backend rejeita com 400 para tipos nao-Firebird. */
+export async function diagnoseConnectionById(
+  connectionId: string,
+): Promise<DiagnosticResult> {
+  return authorizedRequest<DiagnosticResult>(
+    `/connections/${connectionId}/diagnose`,
+    { method: "POST" },
   )
 }
 

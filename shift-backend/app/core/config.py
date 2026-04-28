@@ -65,6 +65,9 @@ class Settings(BaseSettings):
     # --- Limites de execucao ---
     # Timeout global por execucao em segundos (0 = sem limite).
     WORKFLOW_DEFAULT_MAX_EXECUTION_TIME_SECONDS: int = 3600
+    # Timeout do "Testar conexao" no UI. Servidores Firebird/SQL Server em redes
+    # corporativas as vezes levam >5s pro primeiro handshake (DNS, AD, etc).
+    CONNECTION_TEST_TIMEOUT_SECONDS: float = 30.0
     # Maximo de linhas extraidas por no (sql_database, csv_input, excel_input, api_input).
     EXTRACT_DEFAULT_MAX_ROWS: int = 10_000_000
     # Limite injetado em nos de extracao quando ``run_mode=preview`` — permite

@@ -38,3 +38,15 @@ shift-project/
 ```
 
 Cada diretório possui seu próprio README com instruções de setup e execução.
+
+## Suporte a Firebird
+
+A Shift trata Firebird como cidadão de primeira classe — comum em ERPs brasileiros legados (Viasoft, Linx, etc). Suporta 3 cenários de deploy:
+
+- **Cenário A — Servidor bundled**: cliente entrega só o `.fdb`; a Shift sobe FB 2.5 ou 3.0 em container.
+- **Cenário B — Firebird no Windows host**: backend conecta no Firebird que já roda na máquina via `host.docker.internal`.
+- **Cenário C — Servidor remoto na rede**: conexão TCP direta para outra máquina.
+
+O wizard de cenário no formulário de conexão guia o usuário e o pipeline de diagnóstico em 4 etapas (DNS → TCP → greeting → auth_query) localiza falhas com mensagens acionáveis em PT-BR.
+
+Guia completo: [docs/firebird-deployment.md](docs/firebird-deployment.md).

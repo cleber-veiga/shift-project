@@ -217,15 +217,26 @@ export function ConnectionsSection({ scope }: ConnectionsSectionProps) {
   async function handleFormSubmit(
     payload: CreateConnectionPayload | UpdateConnectionPayload
   ) {
+    // Modal permanece aberto apos salvar — o usuario costuma querer
+    // testar logo em seguida ou ajustar mais um campo. Atualizamos o
+    // editingConnection com a versao persistida para que o test em
+    // modo edit (que bate /connections/{id}/diagnose) use os dados certos.
     if (editingConnection) {
-      await updateConnection(editingConnection.id, payload as UpdateConnectionPayload)
+      const updated = await updateConnection(
+        editingConnection.id,
+        payload as UpdateConnectionPayload,
+      )
       toast.success("Conexão atualizada", "As alterações foram salvas com sucesso.")
+      setEditingConnection(updated)
     } else {
-      await createConnection(payload as CreateConnectionPayload)
-      toast.success("Conexão criada", "A conexão foi cadastrada com sucesso.")
+      const created = await createConnection(payload as CreateConnectionPayload)
+      toast.success("Conexão criada", "Pronto — agora você pode testar a conexão.")
+      // Bascula para modo edit do recem-criado. Como o modal usa
+      // key={editingConnection?.id ?? "new-connection-form"} no parent,
+      // a troca de key forca remount e re-inicializa os campos com os
+      // dados retornados pelo backend (incluindo o id).
+      setEditingConnection(created)
     }
-    setFormOpen(false)
-    setEditingConnection(null)
     await loadConnections()
   }
 
@@ -621,8 +632,11 @@ export function ConnectionsSection({ scope }: ConnectionsSectionProps) {
         onConfirm={handleDelete}
       />
 
-      {/* Create/Edit modal */}
+      {/* Create/Edit modal — key forca remontagem quando muda de conexao,
+          garantindo que useState da modal re-inicialize lendo a prop atualizada
+          (sem depender de useEffect, que estava com timing/HMR instavel). */}
       <ConnectionFormModal
+        key={editingConnection?.id ?? "new-connection-form"}
         open={formOpen}
         onOpenChange={(open) => {
           if (!open) {

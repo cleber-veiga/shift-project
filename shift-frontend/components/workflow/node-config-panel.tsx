@@ -32,6 +32,7 @@ import { ValueInput } from "@/components/workflow/value-input/ValueInput"
 import { FilePickerInput } from "@/components/workflow/file-picker-input"
 import { InputModelPicker } from "@/components/workflow/input-model-picker"
 import { ExcelNodeConfig } from "@/components/workflow/excel-node-config"
+import { HelpTip } from "@/components/ui/help-tip"
 
 interface NodeConfigPanelProps {
   node: Node
@@ -68,14 +69,23 @@ const categoryTextMap: Record<string, string> = {
 
 function ConfigField({
   label,
+  help,
+  helpArticle,
   children,
 }: {
   label: string
+  /** Conteudo opcional do HelpTip (ícone ? ao lado do label). */
+  help?: React.ReactNode
+  /** Slug opcional pra link "Saiba mais" → /ajuda/<slug>. */
+  helpArticle?: string
   children: React.ReactNode
 }) {
   return (
     <div className="space-y-1.5">
-      <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{label}</label>
+      <label className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+        {label}
+        {help && <HelpTip article={helpArticle}>{help}</HelpTip>}
+      </label>
       {children}
     </div>
   )
@@ -362,7 +372,11 @@ function renderNodeSpecificFields({
       return (
         <div className="space-y-4">
 
-          <ConfigField label="Arquivo CSV">
+          <ConfigField
+            label="Arquivo CSV"
+            help="4 modos: URL/Path direto, Do projeto (uploads salvos), Enviar (upload novo) ou Variável (arquivo solicitado em runtime — ideal pra CSVs que mudam a cada execução)."
+            helpArticle="variaveis-arquivos"
+          >
             <FilePickerInput
               value={(data.url as string) ?? ""}
               onChange={(next) => update("url", next)}
@@ -371,7 +385,11 @@ function renderNodeSpecificFields({
               placeholder="https://... ou /path/to/file.csv"
             />
           </ConfigField>
-          <ConfigField label="Modelo de entrada (opcional)">
+          <ConfigField
+            label="Modelo de entrada (opcional)"
+            help="Define o cabeçalho esperado do CSV. Vinculado, valida o arquivo na execução e falha cedo com mensagem clara se faltar coluna obrigatória."
+            helpArticle="modelos-entrada"
+          >
             <InputModelPicker
               workflowId={workflowId}
               value={(data.input_model_id as string | null | undefined) ?? null}
@@ -409,7 +427,7 @@ function renderNodeSpecificFields({
         <div className="space-y-4">
 
           <ExcelNodeConfig
-            workflowId={workflowId}
+            workflowId={workflowId ?? ""}
             data={data}
             update={update}
           />

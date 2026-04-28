@@ -24,8 +24,15 @@ dependencies = [
     "httpx>=0.28",
     "cryptography>=43.0",
     "pyodbc>=5.0",
+    # oracledb — driver Python moderno do Oracle (substitui cx_Oracle).
+    # Modo "thin" e default e nao exige Instant Client / libs nativas.
+    "oracledb>=2.0,<3.0",
     "sqlalchemy-firebird>=2.0",
     "firebird-driver>=2.0",
+    # fdb e o driver legado (FB 2.x). firebird-driver so suporta FB 3.0+,
+    # entao para conectar em servidores FB 2.5 (ainda comuns em ERPs antigos)
+    # usamos fdb + libfbclient 2.5 instalada no Dockerfile.
+    "fdb>=2.0",
     "openpyxl>=3.1",
     "google-auth[requests]>=2.38,<3.0",
     "litellm>=1.40,<2.0",
@@ -53,6 +60,9 @@ dependencies = [
 dev = [
     "pytest>=8.0,<9.0",
     "pytest-asyncio>=0.24,<1.0",
+    # testcontainers — sobe servidores Firebird 2.5/3.0 efemeros para
+    # a suite de integracao (ver tests/integration/firebird/conftest.py).
+    "testcontainers>=4.0,<5.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -75,4 +85,5 @@ asyncio_mode = "auto"
 markers = [
     "docker: requer daemon Docker e a imagem shift-kernel-runtime:latest",
     "postgres: requer Postgres real (nao SQLite) — testa triggers/DDL especificos",
+    "firebird: requer servidores Firebird 2.5 e 3.0 (sobe via testcontainers ou compose --profile firebird-legacy)",
 ]

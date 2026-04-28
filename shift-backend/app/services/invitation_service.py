@@ -79,13 +79,13 @@ class InvitationService:
                        f"Validas: {', '.join(_VALID_ROLES[scope])}",
             )
 
-        # Validar que nao esta convidando com role >= propria
+        # Validar que nao esta convidando com role acima da propria (pares sao permitidos)
         inviter_role_rank = await self._get_user_role_rank(db, invited_by.id, scope, scope_id)
         invited_rank = _RANK_MAPS[scope][role_upper]
-        if invited_rank >= inviter_role_rank:
+        if invited_rank > inviter_role_rank:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Voce nao pode convidar com um papel igual ou superior ao seu.",
+                detail="Voce nao pode convidar com um papel superior ao seu.",
             )
 
         # Checar se usuario ja e membro
