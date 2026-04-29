@@ -16,6 +16,13 @@ import { BulkInsertConfig } from "@/components/workflow/nodes/bulk-insert-config
 import { CompositeInsertConfig } from "@/components/workflow/nodes/composite-insert-config"
 import { SqlScriptConfig } from "@/components/workflow/nodes/sql-script-config"
 import { LoopConfig } from "@/components/workflow/nodes/loop-config"
+import { SortConfig } from "@/components/workflow/nodes/sort-config"
+import { SampleConfig } from "@/components/workflow/nodes/sample-config"
+import { RecordIdConfig } from "@/components/workflow/nodes/record-id-config"
+import { UnionConfig } from "@/components/workflow/nodes/union-config"
+import { PivotConfig } from "@/components/workflow/nodes/pivot-config"
+import { UnpivotConfig } from "@/components/workflow/nodes/unpivot-config"
+import { TextToRowsConfig } from "@/components/workflow/nodes/text-to-rows-config"
 import { CronConfig } from "@/components/workflow/nodes/cron-config"
 import { WebhookConfig } from "@/components/workflow/nodes/webhook-config"
 import { WorkflowInputConfig } from "@/components/workflow/nodes/workflow-input-config"
@@ -335,31 +342,6 @@ function renderNodeSpecificFields({
         />
       )
 
-    case "polling":
-      return (
-        <div className="space-y-4">
-
-          <ConfigField label="Connection ID">
-            <ValueInput
-              value={migrateLegacySqlParameter((data.connection_id as string) ?? "")}
-              onChange={(pv) => update("connection_id", pv.mode === "fixed" ? pv.value : pv.template)}
-              upstreamFields={[]}
-              allowTransforms={false}
-              allowVariables={true}
-              placeholder="UUID da conexão"
-              size="sm"
-            />
-          </ConfigField>
-          <ConfigField label="Query">
-            <TextArea
-              value={(data.query as string) ?? ""}
-              onChange={(v) => update("query", v)}
-              placeholder="SELECT * FROM ..."
-            />
-          </ConfigField>
-        </div>
-      )
-
     case "sql_database":
       return (
         <SqlDatabaseConfig
@@ -542,6 +524,8 @@ function renderNodeSpecificFields({
         <MapperConfig
           data={data}
           onUpdate={(newData) => onUpdate(node.id, newData)}
+          workflowId={workflowId}
+          nodeId={node.id}
         />
       )
 
@@ -550,6 +534,8 @@ function renderNodeSpecificFields({
         <FilterConfig
           data={data}
           onUpdate={(newData) => onUpdate(node.id, newData)}
+          workflowId={workflowId}
+          nodeId={node.id}
         />
       )
 
@@ -798,6 +784,62 @@ function renderNodeSpecificFields({
             />
           </ConfigField>
         </div>
+      )
+
+    case "sort":
+      return (
+        <SortConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "sample":
+      return (
+        <SampleConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "record_id":
+      return (
+        <RecordIdConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "union":
+      return (
+        <UnionConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "pivot":
+      return (
+        <PivotConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "unpivot":
+      return (
+        <UnpivotConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "text_to_rows":
+      return (
+        <TextToRowsConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
       )
 
     default:

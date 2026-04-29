@@ -785,6 +785,102 @@ class CallWorkflowNodeConfig(_RetryableNodeConfig):
     timeout_seconds: int = Field(default=300, ge=1, le=3600)
 
 
+class SortColumnConfig(BaseModel):
+    """Define uma coluna de ordenacao com direcao e posicao de nulos."""
+
+    column: str
+    direction: Literal["asc", "desc"] = "asc"
+    nulls_position: Literal["first", "last"] | None = None
+
+
+class NodeSortConfig(_RetryableNodeConfig):
+    """Configuracao do no de ordenacao (sort)."""
+
+    type: Literal["sort"]
+    sort_columns: list[SortColumnConfig] = Field(default_factory=list, min_length=1)
+    limit: int | None = Field(default=None, ge=1)
+    output_field: str = "data"
+
+
+class NodeSampleConfig(_RetryableNodeConfig):
+    """Configuracao do no de amostragem (sample)."""
+
+    type: Literal["sample"]
+    mode: Literal["first_n", "random", "percent"] = "first_n"
+    n: int | None = Field(default=None, ge=0)
+    seed: int = Field(default=42, ge=0)
+    percent: float | None = Field(default=None, gt=0.0, le=100.0)
+    output_field: str = "data"
+
+
+class RecordIdOrderByConfig(BaseModel):
+    """Coluna de ordenacao para o no record_id."""
+
+    column: str
+    direction: Literal["asc", "desc"] = "asc"
+
+
+class NodeRecordIdConfig(_RetryableNodeConfig):
+    """Configuracao do no de ID sequencial (record_id)."""
+
+    type: Literal["record_id"]
+    id_column: str = Field(default="id", min_length=1)
+    start_at: int = Field(default=1, ge=1)
+    partition_by: list[str] = Field(default_factory=list)
+    order_by: list[RecordIdOrderByConfig] = Field(default_factory=list)
+    output_field: str = "data"
+
+
+class NodeUnionConfig(_RetryableNodeConfig):
+    """Configuracao do no de uniao (union)."""
+
+    type: Literal["union"]
+    mode: Literal["by_name", "by_position"] = "by_name"
+    add_source_col: bool = False
+    source_col_name: str = "_source"
+    output_field: str = "data"
+
+
+class NodePivotConfig(_RetryableNodeConfig):
+    """Configuracao do no de pivot dinamico."""
+
+    type: Literal["pivot"]
+    index_columns: list[str] = Field(default_factory=list, min_length=1)
+    pivot_column: str = Field(..., min_length=1)
+    value_column: str = Field(..., min_length=1)
+    aggregations: list[Literal["sum", "count", "avg", "max", "min"]] = Field(
+        default_factory=lambda: ["sum"]
+    )
+    max_pivot_values: int = Field(default=200, ge=1, le=1000)
+    output_field: str = "data"
+
+
+class NodeUnpivotConfig(_RetryableNodeConfig):
+    """Configuracao do no de unpivot (wide -> long)."""
+
+    type: Literal["unpivot"]
+    index_columns: list[str] = Field(default_factory=list, min_length=1)
+    value_columns: list[str] = Field(default_factory=list)
+    by_type: Literal["all_numeric", "all_string"] | None = None
+    variable_column_name: str = "variable"
+    value_column_name: str = "value"
+    cast_value_to: str | None = None
+    output_field: str = "data"
+
+
+class NodeTextToRowsConfig(_RetryableNodeConfig):
+    """Configuracao do no de explosao de texto em linhas."""
+
+    type: Literal["text_to_rows"]
+    column_to_split: str = Field(..., min_length=1)
+    delimiter: str = Field(default=",", min_length=1)
+    output_column: str | None = None
+    keep_empty: bool = False
+    trim_values: bool = True
+    max_output_rows: int | None = Field(default=None, ge=1)
+    output_field: str = "data"
+
+
 NodeConfig = Annotated[
     Union[
         ExtractNodeConfig,
@@ -816,6 +912,13 @@ NodeConfig = Annotated[
         WorkflowOutputNodeConfig,
         CallWorkflowNodeConfig,
         LoopNodeConfig,
+        NodeSortConfig,
+        NodeSampleConfig,
+        NodeRecordIdConfig,
+        NodeUnionConfig,
+        NodePivotConfig,
+        NodeUnpivotConfig,
+        NodeTextToRowsConfig,
     ],
     Field(discriminator="type"),
 ]

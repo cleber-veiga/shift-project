@@ -810,3 +810,137 @@ async def delete_execution(
     await db.delete(execution)
     await db.commit()
 
+
+# ─── Predicted Schema ──────────────────────────────────────────────────────────
+
+
+@router.get("/{workflow_id}/nodes/{node_id}/predicted-schema")
+async def get_predicted_schema(
+    workflow_id: UUID,
+    node_id: str,
+    db: AsyncSession = Depends(get_db),
+    _=Depends(require_permission("workspace", "CONSULTANT")),
+) -> dict[str, Any]:
+    """Retorna o schema de saída previsto para um nó sem executar o workflow.
+
+    Útil para que o frontend exiba colunas disponíveis em dropdowns de
+    config (filter, mapper, join) e valide se colunas referenciadas ainda
+    existem upstream.
+
+    Retorna ``{"schema": [...], "node_id": "...", "predicted": true}`` quando
+    a inferência é possível, ou ``{"schema": null, "predicted": false}`` quando
+    o schema só pode ser determinado após execução real.
+    """
+    result = await db.execute(
+        sa_select(Workflow.definition).where(Workflow.id == workflow_id)
+    )
+    definition = result.scalar_one_or_none()
+    if definition is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow '{workflow_id}' nao encontrado.",
+        )
+
+    nodes = definition.get("nodes", [])
+    edges = definition.get("edges", [])
+
+    node_map: dict[str, dict] = {str(n["id"]): n for n in nodes if "id" in n}
+    if node_id not in node_map:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No '{node_id}' nao encontrado no workflow.",
+        )
+
+    # Pre-resolve connection strings para que sql_database possa probar via
+    # SELECT...LIMIT 0. Best-effort: se falhar, sql_database vira None.
+    connection_strings: dict[str, str] = {}
+    try:
+        from app.services.connection_service import connection_service  # noqa: PLC0415
+        ws_result = await db.execute(
+            sa_select(Workflow.workspace_id, Workflow.project_id).where(
+                Workflow.id == workflow_id
+            )
+        )
+        ws_row = ws_result.first()
+        if ws_row is not None:
+            workspace_id, project_id = ws_row
+            connection_strings = await connection_service.resolve_for_workflow(
+                db=db,
+                definition=definition,
+                project_id=project_id,
+                workspace_id=workspace_id,
+            )
+    except Exception:  # noqa: BLE001
+        connection_strings = {}
+
+    # Propagação de schema pelo grafo até o nó alvo.
+    try:
+        schema = _propagate_schema(node_id, node_map, edges, connection_strings)
+    except Exception:  # noqa: BLE001
+        schema = None
+
+    if schema is None:
+        return {"node_id": node_id, "schema": None, "predicted": False}
+
+    return {
+        "node_id": node_id,
+        "schema": [f.model_dump() for f in schema],
+        "predicted": True,
+    }
+
+
+def _propagate_schema(
+    target_node_id: str,
+    node_map: dict[str, dict],
+    edges: list[dict],
+    connection_strings: dict[str, str] | None = None,
+) -> "list | None":
+    """Propaga schemas desde os nós raiz até target_node_id por BFS.
+
+    ``connection_strings`` (opcional) é repassado a predict_output_schema
+    para que sql_database possa fazer probe via SELECT...LIMIT 0.
+    """
+    from collections import defaultdict  # noqa: PLC0415
+    from app.services.workflow.schema_inference import predict_output_schema, FieldDescriptor  # noqa: PLC0415
+
+    # Adjacência reversa: node → lista de (source_id, handle)
+    reverse: dict[str, list[tuple[str, str | None]]] = defaultdict(list)
+    for e in edges:
+        src, tgt = str(e.get("source", "")), str(e.get("target", ""))
+        handle = e.get("targetHandle") or None
+        if src and tgt:
+            reverse[tgt].append((src, handle))
+
+    # Memoização de schemas computados.
+    cache: dict[str, list[FieldDescriptor] | None] = {}
+
+    def compute(nid: str) -> list[FieldDescriptor] | None:
+        if nid in cache:
+            return cache[nid]
+        node = node_map.get(nid)
+        if node is None:
+            cache[nid] = None
+            return None
+
+        node_data = node.get("data", {}) if isinstance(node.get("data"), dict) else {}
+        node_type = str(node_data.get("type") or node.get("type") or "")
+
+        # Resolve schemas dos upstreams.
+        input_schemas: dict[str, list[FieldDescriptor]] = {}
+        for src_id, handle in reverse.get(nid, []):
+            upstream_schema = compute(src_id)
+            if upstream_schema is not None:
+                key = handle or "input"
+                input_schemas[key] = upstream_schema
+
+        schema = predict_output_schema(
+            node_type,
+            node_data,
+            input_schemas,
+            connection_strings=connection_strings,
+        )
+        cache[nid] = schema
+        return schema
+
+    return compute(target_node_id)
+

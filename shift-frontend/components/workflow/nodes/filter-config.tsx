@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback } from "react"
-import { GripVertical, Plus, Trash2 } from "lucide-react"
+import { AlertTriangle, GripVertical, Plus, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useUpstreamFields } from "@/lib/workflow/upstream-fields-context"
 import {
@@ -10,7 +10,34 @@ import {
   createFixed,
   createDynamic,
 } from "@/lib/workflow/parameter-value"
+import { usePredictedSchema } from "@/lib/workflow/use-predicted-schema"
 import { ValueInput } from "@/components/workflow/value-input/ValueInput"
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function extractFieldRefs(pv: ParameterValue): string[] {
+  if (pv.mode !== "dynamic") return []
+  const matches = [...pv.template.matchAll(/\{\{([^}]+)\}\}/g)]
+  return matches.map((m) => m[1].trim())
+}
+
+function UnavailableColumnBadge({ columns }: { columns: string[] }) {
+  if (columns.length === 0) return null
+  return (
+    <div className="mt-1 flex flex-wrap gap-1">
+      {columns.map((col) => (
+        <span
+          key={col}
+          className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive"
+          title={`A coluna '${col}' não existe no dataset upstream`}
+        >
+          <AlertTriangle className="size-2.5 shrink-0" />
+          {col} não disponível
+        </span>
+      ))}
+    </div>
+  )
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -23,6 +50,8 @@ interface Condition {
 interface FilterConfigProps {
   data: Record<string, unknown>
   onUpdate: (data: Record<string, unknown>) => void
+  workflowId?: string
+  nodeId?: string
 }
 
 // ─── Operators ───────────────────────────────────────────────────────────────
@@ -67,8 +96,21 @@ function normalizeCondition(raw: unknown): Condition {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function FilterConfig({ data, onUpdate }: FilterConfigProps) {
+export function FilterConfig({
+  data,
+  onUpdate,
+  workflowId,
+  nodeId,
+}: FilterConfigProps) {
   const rawUpstreamFields = useUpstreamFields()
+  // Schema previsto pelo backend tem prioridade sobre upstreamFields
+  // (que veem só do último run); permite avisar sobre staleness antes
+  // mesmo de o usuário rodar o workflow.
+  const { schema: predictedSchema } = usePredictedSchema(workflowId, nodeId)
+  const predictedColumnSet = predictedSchema
+    ? new Set(predictedSchema.map((f) => f.name))
+    : null
+  const upstreamFieldSet = new Set(rawUpstreamFields)
   const upstreamFieldPVs: UpstreamField[] = rawUpstreamFields.map((f) => ({
     name: f,
   }))
@@ -158,6 +200,20 @@ export function FilterConfig({ data, onUpdate }: FilterConfigProps) {
         <div className="space-y-2">
           {conditions.map((cond, i) => {
             const needsValue = operatorNeedsValue(cond.operator)
+            const leftRefs = extractFieldRefs(cond.left)
+            // Prioriza schema previsto (backend); se ausente, cai pro
+            // upstreamFields (vindo do último run); caso contrário, sem source
+            // de verdade não há como invalidar.
+            let unavailableCols: string[] = []
+            if (predictedColumnSet) {
+              unavailableCols = leftRefs.filter(
+                (f) => !predictedColumnSet.has(f),
+              )
+            } else if (rawUpstreamFields.length > 0) {
+              unavailableCols = leftRefs.filter(
+                (f) => !upstreamFieldSet.has(f),
+              )
+            }
 
             return (
               <div
@@ -199,6 +255,9 @@ export function FilterConfig({ data, onUpdate }: FilterConfigProps) {
                     <Trash2 className="size-3" />
                   </button>
                 </div>
+
+                {/* Unavailable column warning */}
+                <UnavailableColumnBadge columns={unavailableCols} />
 
                 {/* Row 2: Right value (if operator needs it) */}
                 {needsValue && (

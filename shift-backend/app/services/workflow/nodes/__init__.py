@@ -177,3 +177,10 @@ from app.services.workflow.nodes.sub_workflow import (  # noqa: E402, F401
 )
 from app.services.workflow.nodes.loop import LoopProcessor  # noqa: E402, F401
 from app.services.workflow.nodes.sync_node import SyncNodeProcessor  # noqa: E402, F401
+from app.services.workflow.nodes.sort_node import SortNodeProcessor  # noqa: E402, F401
+from app.services.workflow.nodes.sample_node import SampleNodeProcessor  # noqa: E402, F401
+from app.services.workflow.nodes.record_id_node import RecordIdNodeProcessor  # noqa: E402, F401
+from app.services.workflow.nodes.union_node import UnionNodeProcessor  # noqa: E402, F401
+from app.services.workflow.nodes.pivot_node import PivotNodeProcessor  # noqa: E402, F401
+from app.services.workflow.nodes.unpivot_node import UnpivotNodeProcessor  # noqa: E402, F401
+from app.services.workflow.nodes.text_to_rows_node import TextToRowsNodeProcessor  # noqa: E402, F401

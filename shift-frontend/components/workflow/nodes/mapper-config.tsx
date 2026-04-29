@@ -1,9 +1,10 @@
 "use client"
 
 import { useCallback, useState } from "react"
-import { ChevronDown, ChevronsDownUp, ChevronsUpDown, GripVertical, Plus, Sparkles, Trash2 } from "lucide-react"
+import { AlertTriangle, ChevronDown, ChevronsDownUp, ChevronsUpDown, GripVertical, Plus, Sparkles, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useUpstreamFields } from "@/lib/workflow/upstream-fields-context"
+import { usePredictedSchema } from "@/lib/workflow/use-predicted-schema"
 import { ValueInput } from "@/components/workflow/value-input"
 import { parseExprTokens } from "@/components/workflow/value-input"
 import {
@@ -36,6 +37,8 @@ interface Mapping {
 interface MapperConfigProps {
   data: Record<string, unknown>
   onUpdate: (data: Record<string, unknown>) => void
+  workflowId?: string
+  nodeId?: string
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -102,7 +105,86 @@ const TRANSFORMS: TransformDef[] = [
       return len > 0 ? `LEFT(${e}, ${len})` : e
     },
   },
+  {
+    id: "default", label: "Padrão", hasParams: true,
+    paramDefs: [
+      { key: "null_value", label: "Se NULL", placeholder: "valor padrão p/ NULL" },
+      { key: "empty_value", label: "Se vazio", placeholder: "valor padrão p/ string vazia" },
+    ],
+    // CASE escalonado: trata NULL e empty separadamente; quando um dos lados
+    // não for preenchido o branch correspondente é omitido (não dispara).
+    // Sem nenhum dos dois, retorna a expressão original (no-op).
+    apply: (e, p) => {
+      const nv = p?.null_value ?? ""
+      const ev = p?.empty_value ?? ""
+      const branches: string[] = []
+      if (nv !== "") {
+        branches.push(`WHEN ${e} IS NULL THEN '${escapeSql(nv)}'`)
+      }
+      if (ev !== "") {
+        branches.push(
+          `WHEN TRIM(CAST(${e} AS VARCHAR)) = '' THEN '${escapeSql(ev)}'`,
+        )
+      }
+      if (branches.length === 0) return e
+      return `CASE ${branches.join(" ")} ELSE ${e} END`
+    },
+  },
+  {
+    id: "map_values", label: "De-Para", hasParams: true,
+    paramDefs: [
+      // ``pairs`` é JSON-stringified Array<{from, to}>. ``fallback`` é
+      // um literal opcional aplicado quando nenhum case casa (string
+      // vazia = mantém o valor original via ELSE expr).
+      { key: "pairs", label: "Equivalências", placeholder: "[{\"from\":...,\"to\":...}]" },
+      { key: "fallback", label: "Fallback", placeholder: "vazio = mantém original" },
+    ],
+    apply: (e, p) => {
+      let pairs: Array<{ from: string; to: string }> = []
+      try {
+        const raw = JSON.parse(p?.pairs ?? "[]")
+        if (Array.isArray(raw)) {
+          pairs = raw.filter(
+            (r): r is { from: string; to: string } =>
+              typeof r === "object" && r !== null
+              && typeof (r as { from?: unknown }).from === "string"
+              && typeof (r as { to?: unknown }).to === "string",
+          )
+        }
+      } catch {
+        pairs = []
+      }
+      // Filtra entradas vazias do lado "from" (linha em branco no UI).
+      pairs = pairs.filter((pair) => pair.from !== "")
+      if (pairs.length === 0) return e
+
+      const branches = pairs
+        .map((pair) =>
+          `WHEN ${e} = '${escapeSql(pair.from)}' THEN '${escapeSql(pair.to)}'`,
+        )
+        .join(" ")
+      const fallback = p?.fallback ?? ""
+      const elseClause = fallback !== "" ? `'${escapeSql(fallback)}'` : e
+      return `CASE ${branches} ELSE ${elseClause} END`
+    },
+  },
 ]
+
+// ─── Badge ────────────────────────────────────────────────────────────────────
+
+function UnavailableSourceBadge({ source }: { source: string }) {
+  return (
+    <div className="mt-1 mb-1 px-2.5">
+      <span
+        className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-[10px] font-medium text-destructive"
+        title={`A coluna '${source}' não existe no dataset upstream`}
+      >
+        <AlertTriangle className="size-2.5 shrink-0" />
+        {source} não disponível
+      </span>
+    </div>
+  )
+}
 
 // ─── Pure helpers ─────────────────────────────────────────────────────────────
 
@@ -172,8 +254,17 @@ function normalise(raw: Record<string, unknown>): Mapping {
 const CARD_DRAG_TYPE  = "application/x-shift-card"
 const FIELD_DRAG_TYPE = "application/x-shift-field"
 
-export function MapperConfig({ data, onUpdate }: MapperConfigProps) {
+export function MapperConfig({
+  data,
+  onUpdate,
+  workflowId,
+  nodeId,
+}: MapperConfigProps) {
   const upstreamFields = useUpstreamFields()
+  const { schema: predictedSchema } = usePredictedSchema(workflowId, nodeId)
+  const predictedColumnSet = predictedSchema
+    ? new Set(predictedSchema.map((f) => f.name))
+    : null
   const [isDragOver,  setIsDragOver]  = useState(false)
   const [collapsed,   setCollapsed]   = useState<Set<string>>(new Set())
   const [draggedIdx,  setDraggedIdx]  = useState<number | null>(null)
@@ -282,6 +373,7 @@ export function MapperConfig({ data, onUpdate }: MapperConfigProps) {
 
   // ─── Derived ──────────────────────────────────────────────────────────────
 
+  const upstreamFieldSet  = new Set(upstreamFields)
   const upstreamFieldObjs = upstreamFields.map((name) => ({ name }))
 
   // ─── Render ───────────────────────────────────────────────────────────────
@@ -345,6 +437,17 @@ export function MapperConfig({ data, onUpdate }: MapperConfigProps) {
             const activeLabels = (m.transforms ?? [])
               .map((e) => TRANSFORMS.find((t) => t.id === entryId(e))?.label)
               .filter(Boolean) as string[]
+
+            // Prioriza schema previsto (backend); fallback no upstreamFields
+            // do último run. Sem nenhum dos dois, não há base para invalidar.
+            let sourceUnavailable = false
+            if (m.valueType === "field" && m.source) {
+              if (predictedColumnSet) {
+                sourceUnavailable = !predictedColumnSet.has(m.source)
+              } else if (upstreamFields.length > 0) {
+                sourceUnavailable = !upstreamFieldSet.has(m.source)
+              }
+            }
 
             return (
               <div
@@ -410,6 +513,11 @@ export function MapperConfig({ data, onUpdate }: MapperConfigProps) {
                   </button>
                 </div>
 
+                {/* ── Unavailable source warning ── */}
+                {sourceUnavailable && m.source && (
+                  <UnavailableSourceBadge source={m.source} />
+                )}
+
                 {/* ── Collapsed summary ── */}
                 {isCollapsed && (
                   <div className="flex flex-wrap items-center gap-1.5 px-2.5 pb-2 -mt-1">
@@ -448,7 +556,6 @@ export function MapperConfig({ data, onUpdate }: MapperConfigProps) {
                     <ValueInput
                       value={mappingToParameterValue(m as MapperMapping)}
                       onChange={(pv) => updateMappingFromPV(i, pv)}
-                      upstreamFields={upstreamFieldObjs}
                       allowVariables={true}
                     />
                   </div>

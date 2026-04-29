@@ -2,12 +2,16 @@
 Utilitarios de extracao SQL com dlt usando streaming e controle de memoria.
 """
 
+import time
 from pathlib import Path
 import tempfile
 from typing import Any
 
 import dlt
 import sqlalchemy as sa
+
+_PIPELINE_MAX_RETRIES = 3
+_PIPELINE_RETRY_DELAY = 0.4  # segundos; dobra a cada tentativa
 
 
 def extract_sql_to_duckdb(
@@ -67,7 +71,8 @@ def extract_sql_to_duckdb(
         progress="log",
     )
 
-    load_info = pipeline.run(
+    load_info = _run_pipeline_with_retry(
+        pipeline,
         sql_resource(),
         table_name=safe_table_name,
         write_disposition="replace",
@@ -121,3 +126,54 @@ def _normalize_connection_url(connection_url: str) -> str:
         normalized = normalized.replace(source, target)
 
     return normalized
+
+
+def _is_windows_rename_error(exc: Exception) -> bool:
+    """Detecta PermissionError de rename em Windows (WinError 5 / Acesso negado).
+
+    No Windows o Defender/Indexer abre brevemente diretórios recém-criados,
+    o que faz o dlt falhar ao tentar mover arquivos de normalize/ → extracted/.
+    Subir pela cadeia de causa captura o PermissionError mesmo quando o dlt
+    o embrulha em PipelineStepFailed.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, PermissionError):
+            return True
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    # Fallback para quando dlt serializa a exceção como string na mensagem
+    msg = str(exc)
+    return "PermissionError" in msg and ("WinError 5" in msg or "Acesso negado" in msg or "Access is denied" in msg)
+
+
+def _run_pipeline_with_retry(
+    pipeline: Any,
+    resource: Any,
+    *,
+    table_name: str,
+    write_disposition: str,
+) -> Any:
+    """Executa pipeline.run() com retry para PermissionError de rename no Windows.
+
+    O dlt move arquivos de normalize/ para extracted/ usando os.rename().
+    No Windows isso falha intermitentemente (WinError 5) porque o Defender
+    ou o Search Indexer abre o diretório recém-criado no momento exato do
+    rename. Três tentativas com back-off linear cobrem a janela de ~0.5s
+    do indexador.
+    """
+    delay = _PIPELINE_RETRY_DELAY
+    for attempt in range(_PIPELINE_MAX_RETRIES):
+        try:
+            return pipeline.run(
+                resource,
+                table_name=table_name,
+                write_disposition=write_disposition,
+            )
+        except Exception as exc:
+            if _is_windows_rename_error(exc) and attempt < _PIPELINE_MAX_RETRIES - 1:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise

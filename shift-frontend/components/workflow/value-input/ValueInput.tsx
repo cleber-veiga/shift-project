@@ -11,7 +11,7 @@ import {
   createDynamic,
 } from "@/lib/workflow/parameter-value"
 import { ExpressionEditor } from "./ExpressionEditor"
-import { TransformsBar } from "./TransformsBar"
+import { TransformsBar, TransformsPicker } from "./TransformsBar"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -230,6 +230,15 @@ export function ValueInput({
               useFieldRef={useFieldRef}
               placeholder={placeholder ?? "Arraste campos ou digite expressão..."}
               size={size}
+              trailingControls={
+                allowTransforms ? (
+                  <TransformsPicker
+                    transforms={transforms}
+                    onChange={handleTransformsChange}
+                    disabled={disabled}
+                  />
+                ) : undefined
+              }
             />
           )}
         </div>

@@ -1261,6 +1261,17 @@ export type PlaygroundQueryResponse = {
 const _schemaCache = new Map<string, { data: SchemaResponse; ts: number }>()
 const _SCHEMA_CACHE_TTL = 5 * 60 * 1000 // 5 minutos
 
+function _deduplicateTables(schema: SchemaResponse): SchemaResponse {
+  const seen = new Set<string>()
+  schema.tables = schema.tables.filter((t) => {
+    const key = `${t.schema ?? ""}__${t.name}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  return schema
+}
+
 export async function getConnectionSchema(
   connectionId: string,
   force = false
@@ -1269,13 +1280,14 @@ export async function getConnectionSchema(
   if (!force) {
     const cached = _schemaCache.get(cacheKey)
     if (cached && Date.now() - cached.ts < _SCHEMA_CACHE_TTL) {
-      return cached.data
+      return _deduplicateTables(cached.data)
     }
   }
   const url = force
     ? `/connections/${connectionId}/schema?force=true`
     : `/connections/${connectionId}/schema`
   const result = await authorizedRequest<SchemaResponse>(url, { method: "GET" })
+  _deduplicateTables(result)
   _schemaCache.set(cacheKey, { data: result, ts: Date.now() })
   return result
 }
@@ -1675,6 +1687,115 @@ export async function updateWorkflow(
   })
 }
 
+// ─── Workflow export / import (Fase 9) ────────────────────────────────────────
+
+export type WorkflowExportFormat = "sql" | "python" | "yaml"
+
+export type UnsupportedNodeReport = {
+  node_id: string
+  node_type: string
+  reason: string
+}
+
+export class WorkflowExportError extends Error {
+  unsupported: UnsupportedNodeReport[]
+  constructor(message: string, unsupported: UnsupportedNodeReport[]) {
+    super(message)
+    this.unsupported = unsupported
+  }
+}
+
+export type WorkflowExportResult = {
+  blob: Blob
+  filename: string
+}
+
+export async function exportWorkflow(
+  workflowId: string,
+  format: WorkflowExportFormat,
+): Promise<WorkflowExportResult> {
+  const session = await getValidSession()
+  if (!session) {
+    dispatchSessionExpired()
+    throw new Error("Sua sessão expirou. Faça login novamente.")
+  }
+  const response = await fetch(
+    `${getApiBaseUrl()}/workflows/${workflowId}/export?format=${format}`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${session.accessToken}` },
+    },
+  )
+
+  if (response.status === 401) {
+    clearSession()
+    dispatchSessionExpired()
+    throw new Error("Sua sessão expirou. Faça login novamente.")
+  }
+
+  if (response.status === 422) {
+    const body = await response.json().catch(() => ({}))
+    const detail = body?.detail ?? body
+    const unsupported: UnsupportedNodeReport[] = Array.isArray(detail?.unsupported)
+      ? detail.unsupported
+      : []
+    const message =
+      typeof detail?.error === "string"
+        ? detail.error
+        : `Não foi possível exportar: ${unsupported.length} nós não suportados.`
+    throw new WorkflowExportError(message, unsupported)
+  }
+
+  if (!response.ok) {
+    throw new Error(await parseApiError(response))
+  }
+
+  const disposition = response.headers.get("content-disposition") || ""
+  const match = disposition.match(/filename="?([^";]+)"?/i)
+  const filename = match?.[1] || `workflow.${format}`
+  const blob = await response.blob()
+  return { blob, filename }
+}
+
+export async function importWorkflowYaml(
+  file: File,
+  scope: { workspaceId?: string | null; projectId?: string | null },
+): Promise<Workflow> {
+  const session = await getValidSession()
+  if (!session) {
+    dispatchSessionExpired()
+    throw new Error("Sua sessão expirou. Faça login novamente.")
+  }
+
+  const params = new URLSearchParams()
+  if (scope.workspaceId) params.set("workspace_id", scope.workspaceId)
+  if (scope.projectId) params.set("project_id", scope.projectId)
+  if (params.size === 0) {
+    throw new Error("Informe workspace_id ou project_id para importar.")
+  }
+
+  const formData = new FormData()
+  formData.append("file", file)
+
+  const response = await fetch(
+    `${getApiBaseUrl()}/workflows/import?${params.toString()}`,
+    {
+      method: "POST",
+      body: formData,
+      headers: { Authorization: `Bearer ${session.accessToken}` },
+    },
+  )
+
+  if (response.status === 401) {
+    clearSession()
+    dispatchSessionExpired()
+    throw new Error("Sua sessão expirou. Faça login novamente.")
+  }
+  if (!response.ok) throw new Error(await parseApiError(response))
+  return parseResponseBody<Workflow>(response)
+}
+
+
 // ─── Workflow file uploads ────────────────────────────────────────────────────
 
 export type WorkflowUpload = {
@@ -1834,7 +1955,33 @@ export async function getExecutionStatus(
 export type WorkflowTestEvent =
   | { type: "execution_start"; execution_id: string; node_count: number; timestamp: string }
   | { type: "node_start"; node_id: string; node_type: string; label: string; timestamp: string }
-  | { type: "node_complete"; node_id: string; label: string; output: Record<string, unknown>; duration_ms: number; is_pinned?: boolean; timestamp: string }
+  | {
+      type: "node_complete"
+      node_id: string
+      node_type: string
+      label: string
+      status: string
+      row_count: number | null
+      schema_fingerprint: string | null
+      output_reference: {
+        node_id: string
+        storage_type: string
+        // Preenchidos quando o nó reusa o .duckdb de outro (transform nodes).
+        // Permitem o front ir pelo caminho ``/nodes/duckdb-preview`` que aceita
+        // path explícito, em vez de ``/executions/.../nodes/{node_id}/preview``
+        // que assume convenção ``{node_id}.duckdb``.
+        database_path?: string
+        table_name?: string
+        dataset_name?: string | null
+      } | null
+      duration_ms: number
+      is_pinned?: boolean
+      is_checkpoint?: boolean
+      is_cache_hit?: boolean
+      error?: string
+      skip_reason?: string
+      timestamp: string
+    }
   | { type: "node_error"; node_id: string; label: string; error: string; duration_ms: number; timestamp: string }
   | {
       // Emitido periodicamente por nos ``loop`` com estado das iteracoes.
@@ -2298,4 +2445,72 @@ export async function fetchDuckdbPreview(
       limit,
     }),
   })
+}
+
+// ─── Execution Node Preview ────────────────────────────────────────────────────
+
+export interface NodePreviewResponse {
+  columns: string[]
+  rows: Array<Record<string, unknown>>
+  row_count: number
+  total_rows: number
+  limit: number
+  offset: number
+}
+
+export async function fetchNodePreview(
+  executionId: string,
+  nodeId: string,
+  limit = 100,
+  offset = 0,
+): Promise<NodePreviewResponse> {
+  return authorizedRequest<NodePreviewResponse>(
+    `/executions/${executionId}/nodes/${nodeId}/preview?limit=${limit}&offset=${offset}`,
+    { method: "GET" },
+  )
+}
+
+// ─── Pin v3 — materialização de linhas para persistência offline ──────────────
+
+export interface MaterializedPin {
+  columns: string[]
+  rows: Array<Record<string, unknown>>
+  row_count: number
+  total_rows: number
+  truncated: boolean
+  schema_fingerprint: string | null
+}
+
+export async function materializePinFromBackend(
+  executionId: string,
+  nodeId: string,
+): Promise<MaterializedPin> {
+  return authorizedRequest<MaterializedPin>(
+    `/executions/${executionId}/nodes/${nodeId}/materialize-pin`,
+    { method: "POST" },
+  )
+}
+
+// ─── Predicted Schema (Fase 5) ───────────────────────────────────────────────
+
+export interface FieldDescriptor {
+  name: string
+  data_type: string
+  nullable: boolean
+}
+
+export interface PredictedSchemaResponse {
+  node_id: string
+  schema: FieldDescriptor[] | null
+  predicted: boolean
+}
+
+export async function fetchPredictedSchema(
+  workflowId: string,
+  nodeId: string,
+): Promise<PredictedSchemaResponse> {
+  return authorizedRequest<PredictedSchemaResponse>(
+    `/workflows/${workflowId}/nodes/${encodeURIComponent(nodeId)}/predicted-schema`,
+    { method: "GET" },
+  )
 }

@@ -211,7 +211,10 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
     : connections
 
   const filteredTables = tableSearch
-    ? tables.filter((t) => t.name.toLowerCase().includes(tableSearch.toLowerCase()))
+    ? tables.filter((t) => {
+        const qualified = t.schema ? `${t.schema}.${t.name}` : t.name
+        return qualified.toLowerCase().includes(tableSearch.toLowerCase())
+      })
     : tables
 
   const usedTargets = new Set(columnMapping.map((m) => m.target))
@@ -331,7 +334,7 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
                 </div>
                 {filteredTables.map((t) => (
                   <button
-                    key={t.name}
+                    key={`${t.schema ?? ""}__${t.name}`}
                     type="button"
                     onClick={() => selectTable(t.schema ? `${t.schema}.${t.name}` : t.name)}
                     className={cn(

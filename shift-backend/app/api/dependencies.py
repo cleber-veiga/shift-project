@@ -53,14 +53,20 @@ async def get_current_user(
 
     cached = user_cache.get(user_id)
     if cached is not None:
-        return cached  # type: ignore[return-value]
+        # Cached instance foi expungido da sessao original (ja fechada).
+        # Reanexa na sessao atual.
+        return await db.merge(cached, load=False)  # type: ignore[return-value]
 
     user = await auth_service.get_user_by_id(db, user_id)
     if user is None:
         raise credentials_exception
 
+    # Expunge antes de cachear para evitar que um rollback posterior nesta
+    # request expire os atributos do instance cacheado (causaria
+    # DetachedInstanceError em requests futuras).
+    db.expunge(user)
     user_cache.set(user_id, user)
-    return user
+    return await db.merge(user, load=False)
 
 
 async def populate_rate_limit_context(

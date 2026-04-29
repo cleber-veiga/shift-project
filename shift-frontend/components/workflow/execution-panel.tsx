@@ -1,7 +1,7 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
-import { AlertTriangle, CheckCircle2, DatabaseZap, Square, X, XCircle } from "lucide-react"
+import { useEffect, useMemo, useRef, useState } from "react"
+import { AlertTriangle, CheckCircle2, DatabaseZap, Pin, Square, Table2, X, XCircle } from "lucide-react"
 import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import { getNodeDefinition } from "@/lib/workflow/types"
@@ -17,41 +17,45 @@ interface NodeState {
   label: string
   status: "running" | "success" | "error" | "skipped" | "handled_error"
   duration_ms?: number
-  output?: Record<string, unknown>
+  row_count?: number | null
+  output_reference?: { node_id: string; storage_type: string } | null
+  execution_id?: string | null
   error?: string
+  skip_reason?: string
+  is_pinned?: boolean
 }
 
-function buildNodeStates(events: WorkflowTestEvent[]): NodeState[] {
+interface BuildResult {
+  nodes: NodeState[]
+  executionId: string | null
+}
+
+function buildNodeStates(events: WorkflowTestEvent[]): BuildResult {
   const order: string[] = []
   const states: Record<string, NodeState> = {}
+  let executionId: string | null = null
 
   for (const event of events) {
-    if (event.type === "node_start") {
+    if (event.type === "execution_start") {
+      executionId = event.execution_id
+    } else if (event.type === "node_start") {
       if (!states[event.node_id]) order.push(event.node_id)
       states[event.node_id] = {
         node_id: event.node_id,
         node_type: event.node_type,
         label: event.label,
         status: "running",
-        output: undefined,
-        error: undefined,
-        duration_ms: undefined,
       }
     } else if (event.type === "node_complete") {
       if (states[event.node_id]) {
-        const isSkipped = event.output?.status === "skipped"
-        const isHandledError = event.output?.status === "handled_error"
-        states[event.node_id].status = isSkipped
-          ? "skipped"
-          : isHandledError
-          ? "handled_error"
-          : "success"
+        states[event.node_id].status = (event.status as NodeState["status"]) ?? "success"
         states[event.node_id].duration_ms = event.duration_ms
-        states[event.node_id].output = event.output
-        states[event.node_id].error =
-          isHandledError && typeof event.output?.error === "string"
-            ? event.output.error
-            : undefined
+        states[event.node_id].row_count = event.row_count
+        states[event.node_id].output_reference = event.output_reference
+        states[event.node_id].execution_id = executionId
+        states[event.node_id].error = event.error
+        states[event.node_id].skip_reason = event.skip_reason
+        states[event.node_id].is_pinned = event.is_pinned
       }
     } else if (event.type === "node_error") {
       if (states[event.node_id]) {
@@ -62,14 +66,20 @@ function buildNodeStates(events: WorkflowTestEvent[]): NodeState[] {
     }
   }
 
-  return order.map((id) => states[id]).filter(Boolean)
+  return { nodes: order.map((id) => states[id]).filter(Boolean), executionId }
 }
 
 // ─── Main panel ───────────────────────────────────────────────────────────────
 
+export type ExecutionPhase = "idle" | "saving" | "connecting" | "streaming"
+
 interface ExecutionPanelProps {
   events: WorkflowTestEvent[]
   isRunning: boolean
+  /** Fase do ciclo de execução. Antes do primeiro evento SSE chegar, o
+      painel mostraria só "Aguardando…"; expor a fase deixa explícito que
+      estamos salvando ou conectando — elimina sensação de travado. */
+  phase?: ExecutionPhase
   onAbort: () => void
   onClose: () => void
   /** Quando true, o painel ganha padding-left igual a largura da sidebar
@@ -81,8 +91,11 @@ const MIN_HEIGHT = 120
 const MAX_HEIGHT = 700
 const LIBRARY_WIDTH = 380
 
-export function ExecutionPanel({ events, isRunning, onAbort, onClose, libraryOpen }: ExecutionPanelProps) {
-  const nodeStates = buildNodeStates(events)
+export function ExecutionPanel({ events, isRunning, phase = "idle", onAbort, onClose, libraryOpen }: ExecutionPanelProps) {
+  // buildNodeStates é O(N) sobre o histórico inteiro. useMemo evita rebuild
+  // em renders disparados por hover/resize/etc — só recomputa quando o
+  // array de events muda (caller faz [...prev, e] a cada SSE).
+  const { nodes: nodeStates } = useMemo(() => buildNodeStates(events), [events])
 
   // ── Resize drag ──────────────────────────────────────────────────────────
   const [height, setHeight] = useState(320)
@@ -163,7 +176,13 @@ export function ExecutionPanel({ events, isRunning, onAbort, onClose, libraryOpe
           {isRunning ? (
             <>
               <MorphLoader className="size-3.5 text-amber-500" />
-              <span className="text-xs font-semibold">Executando…</span>
+              <span className="text-xs font-semibold">
+                {phase === "saving"
+                  ? "Salvando workflow…"
+                  : phase === "connecting"
+                    ? "Iniciando execução…"
+                    : "Executando…"}
+              </span>
             </>
           ) : completeEvent ? (
             <>
@@ -214,8 +233,19 @@ export function ExecutionPanel({ events, isRunning, onAbort, onClose, libraryOpe
         {/* Left: node list */}
         <div className="w-52 shrink-0 overflow-y-auto">
           {nodeStates.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-              Aguardando…
+            <div className="flex h-full flex-col items-center justify-center gap-2 px-3 text-center text-xs text-muted-foreground">
+              {phase === "saving" || phase === "connecting" ? (
+                <>
+                  <MorphLoader className="size-4" />
+                  <span>
+                    {phase === "saving"
+                      ? "Salvando workflow…"
+                      : "Iniciando execução…"}
+                  </span>
+                </>
+              ) : (
+                "Aguardando…"
+              )}
             </div>
           ) : (
             <ul className="py-1">
@@ -294,9 +324,19 @@ function NodeListItem({
         {/* Node icon + label */}
         <Icon className="size-3.5 shrink-0 opacity-60" />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-[12px] font-medium leading-tight">{node.label}</p>
+          <p className="flex items-center gap-1 truncate text-[12px] font-medium leading-tight">
+            <span className="truncate">{node.label}</span>
+            {node.is_pinned && (
+              <Pin
+                className="size-2.5 shrink-0 -rotate-45 text-amber-500"
+                aria-label="Dados fixados"
+              />
+            )}
+          </p>
           {node.duration_ms !== undefined && (
-            <p className="text-[10px] opacity-60 tabular-nums">{node.duration_ms}ms</p>
+            <p className="text-[10px] opacity-60 tabular-nums">
+              {node.is_pinned ? "fixado" : `${node.duration_ms}ms`}
+            </p>
           )}
         </div>
       </button>
@@ -341,51 +381,77 @@ function NodeDetail({ node }: { node: NodeState }) {
             </p>
           </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-auto">
+        {node.output_reference && node.execution_id && (
           <DataViewer
-            output={node.output ?? {}}
+            output={{
+              output_reference: node.output_reference,
+              row_count: node.row_count,
+            }}
             sourceLabel={node.label}
             sourceNodeType={node.node_type}
+            sourceNodeId={node.node_id}
+            executionId={node.execution_id}
           />
-        </div>
+        )}
       </div>
     )
   }
 
-  if (!node.output) return null
+  if (node.status === "skipped") {
+    return (
+      <div className="flex flex-col gap-2 p-4">
+        <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">Ignorado</p>
+        <p className="text-xs text-muted-foreground">{node.skip_reason ?? "Condição não satisfeita."}</p>
+      </div>
+    )
+  }
 
-  const output = node.output
+  // Success: show row count summary + on-demand preview for DuckDB nodes
+  const hasPreview = node.output_reference?.storage_type === "duckdb" && node.execution_id
+  const hasRowCount = node.row_count !== null && node.row_count !== undefined
 
-  // ── Load Node (escrita SQL) ──────────────────────────────────────────────
-  const isLoad = typeof output.rows_written === "number"
-  if (isLoad) {
-    const disposition: Record<string, string> = {
-      append: "Append",
-      replace: "Replace",
-      merge: "Merge",
-    }
+  if (hasPreview) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        {hasRowCount && (
+          <div className="flex shrink-0 items-center gap-2 border-b border-emerald-500/20 bg-emerald-500/5 px-4 py-2.5">
+            <Table2 className="size-3.5 shrink-0 text-emerald-500" />
+            <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+              {node.row_count} linha{node.row_count !== 1 ? "s" : ""}
+            </p>
+          </div>
+        )}
+        <DataViewer
+          output={{
+            output_reference: node.output_reference,
+            row_count: node.row_count,
+          }}
+          sourceLabel={node.label}
+          sourceNodeType={node.node_type}
+          sourceNodeId={node.node_id}
+          executionId={node.execution_id!}
+        />
+      </div>
+    )
+  }
+
+  if (hasRowCount) {
     return (
       <div className="flex flex-col gap-3 p-4">
         <div className="flex items-center gap-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2.5">
           <DatabaseZap className="size-4 shrink-0 text-emerald-500" />
-          <div>
-            <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
-              {output.rows_written as number} linha{(output.rows_written as number) !== 1 ? "s" : ""} gravadas
-            </p>
-            <p className="text-[10px] text-muted-foreground">
-              {output.target_table as string} · {disposition[output.write_disposition as string] ?? output.write_disposition}
-            </p>
-          </div>
+          <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+            {node.row_count} linha{node.row_count !== 1 ? "s" : ""} processadas
+          </p>
         </div>
       </div>
     )
   }
 
   return (
-    <DataViewer
-      output={output}
-      sourceLabel={node.label}
-      sourceNodeType={node.node_type}
-    />
+    <div className="flex flex-1 items-center justify-center text-xs text-muted-foreground">
+      Nó executado com sucesso.
+    </div>
   )
 }
+

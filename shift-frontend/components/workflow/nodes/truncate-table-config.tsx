@@ -108,7 +108,10 @@ export function TruncateTableConfig({ data, onUpdate }: TruncateTableConfigProps
     : connections
 
   const filteredTables = tableSearch
-    ? tables.filter((t) => t.name.toLowerCase().includes(tableSearch.toLowerCase()))
+    ? tables.filter((t) => {
+        const qualified = t.schema ? `${t.schema}.${t.name}` : t.name
+        return qualified.toLowerCase().includes(tableSearch.toLowerCase())
+      })
     : tables
 
   return (

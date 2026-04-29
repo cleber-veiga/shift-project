@@ -1101,8 +1101,11 @@ class WorkflowExecutionService:
                 # Nao duplica node_executions no JSONB de result — ja virou
                 # linhas da tabela workflow_node_executions abaixo.
                 execution.result = {
-                    k: v for k, v in result.items() if k != "node_executions"
+                    k: v for k, v in result.items()
+                    if k not in ("node_executions", "plan_snapshot")
                 }
+                if result.get("plan_snapshot"):
+                    execution.plan_snapshot = result["plan_snapshot"]
 
             # Persiste eventos por no, se o runner emitiu algum.
             if result is not None:

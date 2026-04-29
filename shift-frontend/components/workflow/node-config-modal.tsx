@@ -29,7 +29,7 @@ import type { NodeExecState } from "@/lib/workflow/execution-context"
 import type { WebhookCapture } from "@/lib/api/webhooks"
 import type { WorkflowIOSchema } from "@/lib/api/workflow-versions"
 import { UpstreamFieldsContext, UpstreamOutputsContext, UsedSourcesContext, type UpstreamSummary } from "@/lib/workflow/upstream-fields-context"
-import { fetchDuckdbPreview, type DuckDbPreviewResponse } from "@/lib/auth"
+import { fetchDuckdbPreview, fetchNodePreview, materializePinFromBackend, type DuckDbPreviewResponse, type NodePreviewResponse } from "@/lib/auth"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -38,6 +38,10 @@ export interface UpstreamOutput {
   label: string
   nodeType: string
   output: Record<string, unknown> | null
+  /** ID da execução atual — propagado para o DataViewer poder fazer
+      fetch sob demanda quando o output é só uma referência DuckDB
+      (caso normal hoje, já que o SSE node_complete é lean). */
+  executionId?: string | null
   depth?: number
 }
 
@@ -212,6 +216,70 @@ export function NodeConfigModal({
   }, [node.data])
 
   const isRunning = isExecutingProp || currentOutput?.status === "running"
+
+  // ── Pin v3: async materialization ─────────────────────────────────────────
+  const [isPinning, setIsPinning] = useState(false)
+
+  const handlePin = useCallback(async () => {
+    if (!currentOutput) return
+
+    // Caminho v3 — referência DuckDB: materializa as linhas no backend
+    if (currentOutput.output_reference && currentOutput.execution_id) {
+      setIsPinning(true)
+      try {
+        const nodeId = currentOutput.output_reference.node_id
+        const materialized = await materializePinFromBackend(
+          currentOutput.execution_id,
+          nodeId,
+        )
+        onUpdate(node.id, {
+          ...(node.data as Record<string, unknown>),
+          pinnedOutput: {
+            __pinned_v: 3,
+            rows: materialized.rows,
+            columns: materialized.columns,
+            row_count: materialized.row_count,
+            total_rows: materialized.total_rows,
+            truncated: materialized.truncated,
+            schema_fingerprint: materialized.schema_fingerprint,
+            pinned_at: new Date().toISOString(),
+          },
+        })
+      } catch {
+        // Silently ignore — toast not available here; user sees no change
+      } finally {
+        setIsPinning(false)
+      }
+      return
+    }
+
+    // Caminho inline: output já tem dados (legado ou nó sem DuckDB)
+    if (!currentOutput.output) return
+    const output = currentOutput.output
+    const cols = Array.isArray(output.columns) ? (output.columns as string[]) : null
+    const rows = Array.isArray(output.rows) ? (output.rows as Array<Record<string, unknown>>) : null
+    if (cols && rows) {
+      onUpdate(node.id, {
+        ...(node.data as Record<string, unknown>),
+        pinnedOutput: {
+          __pinned_v: 3,
+          rows,
+          columns: cols,
+          row_count: rows.length,
+          total_rows: rows.length,
+          truncated: false,
+          schema_fingerprint: null,
+          pinned_at: new Date().toISOString(),
+        },
+      })
+    } else {
+      // Output não-tabular (JSON puro): armazena legado v1
+      onUpdate(node.id, {
+        ...(node.data as Record<string, unknown>),
+        pinnedOutput: output,
+      })
+    }
+  }, [currentOutput, node.id, node.data, onUpdate])
 
   // ── Resizable panels ──────────────────────────────────────────────────────
   const containerRef = useRef<HTMLDivElement>(null)
@@ -400,13 +468,8 @@ export function NodeConfigModal({
               currentOutput={currentOutput}
               onExecute={onExecute}
               isPinned={Boolean((node.data as Record<string, unknown>)?.pinnedOutput)}
-              onPin={() => {
-                if (!currentOutput?.output) return
-                onUpdate(node.id, {
-                  ...(node.data as Record<string, unknown>),
-                  pinnedOutput: currentOutput.output,
-                })
-              }}
+              isPinning={isPinning}
+              onPin={() => { void handlePin() }}
               onUnpin={() => {
                 const { pinnedOutput: _, ...rest } = node.data as Record<string, unknown>
                 onUpdate(node.id, rest)
@@ -434,6 +497,34 @@ export function NodeConfigModal({
 // ─── Input Panel (left) ──────────────────────────────────────────────────────
 
 function InputPanel({ upstreamOutputs }: { upstreamOutputs: UpstreamOutput[] }) {
+  // Aba global do painel — semelhante ao n8n: o seletor de visão
+  // (Schema/Tabela/JSON) fica no topo e controla todos os upstreams ao
+  // mesmo tempo. Em "schema" mostramos a lista de nós em accordion (ainda
+  // o melhor formato pra ver schemas lado a lado). Em "table"/"json"
+  // mostramos um seletor de nó + a visualização única do nó escolhido.
+  const [tab, setTab] = useState<ViewTab>("schema")
+
+  // Nó selecionado nas abas table/json. Inicia no primeiro upstream com
+  // dados; se nenhum tiver, no primeiro da lista mesmo (depth=1 — mais
+  // próximo ao nó atual).
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (
+      selectedNodeId &&
+      upstreamOutputs.some((u) => u.nodeId === selectedNodeId)
+    ) {
+      return
+    }
+    const firstWithData = upstreamOutputs.find((u) => u.output !== null)
+    setSelectedNodeId(
+      firstWithData?.nodeId ?? upstreamOutputs[0]?.nodeId ?? null,
+    )
+  }, [upstreamOutputs, selectedNodeId])
+
+  const selectedUpstream =
+    upstreamOutputs.find((u) => u.nodeId === selectedNodeId) ?? null
+
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col">
       <PanelHeader label="Input" />
@@ -445,11 +536,64 @@ function InputPanel({ upstreamOutputs }: { upstreamOutputs: UpstreamOutput[] }) 
           subtitle="Conecte um nó anterior para ver os dados de entrada."
         />
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          {upstreamOutputs.map((up) => (
-            <UpstreamAccordion key={up.nodeId} upstream={up} />
-          ))}
-        </div>
+        <>
+          {/* Top tabs (Schema/Tabela/JSON) — global pro painel inteiro */}
+          <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2.5">
+            <TabBtn
+              active={tab === "schema"}
+              onClick={() => setTab("schema")}
+              icon={<List className="size-3" />}
+              label="Schema"
+            />
+            <TabBtn
+              active={tab === "table"}
+              onClick={() => setTab("table")}
+              icon={<Table2 className="size-3" />}
+              label="Tabela"
+            />
+            <TabBtn
+              active={tab === "json"}
+              onClick={() => setTab("json")}
+              icon={<Braces className="size-3" />}
+              label="JSON"
+            />
+          </div>
+
+          {tab === "schema" ? (
+            // Schema: accordion com todos os upstreams (visão de comparação)
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {upstreamOutputs.map((up) => (
+                <UpstreamAccordion key={up.nodeId} upstream={up} />
+              ))}
+            </div>
+          ) : (
+            // Tabela/JSON: seletor de nó no topo + visão única do selecionado
+            <div className="flex min-h-0 flex-1 flex-col">
+              <UpstreamNodeSelector
+                upstreams={upstreamOutputs}
+                selectedNodeId={selectedNodeId}
+                onSelect={setSelectedNodeId}
+              />
+              <div className="min-h-0 flex-1 overflow-auto">
+                {selectedUpstream && selectedUpstream.output ? (
+                  <DataViewer
+                    output={selectedUpstream.output}
+                    sourceLabel={selectedUpstream.label}
+                    sourceNodeType={selectedUpstream.nodeType}
+                    sourceNodeId={selectedUpstream.nodeId}
+                    executionId={selectedUpstream.executionId ?? null}
+                    controlledTab={tab}
+                    hideTabs
+                  />
+                ) : (
+                  <div className="px-5 py-3 text-[11px] italic text-muted-foreground">
+                    Execute os nós anteriores para ver os dados aqui.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   )
@@ -459,6 +603,19 @@ function UpstreamAccordion({ upstream }: { upstream: UpstreamOutput }) {
   const [open, setOpen] = useState((upstream.depth ?? 1) === 1)
   const NodeIcon = getNodeIcon(getNodeDefinition(upstream.nodeType)?.icon ?? "Database")
   const hasData = upstream.output !== null
+
+  // Item count: prioriza row_count vindo do SSE lean (single source of truth
+  // pós-execução); fallback pra rows.length quando o output ainda traz dados
+  // inline (legado / inline_data).
+  const inlineRowsLen = Array.isArray(upstream.output?.rows)
+    ? (upstream.output!.rows as unknown[]).length
+    : null
+  const rowCount = typeof upstream.output?.row_count === "number"
+    ? (upstream.output!.row_count as number)
+    : inlineRowsLen
+  const itemCountLabel = rowCount !== null
+    ? `${rowCount} ${rowCount === 1 ? "item" : "itens"}`
+    : null
 
   return (
     <div className="border-b border-border last:border-b-0">
@@ -475,10 +632,9 @@ function UpstreamAccordion({ upstream }: { upstream: UpstreamOutput }) {
         <span className="flex-1 break-words text-[12px] font-medium text-foreground">
           {upstream.label}
         </span>
-        {hasData && upstream.output?.rows && Array.isArray(upstream.output.rows) ? (
+        {hasData && itemCountLabel ? (
           <span className="shrink-0 text-[10px] text-muted-foreground tabular-nums">
-            {(upstream.output.rows as unknown[]).length}{" "}
-            {(upstream.output.rows as unknown[]).length === 1 ? "item" : "itens"}
+            {itemCountLabel}
           </span>
         ) : null}
         {!hasData && (
@@ -486,7 +642,10 @@ function UpstreamAccordion({ upstream }: { upstream: UpstreamOutput }) {
         )}
       </button>
 
-      {/* Content */}
+      {/* Content — força a aba ``schema`` e esconde tabs internas, já
+          que o seletor global do InputPanel já decidiu que estamos em
+          modo Schema. Mantém compatibilidade com chamadas standalone
+          (executionPanel, output panel, etc.) que não passam estes props. */}
       {open && (
         hasData ? (
           <DataViewer
@@ -494,6 +653,10 @@ function UpstreamAccordion({ upstream }: { upstream: UpstreamOutput }) {
             sourceLabel={upstream.label}
             sourceNodeType={upstream.nodeType}
             sourceNodeId={upstream.nodeId}
+            executionId={upstream.executionId ?? null}
+            controlledTab="schema"
+            hideTabs
+            hideSchemaHeader
           />
         ) : (
           <div className="px-5 py-3 text-[11px] italic text-muted-foreground">
@@ -505,22 +668,129 @@ function UpstreamAccordion({ upstream }: { upstream: UpstreamOutput }) {
   )
 }
 
+function UpstreamNodeSelector({
+  upstreams,
+  selectedNodeId,
+  onSelect,
+}: {
+  upstreams: UpstreamOutput[]
+  selectedNodeId: string | null
+  onSelect: (id: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  // Fecha ao clicar fora ou ESC.
+  useEffect(() => {
+    if (!open) return
+    function handleMouseDown(e: MouseEvent) {
+      // Cast via globalThis.Node — ``Node`` no escopo deste módulo está
+      // sombreado pelo import do @xyflow/react, então usamos o tipo do DOM
+      // explicitamente para o ``contains``.
+      if (ref.current && !ref.current.contains(e.target as globalThis.Node)) setOpen(false)
+    }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false)
+    }
+    document.addEventListener("mousedown", handleMouseDown)
+    document.addEventListener("keydown", handleKey)
+    return () => {
+      document.removeEventListener("mousedown", handleMouseDown)
+      document.removeEventListener("keydown", handleKey)
+    }
+  }, [open])
+
+  const selected = upstreams.find((u) => u.nodeId === selectedNodeId) ?? upstreams[0]
+  const SelectedIcon = selected
+    ? getNodeIcon(getNodeDefinition(selected.nodeType)?.icon ?? "Database")
+    : null
+  const itemCount = upstreams.length
+
+  return (
+    <div ref={ref} className="relative shrink-0 border-b border-border px-2.5 py-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 rounded-md border border-input bg-background px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-muted/40"
+      >
+        {SelectedIcon && (
+          <SelectedIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
+        <span className="truncate font-medium text-foreground">
+          {selected?.label ?? "Selecionar nó"}
+        </span>
+        <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground">
+          {itemCount} {itemCount === 1 ? "nó" : "nós"}
+        </span>
+        <ChevronDown
+          className={cn(
+            "size-3 shrink-0 text-muted-foreground transition-transform",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+
+      {open && (
+        <div className="absolute left-2.5 right-2.5 top-full z-30 mt-1 max-h-72 overflow-y-auto rounded-lg border border-border bg-card p-1 shadow-lg">
+          {upstreams.map((up) => {
+            const Icon = getNodeIcon(
+              getNodeDefinition(up.nodeType)?.icon ?? "Database",
+            )
+            const isActive = up.nodeId === selectedNodeId
+            const depth = up.depth ?? 1
+            const depthLabel =
+              depth === 1 ? "1 nó atrás" : `${depth} nós atrás`
+            return (
+              <button
+                key={up.nodeId}
+                type="button"
+                onClick={() => {
+                  onSelect(up.nodeId)
+                  setOpen(false)
+                }}
+                className={cn(
+                  "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors",
+                  isActive ? "bg-accent text-foreground" : "hover:bg-muted/60",
+                )}
+              >
+                <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate font-medium text-foreground">
+                  {up.label}
+                </span>
+                <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                  {depthLabel}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Output Panel (right) ────────────────────────────────────────────────────
 
 function OutputPanel({
   currentOutput,
   onExecute,
   isPinned,
+  isPinning,
   onPin,
   onUnpin,
 }: {
   currentOutput: NodeExecState | null
   onExecute: () => void
   isPinned: boolean
+  isPinning: boolean
   onPin: () => void
   onUnpin: () => void
 }) {
-  const canPin = Boolean(currentOutput?.output) && !currentOutput?.is_pinned
+  // Pin disponível tanto para output inline (legado) quanto para
+  // output_reference (caminho lean atual). Sem ambos, não há nada pra fixar.
+  const canPin = Boolean(currentOutput?.output || currentOutput?.output_reference)
+    && !currentOutput?.is_pinned
+    && !isPinning
 
   return (
     <div className="flex min-h-0 w-full flex-1 flex-col">
@@ -529,23 +799,38 @@ function OutputPanel({
         <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
           Output
         </span>
-        {(isPinned || canPin) && (
-          <button
-            type="button"
-            onClick={isPinned ? onUnpin : onPin}
-            title={isPinned ? "Liberar dados fixados" : "Fixar dados (não re-executa ao recarregar)"}
-            className={cn(
-              "flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-colors",
-              isPinned
-                ? "bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
-                : "text-muted-foreground/60 hover:bg-muted hover:text-foreground",
+        {(isPinned || canPin || isPinning) && (
+          <div className="flex items-center gap-1">
+            {isPinned && (
+              <button
+                type="button"
+                onClick={onUnpin}
+                title="Liberar dados fixados"
+                className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <PinOff className="size-3" /> Liberar
+              </button>
             )}
-          >
-            {isPinned
-              ? <><PinOff className="size-3" /> Liberar</>
-              : <><Pin className="size-3" /> Fixar</>
-            }
-          </button>
+            {!isPinned && (
+              <button
+                type="button"
+                onClick={onPin}
+                disabled={isPinning || !canPin}
+                title="Fixar dados (persiste entre sessões)"
+                className={cn(
+                  "flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+                  isPinning
+                    ? "cursor-not-allowed text-muted-foreground/40"
+                    : "text-muted-foreground/60 hover:bg-muted hover:text-foreground",
+                )}
+              >
+                {isPinning
+                  ? <><MorphLoader className="size-3" /> Fixando…</>
+                  : <><Pin className="size-3" /> Fixar</>
+                }
+              </button>
+            )}
+          </div>
         )}
       </div>
 
@@ -555,6 +840,16 @@ function OutputPanel({
           <Pin className="size-3 shrink-0 text-amber-500" />
           <span className="text-[10px] text-amber-600 dark:text-amber-400">
             Dados fixados — nó não será re-executado
+          </span>
+        </div>
+      )}
+
+      {/* Pin parcial banner (v3 truncado) */}
+      {isPinned && currentOutput?.pin_truncated && (
+        <div className="flex items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5">
+          <AlertTriangle className="size-3 shrink-0 text-amber-600" />
+          <span className="text-[10px] text-amber-700 dark:text-amber-400">
+            Pin parcial — apenas {currentOutput.row_count?.toLocaleString()} de {currentOutput.pin_total_rows?.toLocaleString()} linhas fixadas
           </span>
         </div>
       )}
@@ -577,7 +872,12 @@ function OutputPanel({
               </div>
             </div>
           </div>
-          {currentOutput.output && <DataViewer output={currentOutput.output} />}
+          {(currentOutput.output || currentOutput.output_reference) && (
+            <DataViewer
+              output={currentOutput.output ?? { output_reference: currentOutput.output_reference }}
+              executionId={currentOutput.execution_id}
+            />
+          )}
         </div>
       ) : currentOutput?.status === "error" ? (
         <div className="flex flex-col gap-2 p-3">
@@ -589,8 +889,11 @@ function OutputPanel({
             {currentOutput.error}
           </div>
         </div>
-      ) : currentOutput?.output ? (
-        <DataViewer output={currentOutput.output} />
+      ) : currentOutput?.output || currentOutput?.output_reference ? (
+        <DataViewer
+          output={currentOutput.output ?? { output_reference: currentOutput.output_reference }}
+          executionId={currentOutput.execution_id}
+        />
       ) : (
         <EmptyState
           icon={<Play className="size-5 text-muted-foreground/30" />}
@@ -661,15 +964,43 @@ export type TableSource =
       tableName: string
       datasetName: string | null
     }
+  | { kind: "execution_preview"; executionId: string; nodeId: string }
 
 export function extractTableSource(
   output: Record<string, unknown>,
+  executionId?: string | null,
 ): TableSource | null {
   if (Array.isArray(output.columns) && Array.isArray(output.rows)) {
     return {
       kind: "inline",
       columns: output.columns as string[],
       rows: output.rows as Array<Record<string, unknown>>,
+    }
+  }
+
+  // Execution preview via output_reference (lean SSE format).
+  if (executionId && output.output_reference && typeof output.output_reference === "object") {
+    const ref = output.output_reference as Record<string, unknown>
+    if (ref.storage_type === "duckdb") {
+      // Preferimos path explícito quando vier — nós de transformação
+      // (Mapper/Filter/Join) escrevem em arquivo .duckdb do upstream;
+      // nesse caso ``{node_id}.duckdb`` não existe e o caminho convencional
+      // ``/executions/.../nodes/{node_id}/preview`` retorna 404.
+      if (
+        typeof ref.database_path === "string" &&
+        typeof ref.table_name === "string"
+      ) {
+        return {
+          kind: "duckdb",
+          databasePath: ref.database_path,
+          tableName: ref.table_name,
+          datasetName:
+            typeof ref.dataset_name === "string" ? ref.dataset_name : null,
+        }
+      }
+      if (typeof ref.node_id === "string") {
+        return { kind: "execution_preview", executionId, nodeId: ref.node_id }
+      }
     }
   }
 
@@ -713,41 +1044,70 @@ export function DataViewer({
   sourceLabel,
   sourceNodeType,
   sourceNodeId,
+  executionId,
+  controlledTab,
+  hideTabs = false,
+  hideSchemaHeader = false,
 }: {
   output: Record<string, unknown>
   sourceLabel?: string
   sourceNodeType?: string
   sourceNodeId?: string
+  executionId?: string | null
+  /** Quando definido, o DataViewer renderiza essa aba e ignora o estado
+      interno — usado pelo InputPanel para centralizar o seletor de visão
+      (Schema/Tabela/JSON) no topo do painel, estilo n8n. */
+  controlledTab?: ViewTab
+  /** Esconde a barra de abas interna. Combinado com ``controlledTab``,
+      permite que o pai posicione as abas onde quiser. */
+  hideTabs?: boolean
+  /** Repassa para o ``SchemaView`` o flag ``hideRootHeader`` — usado quando
+      o ancestral (ex.: ``UpstreamAccordion``) já mostra o cabeçalho do nó
+      e o root da SchemaView duplicaria a mesma informação. */
+  hideSchemaHeader?: boolean
 }) {
-  const [tab, setTab] = useState<ViewTab>("schema")
-  const [duckDbData, setDuckDbData] = useState<DuckDbPreviewResponse | null>(null)
+  const [internalTab, setInternalTab] = useState<ViewTab>("schema")
+  const tab = controlledTab ?? internalTab
+  const setTab = controlledTab !== undefined ? () => {} : setInternalTab
+  const [duckDbData, setDuckDbData] = useState<DuckDbPreviewResponse | NodePreviewResponse | null>(null)
   const [duckDbLoading, setDuckDbLoading] = useState(false)
   const [duckDbError, setDuckDbError] = useState<string | null>(null)
 
-  const tableSource = useMemo(() => extractTableSource(output), [output])
+  const tableSource = useMemo(() => extractTableSource(output, executionId), [output, executionId])
   const isDuckDb = tableSource?.kind === "duckdb"
+  const isExecPreview = tableSource?.kind === "execution_preview"
   const isInline = tableSource?.kind === "inline"
 
-  // Reset DuckDB state when the source ref changes (new execution, different node)
+  // Reset remote fetch state when the source changes
   const duckDbKey = isDuckDb
-    ? `${tableSource.databasePath}::${tableSource.tableName}`
+    ? `duckdb::${tableSource.databasePath}::${tableSource.tableName}`
+    : isExecPreview
+    ? `exec::${tableSource.executionId}::${tableSource.nodeId}`
     : null
   useEffect(() => {
     setDuckDbData(null)
     setDuckDbError(null)
   }, [duckDbKey])
 
-  // Auto-fetch DuckDB preview assim que o DataViewer tem uma ref — o Schema
-  // também depende dos dados (para montar a árvore de colunas N8N-style).
+  // Auto-fetch preview (legacy DuckDB path or execution preview)
   useEffect(() => {
-    if (!isDuckDb || duckDbData || duckDbLoading || duckDbError) return
-    const src = tableSource as Extract<TableSource, { kind: "duckdb" }>
-    setDuckDbLoading(true)
-    fetchDuckdbPreview(src.databasePath, src.tableName, src.datasetName)
-      .then((data) => setDuckDbData(data))
-      .catch((err) => setDuckDbError(err?.message ?? "Erro ao carregar dados."))
-      .finally(() => setDuckDbLoading(false))
-  }, [isDuckDb, tableSource, duckDbData, duckDbLoading, duckDbError])
+    if (duckDbData || duckDbLoading || duckDbError) return
+    if (isDuckDb) {
+      const src = tableSource as Extract<TableSource, { kind: "duckdb" }>
+      setDuckDbLoading(true)
+      fetchDuckdbPreview(src.databasePath, src.tableName, src.datasetName)
+        .then((data) => setDuckDbData(data))
+        .catch((err) => setDuckDbError(err?.message ?? "Erro ao carregar dados."))
+        .finally(() => setDuckDbLoading(false))
+    } else if (isExecPreview) {
+      const src = tableSource as Extract<TableSource, { kind: "execution_preview" }>
+      setDuckDbLoading(true)
+      fetchNodePreview(src.executionId, src.nodeId)
+        .then((data) => setDuckDbData(data))
+        .catch((err) => setDuckDbError(err?.message ?? "Erro ao carregar prévia."))
+        .finally(() => setDuckDbLoading(false))
+    }
+  }, [isDuckDb, isExecPreview, tableSource, duckDbData, duckDbLoading, duckDbError])
 
   const tableColumns = isInline
     ? (tableSource as Extract<TableSource, { kind: "inline" }>).columns
@@ -761,44 +1121,46 @@ export function DataViewer({
   const itemCount = isInline
     ? tableRows.length
     : duckDbData
-      ? duckDbData.row_count
+      ? ("total_rows" in duckDbData ? duckDbData.total_rows : duckDbData.row_count)
       : null
   const itemCountLabel = itemCount !== null
-    ? `${itemCount}${duckDbData?.truncated ? " (prévia)" : ""} ${itemCount === 1 ? "item" : "itens"}`
+    ? `${itemCount}${("truncated" in (duckDbData ?? {})) && (duckDbData as DuckDbPreviewResponse)?.truncated ? " (prévia)" : ""} ${itemCount === 1 ? "item" : "itens"}`
     : null
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* Tabs */}
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2.5">
-        <TabBtn
-          active={tab === "schema"}
-          onClick={() => setTab("schema")}
-          icon={<List className="size-3" />}
-          label="Schema"
-        />
-        {hasTable && (
+      {/* Tabs (escondidas quando o pai controla via ``controlledTab``) */}
+      {!hideTabs && (
+        <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2.5">
           <TabBtn
-            active={tab === "table"}
-            onClick={() => setTab("table")}
-            icon={<Table2 className="size-3" />}
-            label="Tabela"
+            active={tab === "schema"}
+            onClick={() => setTab("schema")}
+            icon={<List className="size-3" />}
+            label="Schema"
           />
-        )}
-        <TabBtn
-          active={tab === "json"}
-          onClick={() => setTab("json")}
-          icon={<Braces className="size-3" />}
-          label="JSON"
-        />
-        <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">
-          {duckDbLoading ? (
-            <MorphLoader className="size-3" />
-          ) : (
-            itemCountLabel
+          {hasTable && (
+            <TabBtn
+              active={tab === "table"}
+              onClick={() => setTab("table")}
+              icon={<Table2 className="size-3" />}
+              label="Tabela"
+            />
           )}
-        </span>
-      </div>
+          <TabBtn
+            active={tab === "json"}
+            onClick={() => setTab("json")}
+            icon={<Braces className="size-3" />}
+            label="JSON"
+          />
+          <span className="ml-auto text-[10px] tabular-nums text-muted-foreground">
+            {duckDbLoading ? (
+              <MorphLoader className="size-3" />
+            ) : (
+              itemCountLabel
+            )}
+          </span>
+        </div>
+      )}
 
       {/* Content */}
       <div className="min-h-0 flex-1 overflow-auto">
@@ -810,6 +1172,7 @@ export function DataViewer({
             sourceLabel={sourceLabel}
             sourceNodeType={sourceNodeType}
             sourceNodeId={sourceNodeId}
+            hideRootHeader={hideSchemaHeader}
           />
         ) : tab === "table" ? (
           duckDbLoading ? (
@@ -843,6 +1206,7 @@ function SchemaView({
   sourceLabel,
   sourceNodeType,
   sourceNodeId,
+  hideRootHeader = false,
 }: {
   columns?: string[]
   sampleRow: Record<string, unknown> | null
@@ -850,6 +1214,11 @@ function SchemaView({
   sourceLabel?: string
   sourceNodeType?: string
   sourceNodeId?: string
+  /** Suprime o cabeçalho-raiz colapsável (label + ícone + contagem) — usado
+      pelo InputPanel quando o pai já provê seu próprio header de upstream
+      e o duplicaria. Mantido como opt-in para não mexer em chamadas
+      standalone (OutputPanel, ExecutionPanel) onde o header é necessário. */
+  hideRootHeader?: boolean
 }) {
   const [expanded, setExpanded] = useState(true)
   const usedSources = useContext(UsedSourcesContext)
@@ -864,30 +1233,32 @@ function SchemaView({
 
     return (
       <div className="py-2">
-        {/* Root node: collapsible */}
-        <button
-          type="button"
-          onClick={() => setExpanded(!expanded)}
-          className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-muted/50"
-        >
-          {expanded ? (
-            <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
-          )}
-          {NodeIcon && (
-            <NodeIcon className="size-3.5 shrink-0 text-muted-foreground" />
-          )}
-          <span className="text-xs font-medium text-foreground truncate">
-            {nodeLabel}
-          </span>
-          <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground">
-            {rows.length} {rows.length === 1 ? "item" : "itens"}
-          </span>
-        </button>
+        {/* Root node: collapsible (omitted when ancestor already shows label) */}
+        {!hideRootHeader && (
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors hover:bg-muted/50"
+          >
+            {expanded ? (
+              <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="size-3 shrink-0 text-muted-foreground" />
+            )}
+            {NodeIcon && (
+              <NodeIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            )}
+            <span className="text-xs font-medium text-foreground truncate">
+              {nodeLabel}
+            </span>
+            <span className="ml-auto shrink-0 text-[10px] tabular-nums text-muted-foreground">
+              {rows.length} {rows.length === 1 ? "item" : "itens"}
+            </span>
+          </button>
+        )}
 
         {/* Fields */}
-        {expanded && (
+        {(expanded || hideRootHeader) && (
           <div className="mt-0.5">
             {columns.map((col, ci) => {
               const value   = sampleRow?.[col]
@@ -1144,6 +1515,22 @@ function SchemaTreeObjectNode({
 
 // ─── Mini Table ──────────────────────────────────────────────────────────────
 
+// ── MiniTable: tabela compacta com resize/autofit/menu de contexto ─────────
+
+const MINI_DEFAULT_COL_WIDTH = 160
+const MINI_MIN_COL_WIDTH = 60
+const MINI_MAX_COL_WIDTH = 600
+// Fonte usada para medir colunas via canvas — bate com `text-xs` do <table>
+// abaixo. Sem isso o autofit erra em umas casas decimais e corta a última
+// letra da coluna mais larga.
+const MINI_TABLE_FONT = '12px ui-monospace, SFMono-Regular, "Roboto Mono", Menlo, monospace'
+const MINI_COL_PADDING = 28
+
+function miniCellText(value: unknown): string {
+  if (value === null || value === undefined) return "null"
+  return String(value)
+}
+
 function MiniTable({
   columns,
   rows,
@@ -1151,54 +1538,190 @@ function MiniTable({
   columns: string[]
   rows: Array<Record<string, unknown>>
 }) {
+  const [widths, setWidths] = useState<Record<string, number>>({})
+  const [menu, setMenu] = useState<{ x: number; y: number; col: string } | null>(null)
+
+  const getWidth = (col: string) => widths[col] ?? MINI_DEFAULT_COL_WIDTH
+
+  const measureCol = useCallback(
+    (col: string): number => {
+      if (typeof document === "undefined") return MINI_DEFAULT_COL_WIDTH
+      const canvas = document.createElement("canvas")
+      const ctx = canvas.getContext("2d")
+      if (!ctx) return MINI_DEFAULT_COL_WIDTH
+      ctx.font = MINI_TABLE_FONT
+      let max = ctx.measureText(col).width
+      for (const row of rows) {
+        const w = ctx.measureText(miniCellText(row[col])).width
+        if (w > max) max = w
+      }
+      return Math.max(
+        MINI_MIN_COL_WIDTH,
+        Math.min(MINI_MAX_COL_WIDTH, Math.ceil(max + MINI_COL_PADDING)),
+      )
+    },
+    [rows],
+  )
+
+  const autofitColumn = (col: string) => {
+    setWidths((prev) => ({ ...prev, [col]: measureCol(col) }))
+  }
+  const autofitAll = () => {
+    const next: Record<string, number> = {}
+    for (const c of columns) next[c] = measureCol(c)
+    setWidths(next)
+  }
+  const resetAll = () => setWidths({})
+
+  const onResizeMouseDown = (e: React.MouseEvent, col: string) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.clientX
+    const startW = getWidth(col)
+    const onMove = (ev: MouseEvent) => {
+      const delta = ev.clientX - startX
+      const next = Math.max(MINI_MIN_COL_WIDTH, Math.min(MINI_MAX_COL_WIDTH, startW + delta))
+      setWidths((prev) => ({ ...prev, [col]: next }))
+    }
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove)
+      window.removeEventListener("mouseup", onUp)
+    }
+    window.addEventListener("mousemove", onMove)
+    window.addEventListener("mouseup", onUp)
+  }
+
+  // Fecha menu de contexto em mousedown global ou Esc.
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close()
+    }
+    window.addEventListener("mousedown", close)
+    window.addEventListener("keydown", onKey)
+    return () => {
+      window.removeEventListener("mousedown", close)
+      window.removeEventListener("keydown", onKey)
+    }
+  }, [menu])
+
   if (rows.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center text-[11px] text-muted-foreground">
+      <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
         Nenhuma linha.
       </div>
     )
   }
 
   return (
-    <table className="w-full min-w-max border-separate border-spacing-0 text-[10px]">
-      <thead className="sticky top-0 z-10">
-        <tr className="bg-muted/80 backdrop-blur-sm">
-          <th className="sticky left-0 z-20 w-8 border-b border-r border-border bg-muted/80 px-1.5 py-1.5 text-center font-semibold text-muted-foreground backdrop-blur-sm">
-            #
-          </th>
-          {columns.map((col, ci) => (
-            <th
-              key={`${col}-${ci}`}
-              className="whitespace-nowrap border-b border-r border-border px-3 py-1.5 text-left font-semibold text-muted-foreground last:border-r-0"
-            >
-              {col}
-            </th>
+    <>
+      <table className="border-separate border-spacing-0 text-xs" style={{ tableLayout: "fixed" }}>
+        <colgroup>
+          <col style={{ width: 36 }} />
+          {columns.map((col) => (
+            <col key={col} style={{ width: getWidth(col) }} />
           ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row, i) => (
-          <tr key={i} className="hover:bg-muted/20">
-            <td className="sticky left-0 z-10 border-b border-r border-border/40 bg-card px-1.5 py-1 text-center tabular-nums text-muted-foreground/50">
-              {i + 1}
-            </td>
-            {columns.map((col, ci) => (
-              <td
-                key={`${col}-${ci}`}
-                className="max-w-[260px] truncate whitespace-nowrap border-b border-r border-border/40 px-3 py-1 text-foreground last:border-r-0"
-                title={row[col] != null ? String(row[col]) : undefined}
+        </colgroup>
+        <thead className="sticky top-0 z-10">
+          <tr className="bg-muted/80 backdrop-blur-sm">
+            <th className="sticky left-0 z-20 border-b border-r border-border bg-muted/80 px-1.5 py-1.5 text-center font-semibold text-muted-foreground backdrop-blur-sm">
+              #
+            </th>
+            {columns.map((col) => (
+              <th
+                key={col}
+                style={{ width: getWidth(col) }}
+                className="border-b border-r border-border bg-muted/80 p-0 text-left font-semibold text-muted-foreground select-none last:border-r-0"
               >
-                {row[col] == null ? (
-                  <span className="italic text-muted-foreground/40">null</span>
-                ) : (
-                  String(row[col])
-                )}
-              </td>
+                {/* Wrapper flex em vez de <th> direto: <th> é table-cell,
+                    cuja capacidade de servir como containing block para
+                    elementos absolute-positioned é irregular entre
+                    browsers. O div garante o contexto. */}
+                <div className="flex items-stretch">
+                  <button
+                    type="button"
+                    onContextMenu={(e) => {
+                      e.preventDefault()
+                      setMenu({ x: e.clientX, y: e.clientY, col })
+                    }}
+                    onDoubleClick={() => autofitColumn(col)}
+                    className="min-w-0 flex-1 truncate px-3 py-1.5 text-left"
+                    title="Arraste a borda · duplo-clique auto-ajusta · botão direito para mais opções"
+                  >
+                    {col}
+                  </button>
+                  <div
+                    onMouseDown={(e) => onResizeMouseDown(e, col)}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation()
+                      autofitColumn(col)
+                    }}
+                    className="w-1.5 shrink-0 cursor-col-resize bg-border/40 transition-colors hover:bg-primary"
+                    aria-hidden
+                  />
+                </div>
+              </th>
             ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i} className="hover:bg-muted/20">
+              <td className="sticky left-0 z-10 border-b border-r border-border/40 bg-card px-1.5 py-1 text-center tabular-nums text-muted-foreground/50">
+                {i + 1}
+              </td>
+              {columns.map((col) => (
+                <td
+                  key={col}
+                  style={{ width: getWidth(col), maxWidth: getWidth(col) }}
+                  className="overflow-hidden border-b border-r border-border/40 px-3 py-1 text-ellipsis whitespace-nowrap text-foreground last:border-r-0"
+                  title={row[col] != null ? String(row[col]) : undefined}
+                >
+                  {row[col] == null ? (
+                    <span className="italic text-muted-foreground/40">null</span>
+                  ) : (
+                    String(row[col])
+                  )}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {menu && (
+        <div
+          onMouseDown={(e) => e.stopPropagation()}
+          style={{ left: menu.x, top: menu.y }}
+          className="fixed z-50 min-w-[200px] rounded-md border border-border bg-popover py-1 text-xs shadow-lg"
+          role="menu"
+        >
+          <button
+            type="button"
+            onClick={() => { autofitColumn(menu.col); setMenu(null) }}
+            className="block w-full px-3 py-1.5 text-left hover:bg-accent"
+          >
+            Ajustar a esta coluna
+          </button>
+          <button
+            type="button"
+            onClick={() => { autofitAll(); setMenu(null) }}
+            className="block w-full px-3 py-1.5 text-left hover:bg-accent"
+          >
+            Ajustar todas as colunas
+          </button>
+          <div className="my-1 h-px bg-border" />
+          <button
+            type="button"
+            onClick={() => { resetAll(); setMenu(null) }}
+            className="block w-full px-3 py-1.5 text-left hover:bg-accent"
+          >
+            Resetar larguras
+          </button>
+        </div>
+      )}
+    </>
   )
 }
 

@@ -15,6 +15,10 @@ export interface ExpressionEditorProps {
   useFieldRef?: boolean
   placeholder?: string
   size?: "sm" | "md"
+  /** Conteúdo extra renderizado na barra inferior, depois do botão
+      ``Variáveis ▾``. Usado pelo ValueInput para encaixar o
+      ``TransformsPicker`` lado-a-lado e não em uma linha separada. */
+  trailingControls?: React.ReactNode
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -111,6 +115,7 @@ export function ExpressionEditor({
   useFieldRef = false,
   placeholder = "Arraste campos ou digite expressão...",
   size = "md",
+  trailingControls,
 }: ExpressionEditorProps) {
   const editRef = useRef<HTMLDivElement>(null)
   const lastSerialized = useRef(template)
@@ -330,6 +335,13 @@ export function ExpressionEditor({
                 </div>
               )}
             </div>
+          </>
+        )}
+
+        {trailingControls && (
+          <>
+            <span className="mx-0.5 text-muted-foreground/20">|</span>
+            {trailingControls}
           </>
         )}
       </div>

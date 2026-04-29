@@ -21,7 +21,14 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.drop_column("workspace_players", "database")
+    # Idempotente: a coluna `database` só existe em bancos legados onde a
+    # migração `e1a4c7b9f210` (numa versão anterior) chegou a criá-la. Em
+    # bancos novos a versão atual de `e1a4c7b9f210` já nasce sem ela.
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = {col["name"] for col in inspector.get_columns("workspace_players")}
+    if "database" in columns:
+        op.drop_column("workspace_players", "database")
 
 
 def downgrade() -> None:

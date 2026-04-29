@@ -394,10 +394,10 @@ class PlaygroundService:
 
             # Schema padrão (usuário conectado)
             _collect(None)
-            # Schemas adicionais — sempre em maiúsculo
+            # Schemas adicionais — pula o schema que já foi coletado via _collect(None)
             for extra in (include_schemas or []):
                 normalized = extra.strip().upper()
-                if normalized:
+                if normalized and normalized != (default_schema or "").upper():
                     _collect(normalized)
 
             # Row counts (best-effort, dialect-specific)

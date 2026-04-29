@@ -73,8 +73,7 @@ function getNodeSummaryRows(type: string, data: Record<string, unknown>): Summar
   }
 
   switch (type) {
-    case "sql_database":
-    case "polling": {
+    case "sql_database": {
       const rows: SummaryRow[] = []
       const conn = connDisplay(data.connection_id, data.connection_name)
       if (conn) rows.push({ label: "Conexão", value: conn, badge: true })
@@ -197,7 +196,7 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
   const tone        = pickTone(definition, customColor)
 
   const codeContent = useMemo(() => {
-    if (type === "sql_database" || type === "polling") {
+    if (type === "sql_database") {
       const q = (nodeData.query as string | undefined)?.trim()
       return q || null
     }

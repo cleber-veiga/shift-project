@@ -791,6 +791,35 @@ def _event_node_meta(node: dict[str, Any]) -> tuple[str, str | None]:
     return node_type, label_str
 
 
+def _extract_pinned_output(pinned: dict[str, Any]) -> dict[str, Any]:
+    """Extrai o resultado real de um pinnedOutput em qualquer formato de versão.
+
+    - **v3** (linhas materializadas): reconstrói ``{rows, columns, row_count}``.
+    - **v2** (referência DuckDB ephemeral): retorna o campo ``output`` se
+      disponível; caso contrário devolve um dict vazio (referência expirou).
+    - **v1 / legado**: devolve o dict puro sem modificação.
+
+    O resultado é passado para ``_default_success_handle_if_needed`` e depois
+    para ``results[node_id]``, onde os processadores downstream o leem via
+    ``get_primary_input_reference`` ou pelo dict direto (nos legado/inline).
+    """
+    version = pinned.get("__pinned_v")
+    if version == 3:
+        return {
+            "rows": pinned.get("rows", []),
+            "columns": pinned.get("columns", []),
+            "row_count": pinned.get("row_count", 0),
+        }
+    if version == 2:
+        output = pinned.get("output")
+        if isinstance(output, dict):
+            return output
+        # Referência-only: DuckDB pode ter expirado — retorna vazio.
+        return {"rows": [], "columns": [], "row_count": 0}
+    # v1 legado: o próprio dict é o resultado.
+    return pinned
+
+
 def _default_success_handle_if_needed(
     node_id: str,
     result: dict[str, Any],
@@ -835,6 +864,66 @@ def _default_success_handle_if_needed(
 
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _compute_schema_fingerprint(ref: dict | None) -> str | None:
+    """Computes a short hash of the DuckDB table schema for change detection.
+
+    Called synchronously after node completion — DuckDB DESCRIBE on a local
+    file is O(1) metadata read, typically < 1ms.
+    """
+    if not ref or ref.get("storage_type") != "duckdb":
+        return None
+    try:
+        import hashlib  # noqa: PLC0415
+        import duckdb as _duckdb  # noqa: PLC0415
+        from app.data_pipelines.duckdb_storage import build_table_ref  # noqa: PLC0415
+
+        con = _duckdb.connect(str(ref["database_path"]))
+        try:
+            table_ref = build_table_ref(ref)
+            cols = con.execute(f"DESCRIBE {table_ref}").fetchall()
+            schema_str = ",".join(f"{c[0]}:{c[1]}" for c in cols)
+            return hashlib.md5(schema_str.encode()).hexdigest()[:16]  # noqa: S324
+        finally:
+            con.close()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _extract_output_reference(result: Any, execution_id: str | None, node_id: str) -> dict | None:
+    """Returns an output reference for the SSE event.
+
+    Inclui ``database_path`` + ``table_name`` (+ ``dataset_name``) quando a
+    referência DuckDB upstream foi reusada — caso típico de transform nodes
+    (Mapper, Filter, Join, etc.) que escrevem suas tabelas no arquivo do
+    upstream para evitar cópia desnecessária. Sem esses campos, o front só
+    consegue resolver o preview via ``/executions/.../nodes/{node_id}/preview``,
+    que assume ``{node_id}.duckdb`` — convenção quebrada para nós que não
+    são donos do arquivo. Com os campos, o front cai no fluxo legado
+    ``/nodes/duckdb-preview`` que aceita path explícito.
+    """
+    try:
+        from app.data_pipelines.duckdb_storage import find_duckdb_reference  # noqa: PLC0415
+        ref = find_duckdb_reference(result)
+        if ref is not None:
+            payload: dict[str, Any] = {
+                "node_id": node_id,
+                "storage_type": "duckdb",
+            }
+            db_path = ref.get("database_path")
+            table_name = ref.get("table_name")
+            dataset_name = ref.get("dataset_name")
+            if db_path:
+                payload["database_path"] = str(db_path)
+            if table_name:
+                payload["table_name"] = str(table_name)
+            if dataset_name:
+                payload["dataset_name"] = str(dataset_name)
+            return payload
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 async def _save_checkpoint_safe(
@@ -982,6 +1071,30 @@ async def run_workflow(
     nodes = resolved_payload.get("nodes", [])
     edges = resolved_payload.get("edges", [])
 
+    # --- Fase 4: Parameter Resolver fail-fast ---
+    # Resolve ${var} em todas as configs de nó antes de qualquer side effect.
+    # Se alguma referência não for resolvida, marca execution como failed com
+    # mensagem clara e retorna imediatamente (nenhum nó foi executado).
+    _param_restorations: list = []
+    if variable_values:
+        try:
+            from app.orchestration.flows.parameter_resolver import (  # noqa: PLC0415
+                apply_parameters,
+                ParameterError,
+            )
+            _param_restorations = apply_parameters(resolved_payload, variable_values)
+        except Exception as _param_exc:  # noqa: BLE001
+            # ParameterError ou inesperado — fail-fast antes de qualquer nó.
+            _err_msg = str(_param_exc)
+            logger.error("parameter_resolver.failed", error=_err_msg)
+            return {
+                "status": "failed",
+                "error": _err_msg,
+                "error_type": type(_param_exc).__name__,
+                "node_results": {},
+                "node_executions": [],
+            }
+
     # ``workspace_id`` e ``workflow_id`` (= template_id no Shift) tambem entram
     # nos contextvars de log para que TODA mensagem dentro deste run tenha
     # esses campos — requisito de "logs estruturados com workspace/execution_id".
@@ -1014,9 +1127,34 @@ async def run_workflow(
 
         logger.info("workflow.levels_computed", levels=len(levels))
 
+        # --- Fase 4: ExecutionPlanSnapshot ---
+        # Capturado imediatamente após topological sort, antes de rodar qualquer nó.
+        # Persiste via event (quem chama run_workflow é responsável por salvar).
+        try:
+            from app.orchestration.flows.execution_plan import build_snapshot  # noqa: PLC0415
+            _plan_snapshot = build_snapshot(nodes, edges, levels, execution_id)
+            execution_context["_plan_snapshot"] = _plan_snapshot
+            await _safe_emit(
+                event_sink,
+                {
+                    "type": "execution_plan_ready",
+                    "execution_id": execution_id,
+                    "node_count": _plan_snapshot.node_count,
+                    "edge_count": _plan_snapshot.edge_count,
+                    "level_count": len(_plan_snapshot.levels),
+                    "plan": _plan_snapshot.model_dump(mode="json"),
+                },
+                logger,
+            )
+        except Exception as _snap_exc:  # noqa: BLE001
+            logger.warning("execution_plan.build_failed", error=str(_snap_exc))
+
         results: dict[str, dict[str, Any]] = {}
         node_executions: list[dict[str, Any]] = []
         node_timing: dict[str, dict[str, Any]] = {}
+        # Hash semântico por nó — propagado downstream para que dois nós com
+        # mesma config mas inputs diferentes produzam hashes diferentes.
+        _node_semantic_hashes: dict[str, str] = {}
 
         # Estado acumulado para o evento ``execution_end`` — default
         # ``completed`` e sobrescrito em early-returns (failed/aborted) ou
@@ -1161,6 +1299,12 @@ async def run_workflow(
                             row_count_out=row_out,
                             output_summary={"is_checkpoint": True},
                         )
+                        _chk_ref = None
+                        try:
+                            from app.data_pipelines.duckdb_storage import find_duckdb_reference as _fdr  # noqa: PLC0415
+                            _chk_ref = _fdr(chk_result)
+                        except Exception:  # noqa: BLE001
+                            pass
                         await _safe_emit(
                             event_sink,
                             {
@@ -1170,62 +1314,156 @@ async def run_workflow(
                                 "node_id": node_id,
                                 "node_type": node_type_for_event,
                                 "label": label_for_event,
-                                "output": chk_result,
+                                "status": "success",
+                                "row_count": row_out,
+                                "schema_fingerprint": _compute_schema_fingerprint(_chk_ref),
+                                "output_reference": _extract_output_reference(chk_result, execution_id, node_id),
                                 "duration_ms": 0,
                                 "is_checkpoint": True,
-                                "row_count_in": row_in,
-                                "row_count_out": row_out,
                             },
                             logger,
                         )
                         continue
 
-                    # --- extract cache: reutiliza resultado de extracao anterior ---
-                    if node_data.get("cache_enabled"):
+                    # --- Fase 5: StrategyResolver ativo ---
+                    # Verifica cache (a menos que force_refresh=True), depois
+                    # chama o resolver que decide se/como rodar o nó.
+                    _force_refresh = bool(node_data.get("force_refresh", False))
+                    _is_cache_hit = False
+                    _cached_result_for_skip: dict | None = None
+
+                    if node_data.get("cache_enabled") and not _force_refresh:
                         try:
                             from app.services.extract_cache_service import extract_cache_service as _ecs  # noqa: PLC0415
                             _cache_key = _ecs.make_cache_key(node_data)
-                            _cached = await _ecs.get(_cache_key, execution_id or "", node_id)
-                            if _cached is not None:
-                                _cached_result = _default_success_handle_if_needed(
-                                    node_id, _cached, adjacency, edge_handle_map,
-                                )
-                                with bind_context(node_id=node_id):
-                                    logger.info("node.cache_hit")
-                                results[node_id] = _cached_result
-                                row_in, row_out = _extract_row_counts(_cached_result)
-                                _record_event(
-                                    node_id, node, "skipped",
-                                    row_count_in=row_in, row_count_out=row_out,
-                                    output_summary={"is_cache_hit": True},
-                                )
-                                await _safe_emit(
-                                    event_sink,
-                                    {
-                                        "type": "node_complete",
-                                        "execution_id": execution_id,
-                                        "timestamp": _iso_now(),
-                                        "node_id": node_id,
-                                        "node_type": node_type_for_event,
-                                        "label": label_for_event,
-                                        "output": _sanitize_for_event(_cached_result),
-                                        "duration_ms": 0,
-                                        "is_cache_hit": True,
-                                        "row_count_in": row_in,
-                                        "row_count_out": row_out,
-                                    },
-                                    logger,
-                                )
-                                continue
+                            _cached_result_for_skip = await _ecs.get(_cache_key, execution_id or "", node_id)
+                            _is_cache_hit = _cached_result_for_skip is not None
                         except Exception:  # noqa: BLE001
                             logger.exception("node.cache_check_failed", node_id=node_id)
+
+                    node_type = _get_node_type(node)
+                    registered_processor_type = _get_registered_processor_type(node)
+
+                    try:
+                        from app.orchestration.flows.strategy_resolver import (  # noqa: PLC0415
+                            resolve_strategy,
+                            build_strategy_sse_event as _build_resolver_sse,
+                        )
+                        from app.services.workflow.semantic_hash import compute_semantic_hash  # noqa: PLC0415
+                        _resolver_type = registered_processor_type or node_type
+                        _resolver_decision = resolve_strategy(
+                            node_id=node_id,
+                            node_type=_resolver_type,
+                            node_data=node_data,
+                            run_mode=run_mode,
+                            is_cache_hit=_is_cache_hit,
+                            force_refresh=_force_refresh,
+                        )
+                        # Hash semântico — propaga fingerprints de upstreams
+                        # para que mesma config com inputs diferentes gere hashes
+                        # distintos. Sem isso, cache poisoning silencioso quando
+                        # Fase 6+ usar o hash para skip.
+                        _input_fps = sorted(
+                            _node_semantic_hashes[pred_id]
+                            for pred_id in reverse_adj.get(node_id, [])
+                            if pred_id in _node_semantic_hashes
+                        )
+                        _sem_hash = compute_semantic_hash(
+                            config=node_data,
+                            input_fingerprints=_input_fps,
+                            node_type=_resolver_type,
+                        )
+                        _node_semantic_hashes[node_id] = _sem_hash
+                        await _safe_emit(
+                            event_sink,
+                            _build_resolver_sse(
+                                node_id=node_id,
+                                node_type=_resolver_type,
+                                execution_id=execution_id,
+                                decision=_resolver_decision,
+                                label=label_for_event,
+                                semantic_hash=_sem_hash,
+                            ),
+                            logger,
+                        )
+                    except Exception:  # noqa: BLE001
+                        # Resolver nunca derruba execução. Fallback: sempre roda.
+                        from app.orchestration.flows.strategy_resolver import StrategyDecision  # noqa: PLC0415
+                        _resolver_decision = StrategyDecision(True, "local_thread", "resolver_error_fallback")
+                        _sem_hash = None
+
+                    # Se resolver diz SKIP (cache hit ou outro motivo):
+                    if not _resolver_decision.should_run:
+                        if _is_cache_hit and _cached_result_for_skip is not None:
+                            _cached_r = _default_success_handle_if_needed(
+                                node_id, _cached_result_for_skip, adjacency, edge_handle_map,
+                            )
+                            with bind_context(node_id=node_id):
+                                logger.info("node.cache_hit")
+                            results[node_id] = _cached_r
+                            row_in, row_out = _extract_row_counts(_cached_r)
+                            _record_event(
+                                node_id, node, "skipped",
+                                row_count_in=row_in, row_count_out=row_out,
+                                output_summary={"is_cache_hit": True},
+                            )
+                            await _safe_emit(
+                                event_sink,
+                                {
+                                    "type": "node_complete",
+                                    "execution_id": execution_id,
+                                    "timestamp": _iso_now(),
+                                    "node_id": node_id,
+                                    "node_type": node_type_for_event,
+                                    "label": label_for_event,
+                                    "status": "success",
+                                    "row_count": row_out,
+                                    "schema_fingerprint": None,
+                                    "output_reference": _extract_output_reference(_cached_r, execution_id, node_id),
+                                    "duration_ms": 0,
+                                    "is_cache_hit": True,
+                                },
+                                logger,
+                            )
+                        else:
+                            with bind_context(node_id=node_id):
+                                logger.info("node.strategy_skip", reason=_resolver_decision.reason)
+                            results[node_id] = {"node_id": node_id, "status": "skipped", "reason": _resolver_decision.reason}
+                            _record_event(node_id, node, "skipped", output_summary={"reason": _resolver_decision.reason})
+                            await _safe_emit(
+                                event_sink,
+                                {
+                                    "type": "node_skipped",
+                                    "execution_id": execution_id,
+                                    "timestamp": _iso_now(),
+                                    "node_id": node_id,
+                                    "node_type": node_type_for_event,
+                                    "label": label_for_event,
+                                    "reason": _resolver_decision.reason,
+                                },
+                                logger,
+                            )
+                        continue
 
                     # --- pinnedOutput: usa output fixado, nao chama processor ---
                     pinned_output = node_data.get("pinnedOutput")
                     if isinstance(pinned_output, dict) and pinned_output:
+                        pinned_inner = _extract_pinned_output(pinned_output)
+                        # v3 carrega linhas inline ({rows, columns, row_count}).
+                        # Os processadores downstream (Mapper, Filter, Join...)
+                        # esperam uma referência DuckDB via get_primary_input_reference.
+                        # Materializamos as linhas em um arquivo .duckdb desta
+                        # execução para que ``find_duckdb_reference`` encontre
+                        # storage_type/database_path no upstream.
+                        if pinned_output.get("__pinned_v") == 3 and pinned_inner.get("rows"):
+                            from app.data_pipelines.duckdb_storage import ensure_duckdb_reference  # noqa: PLC0415
+                            reference = ensure_duckdb_reference(
+                                pinned_inner["rows"], execution_id, node_id
+                            )
+                            pinned_inner = {**pinned_inner, **reference}
                         pinned_result = _default_success_handle_if_needed(
                             node_id,
-                            pinned_output,
+                            pinned_inner,
                             adjacency,
                             edge_handle_map,
                         )
@@ -1233,10 +1471,26 @@ async def run_workflow(
                             logger.info("node.pinned_output")
                         results[node_id] = pinned_result
                         row_in, row_out = _extract_row_counts(pinned_result)
+                        # Emitimos node_start antes de node_complete para que o
+                        # nó apareça na lista da ExecutionPanel — buildNodeStates
+                        # só registra um nó quando vê node_start. Sem isto, o
+                        # usuário não vê o nó pinado na timeline da execução.
+                        await _safe_emit(
+                            event_sink,
+                            {
+                                "type": "node_start",
+                                "execution_id": execution_id,
+                                "timestamp": _iso_now(),
+                                "node_id": node_id,
+                                "node_type": node_type_for_event,
+                                "label": label_for_event,
+                            },
+                            logger,
+                        )
                         _record_event(
                             node_id,
                             node,
-                            "skipped",
+                            "success",
                             row_count_in=row_in,
                             row_count_out=row_out,
                             output_summary={"is_pinned": True},
@@ -1250,11 +1504,12 @@ async def run_workflow(
                                 "node_id": node_id,
                                 "node_type": node_type_for_event,
                                 "label": label_for_event,
-                                "output": pinned_result,
+                                "status": "success",
+                                "row_count": row_out,
+                                "schema_fingerprint": None,
+                                "output_reference": _extract_output_reference(pinned_result, execution_id, node_id),
                                 "duration_ms": 0,
                                 "is_pinned": True,
-                                "row_count_in": row_in,
-                                "row_count_out": row_out,
                             },
                             logger,
                         )
@@ -1291,9 +1546,6 @@ async def run_workflow(
                             logger,
                         )
                         continue
-
-                    node_type = _get_node_type(node)
-                    registered_processor_type = _get_registered_processor_type(node)
 
                     # Apenas upstream ativos sao passados ao processador.
                     # Nos de juncao recebem somente os resultados dos caminhos ativos.
@@ -1675,6 +1927,12 @@ async def run_workflow(
                             row_count_out=row_out,
                             output_summary=output_summary,
                         )
+                        _result_ref = None
+                        try:
+                            from app.data_pipelines.duckdb_storage import find_duckdb_reference as _fdr2  # noqa: PLC0415
+                            _result_ref = _fdr2(result)
+                        except Exception:  # noqa: BLE001
+                            pass
                         await _safe_emit(
                             event_sink,
                             {
@@ -1684,17 +1942,14 @@ async def run_workflow(
                                 "node_id": node_id,
                                 "node_type": node_type_for_event,
                                 "label": label_for_event,
-                                # Emite o resultado para a UI (inclui a referencia
-                                # DuckDB em ``data`` necessaria para renderizar o
-                                # preview em tabela). Passa por ``_sanitize_for_event``
-                                # para dropar connection_string e outros segredos
-                                # caso algum processor ecoe config no retorno.
-                                # ``output_summary`` segue sendo usado apenas para
-                                # persistencia em DB (snapshot de auditoria).
-                                "output": _sanitize_for_event(result),
+                                # Lean payload: sem dados completos do output.
+                                # Frontend busca via GET /executions/{eid}/nodes/{nid}/preview
+                                # quando o usuario seleciona o no no painel de execucao.
+                                "status": "success",
+                                "row_count": row_out,
+                                "schema_fingerprint": _compute_schema_fingerprint(_result_ref),
+                                "output_reference": _extract_output_reference(result, execution_id, node_id),
                                 "duration_ms": duration_ms,
-                                "row_count_in": row_in,
-                                "row_count_out": row_out,
                             },
                             logger,
                         )
@@ -1791,11 +2046,13 @@ async def run_workflow(
 
             logger.info("workflow.completed", node_count=len(results))
             final_status = "completed"
+            _snap = execution_context.get("_plan_snapshot")
             return {
                 "status": "completed",
                 "node_results": results,
                 "node_executions": node_executions,
                 "workflow_output": dict(execution_context.get("workflow_output", {})),
+                "plan_snapshot": _snap.model_dump(mode="json") if _snap is not None else None,
             }
         except asyncio.CancelledError:
             final_status = "cancelled"
@@ -1828,6 +2085,18 @@ async def run_workflow(
                 final_status = "failed"
             raise
         finally:
+            # Restaura ${var} no resolved_payload para que o dict não fique
+            # mutado in-place. Importante quando o payload pode ser reusado
+            # (loop inline, sub-workflow). Sem isso, segunda passada veria
+            # valores já resolvidos em vez do template original.
+            if _param_restorations:
+                try:
+                    from app.orchestration.flows.parameter_resolver import (  # noqa: PLC0415
+                        restore_parameters,
+                    )
+                    restore_parameters(_param_restorations)
+                except Exception:  # noqa: BLE001
+                    logger.exception("parameter_resolver.restore_failed")
             # Evento especifico de cancelamento (antes de execution_end)
             if final_status == "cancelled":
                 await _safe_emit(

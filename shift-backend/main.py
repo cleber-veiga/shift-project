@@ -39,6 +39,7 @@ from app.api.v1.saved_queries import router as saved_queries_router
 from app.api.v1.workflow_versions import router as workflow_versions_router
 from app.api.v1.workflows_crud import router as workflow_crud_router
 from app.api.v1.workflow_build import router as workflow_build_router
+from app.api.v1.workflow_export import router as workflow_export_router
 from app.api.v1.workspaces import router as workspaces_router
 from app.core.logging import get_logger
 from app.core.middleware import RequestIDMiddleware
@@ -54,6 +55,7 @@ from app.services.webhook_dispatch_service import register_dispatch_job as regis
 from app.services.workflow_service import cleanup_orphaned_executions
 from app.api.v1.admin_storage import router as admin_storage_router
 from app.api.v1.extract_cache import router as extract_cache_router
+from app.api.v1.executions import router as executions_router
 from app.services.memory_monitor import start_memory_monitor, stop_memory_monitor
 
 logger = get_logger(__name__)
@@ -256,6 +258,7 @@ app.include_router(workflow_router, prefix="/api/v1")
 app.include_router(workflow_versions_router, prefix="/api/v1")
 app.include_router(workflow_crud_router, prefix="/api/v1")
 app.include_router(workflow_build_router, prefix="/api/v1")
+app.include_router(workflow_export_router, prefix="/api/v1")
 app.include_router(playground_router, prefix="/api/v1")
 app.include_router(saved_queries_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1")
@@ -268,6 +271,7 @@ app.include_router(input_model_rows_router, prefix="/api/v1")
 app.include_router(invitations_router, prefix="/api/v1")
 app.include_router(admin_storage_router, prefix="/api/v1")
 app.include_router(extract_cache_router, prefix="/api/v1")
+app.include_router(executions_router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["sistema"])

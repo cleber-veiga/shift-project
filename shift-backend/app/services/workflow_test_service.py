@@ -29,6 +29,15 @@ class WorkflowTestService:
         mode: str | None = None,
         input_data: dict[str, Any] | None = None,
     ) -> AsyncGenerator[str, None]:
+        # Comentário SSE (linhas iniciadas em ":" são ignoradas pelo parser
+        # do cliente). Yielded antes do preâmbulo pesado — força o servidor
+        # a flushar os headers + primeiro byte da response, fazendo o
+        # ``fetch()`` no front resolver imediatamente. Sem isso, o reader
+        # só recebe dados depois de ~200-500ms de setup (lookup do workflow,
+        # render de template, decryption de conexões, plano de execução)
+        # e a UI parece travada apesar do spinner já estar girando.
+        yield ": ack\n\n"
+
         # Import tardio evita ciclo em alguns setups de teste
         # (workflow_service importa modelos que podem puxar outras rotas).
         from app.services.workflow_service import workflow_service
@@ -126,18 +135,27 @@ def _transform_for_sse(
         }
 
     if evt_type == "node_complete":
-        output = evt.get("output") or {}
-        sse_output = _trim_for_sse(output) if mode == "production" else output
+        # Lean payload: runner já emite os campos slim; repassamos sem output.
         payload: dict[str, Any] = {
             "type": "node_complete",
             "node_id": evt.get("node_id"),
+            "node_type": evt.get("node_type"),
             "label": evt.get("label"),
-            "output": sse_output,
+            "status": evt.get("status", "success"),
+            "row_count": evt.get("row_count"),
+            "schema_fingerprint": evt.get("schema_fingerprint"),
+            "output_reference": evt.get("output_reference"),
             "duration_ms": evt.get("duration_ms", 0),
             "timestamp": evt.get("timestamp"),
         }
         if evt.get("is_pinned"):
             payload["is_pinned"] = True
+        if evt.get("is_checkpoint"):
+            payload["is_checkpoint"] = True
+        if evt.get("is_cache_hit"):
+            payload["is_cache_hit"] = True
+        if evt.get("error"):
+            payload["error"] = evt.get("error")
         return payload
 
     if evt_type == "node_error":
@@ -154,13 +172,13 @@ def _transform_for_sse(
         return {
             "type": "node_complete",
             "node_id": evt.get("node_id"),
+            "node_type": evt.get("node_type"),
             "label": evt.get("label"),
-            "output": {
-                "status": "handled_error",
-                "active_handle": "on_error",
-                "error": evt.get("error"),
-                "error_type": evt.get("error_type"),
-            },
+            "status": "handled_error",
+            "error": evt.get("error"),
+            "row_count": None,
+            "schema_fingerprint": None,
+            "output_reference": None,
             "duration_ms": evt.get("duration_ms", 0),
             "timestamp": evt.get("timestamp"),
         }
@@ -170,10 +188,15 @@ def _transform_for_sse(
         return {
             "type": "node_complete",
             "node_id": evt.get("node_id"),
+            "node_type": evt.get("node_type"),
             "label": evt.get("label"),
-            "output": {"status": "skipped", "reason": reason},
+            "status": "skipped",
+            "row_count": None,
+            "schema_fingerprint": None,
+            "output_reference": None,
             "duration_ms": evt.get("duration_ms", 0),
             "timestamp": evt.get("timestamp"),
+            "skip_reason": reason,
         }
 
     if evt_type == "execution_end":

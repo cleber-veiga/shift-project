@@ -561,7 +561,8 @@
       "Bash(grep -E \"\\\\.tsx?$\")",
       "Bash(npx vitest *)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3000/)",
-      "Bash(grep -n \"createManualInputFromClipboard\\\\|parse.*tabular\\\\|TSV\\\\|tsv\\\\|split.*\\\\\\\\\\\\\\\\t\" /d/Labs/Flowfile/flowfile_frontend/src/renderer/app/components/nodes/node-types/elements/manualInput/manualInputLogic.ts /d/Labs/Flowfile/flowfile_frontend/src/renderer/app/api/*.ts)"
+      "Bash(grep -n \"createManualInputFromClipboard\\\\|parse.*tabular\\\\|TSV\\\\|tsv\\\\|split.*\\\\\\\\\\\\\\\\t\" /d/Labs/Flowfile/flowfile_frontend/src/renderer/app/components/nodes/node-types/elements/manualInput/manualInputLogic.ts /d/Labs/Flowfile/flowfile_frontend/src/renderer/app/api/*.ts)",
+      "Bash(python -m pytest tests/test_executions_api_auth.py -v)"
     ]
   }
 }

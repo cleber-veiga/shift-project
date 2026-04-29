@@ -71,8 +71,13 @@ import {
   updateWorkflow,
   testWorkflowStream,
   listWorkspaceCustomNodeDefinitions,
+  exportWorkflow,
+  importWorkflowYaml,
+  WorkflowExportError,
   type CustomNodeDefinition,
+  type UnsupportedNodeReport,
   type Workflow,
+  type WorkflowExportFormat,
   type WorkflowScheduleStatus,
   type WorkflowTestEvent,
 } from "@/lib/auth"
@@ -90,6 +95,51 @@ import { useToast } from "@/lib/context/toast-context"
 // canvas. Se futuramente precisarmos de fallback para quando o chat esta fechado,
 // podemos reintroduzir condicionalmente aqui.
 const BuildOpsPanel = dynamic(() => import("@/components/workflow/build-ops-panel").then((m) => m.BuildOpsPanel), { ssr: false, loading: () => null })
+
+/**
+ * Reidrata o ``pinnedOutput`` salvo em ``node.data`` para um ``NodeExecState``.
+ *
+ * Três formatos suportados:
+ *  - **v3** (atual): rows materializadas pelo backend — persiste offline.
+ *    ``{__pinned_v: 3, rows, columns, row_count, total_rows, truncated,
+ *    schema_fingerprint, pinned_at}``
+ *  - **v2**: wrapper lean com referência DuckDB (ephemeral).
+ *    ``{__pinned_v: 2, output, output_reference, row_count, execution_id}``
+ *  - **legado (v1)**: o próprio output dict puro (pré-Fase 5).
+ *
+ * Centralizado aqui pra que os 3 sites de restore (workflow load, execute,
+ * onUpdate via modal) tratem todos os formatos identicamente.
+ */
+function pinnedOutputToState(pinned: Record<string, unknown>): NodeExecState {
+  if (pinned.__pinned_v === 3) {
+    return {
+      status: "success",
+      // Reconstrói o output inline para o DataViewer detectar como "inline"
+      output: {
+        columns: pinned.columns as string[],
+        rows: pinned.rows as Array<Record<string, unknown>>,
+        row_count: pinned.row_count as number,
+      },
+      row_count: pinned.row_count as number,
+      is_pinned: true,
+      pin_truncated: (pinned.truncated as boolean) ?? false,
+      pin_total_rows: (pinned.total_rows as number) ?? (pinned.row_count as number),
+    }
+  }
+  if (pinned.__pinned_v === 2) {
+    return {
+      status: "success",
+      output: (pinned.output as Record<string, unknown> | null) ?? undefined,
+      output_reference: (pinned.output_reference as
+        | { node_id: string; storage_type: string }
+        | null) ?? null,
+      row_count: (pinned.row_count as number | null) ?? null,
+      execution_id: (pinned.execution_id as string | null) ?? undefined,
+      is_pinned: true,
+    }
+  }
+  return { status: "success", output: pinned, is_pinned: true }
+}
 
 /** Build nodeTypes map — all custom node types share one component */
 function buildNodeTypes(): NodeTypes {
@@ -141,12 +191,19 @@ function WorkflowEditorInner({
   const [isPublished, setIsPublished] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [isExecuting, setIsExecuting] = useState(false)
+  const [isOpeningDialog, setIsOpeningDialog] = useState(false)
   const [isLoading, setIsLoading] = useState(workflowId !== "new")
 
   // Workflow workspace_id (needed for test endpoint auth scope)
   const [workflowWorkspaceId, setWorkflowWorkspaceId] = useState<string | undefined>(
     selectedWorkspace?.id,
   )
+
+  // Modal aberto quando export retorna 422 com lista de nos nao suportados.
+  const [unsupportedReport, setUnsupportedReport] = useState<{
+    format: WorkflowExportFormat
+    items: UnsupportedNodeReport[]
+  } | null>(null)
 
   // Custom (composite_insert) node definitions available in this workspace
   const [customNodes, setCustomNodes] = useState<CustomNodeDefinition[]>([])
@@ -311,7 +368,13 @@ function WorkflowEditorInner({
   const [nodeExecStates, setNodeExecStates] = useState<Record<string, NodeExecState>>({})
   const [execEvents, setExecEvents] = useState<WorkflowTestEvent[]>([])
   const [showExecPanel, setShowExecPanel] = useState(false)
+  // Fases visíveis no painel antes/durante o SSE — sem isso o painel fica
+  // vazio (sensação de travado) enquanto o save HTTP roda.
+  const [executionPhase, setExecutionPhase] = useState<
+    "idle" | "saving" | "connecting" | "streaming"
+  >("idle")
   const abortControllerRef = useRef<AbortController | null>(null)
+  const executionIdRef = useRef<string | null>(null)
 
   const aiContext = useMemo(() => {
     if (isLoading || workflowId === "new") return null
@@ -376,7 +439,7 @@ function WorkflowEditorInner({
         const pinnedStates: Record<string, NodeExecState> = {}
         for (const n of loadedNodes) {
           const pinned = (n.data as Record<string, unknown>)?.pinnedOutput as Record<string, unknown> | undefined
-          if (pinned) pinnedStates[n.id] = { status: "success", output: pinned, is_pinned: true }
+          if (pinned) pinnedStates[n.id] = pinnedOutputToState(pinned)
         }
         if (Object.keys(pinnedStates).length > 0) setNodeExecStates(pinnedStates)
       })
@@ -673,7 +736,7 @@ function WorkflowEditorInner({
       setNodeExecStates((prev) => {
         const pinned = (data as Record<string, unknown>)?.pinnedOutput as Record<string, unknown> | undefined
         if (pinned) {
-          return { ...prev, [nodeId]: { status: "success", output: pinned, is_pinned: true } }
+          return { ...prev, [nodeId]: pinnedOutputToState(pinned) }
         }
         if (!prev[nodeId]) return prev
         const { [nodeId]: _, ...rest } = prev
@@ -785,6 +848,68 @@ function WorkflowEditorInner({
     input.click()
   }, [setNodes, setEdges])
 
+  // ── Export workflow as SQL/Python/YAML via backend ───────────────────────
+  const handleExportFormat = useCallback(
+    async (format: WorkflowExportFormat) => {
+      if (workflowId === "new") {
+        toast.error("Salve o fluxo primeiro", "Workflows novos precisam ser salvos antes de exportar.")
+        return
+      }
+      try {
+        const { blob, filename } = await exportWorkflow(workflowId, format)
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement("a")
+        a.href = url
+        a.download = filename
+        a.click()
+        URL.revokeObjectURL(url)
+        toast.success("Workflow exportado", `Arquivo ${filename} gerado.`)
+      } catch (err) {
+        if (err instanceof WorkflowExportError) {
+          setUnsupportedReport({ format, items: err.unsupported })
+          toast.error(
+            "Não foi possível exportar",
+            `${err.unsupported.length} nó(s) não suportado(s) neste formato.`,
+          )
+          return
+        }
+        toast.error("Erro ao exportar", err instanceof Error ? err.message : "Falha desconhecida.")
+      }
+    },
+    [workflowId, toast],
+  )
+
+  // ── Import workflow from YAML via backend ────────────────────────────────
+  const handleImportYaml = useCallback(() => {
+    const input = document.createElement("input")
+    input.type = "file"
+    input.accept = ".yaml,.yml"
+    input.onchange = async () => {
+      const file = input.files?.[0]
+      if (!file) return
+      try {
+        // Para YAML import, criamos um novo workflow no workspace ativo;
+        // o usuario depois decide se transfere para um projeto especifico.
+        if (!workflowWorkspaceId) {
+          toast.error("Workspace não selecionado", "Selecione um workspace antes de importar.")
+          return
+        }
+        const created = await importWorkflowYaml(file, { workspaceId: workflowWorkspaceId })
+        toast.success(
+          "Workflow importado",
+          `Criado como '${created.name}'. Abrindo o novo fluxo…`,
+        )
+        // Redireciona para o fluxo recem-criado.
+        if (typeof window !== "undefined") {
+          window.location.href = `/workflows/${created.id}`
+        }
+      } catch (err) {
+        toast.error("Erro ao importar", err instanceof Error ? err.message : "Arquivo invalido.")
+      }
+    }
+    input.click()
+  }, [workflowWorkspaceId, toast])
+
   // ── Save ─────────────────────────────────────────────────────────────────
   const handleSave = useCallback(async () => {
     if (workflowId === "new") return
@@ -881,29 +1006,37 @@ function WorkflowEditorInner({
     const pinnedStates: Record<string, NodeExecState> = {}
     for (const n of nodes) {
       const pinned = (n.data as Record<string, unknown>)?.pinnedOutput as Record<string, unknown> | undefined
-      if (pinned) pinnedStates[n.id] = { status: "success", output: pinned, is_pinned: true }
+      if (pinned) pinnedStates[n.id] = pinnedOutputToState(pinned)
     }
     setNodeExecStates(pinnedStates)
     setExecEvents([])
     setShowExecPanel(true)
     setIsExecuting(true)
 
-    // Save first so the backend sees the latest definition
-    try {
-      await updateWorkflow(workflowId, {
-        name,
-        description: description || null,
-        tags,
-        definition: buildDefinition(),
-      })
-    } catch (err: unknown) {
-      setIsExecuting(false)
-      toast.error(
-        "Erro ao salvar antes de executar",
-        err instanceof Error ? err.message : "Tente novamente.",
-      )
-      return
+    // Salva apenas quando há alteração local — clique consecutivo em
+    // "Executar" sem editar nada paga rede zero. ``dirty`` é setado pelos
+    // wrappers de change em nodes/edges/metadata; ver setDirty(true) acima.
+    if (dirty) {
+      setExecutionPhase("saving")
+      try {
+        await updateWorkflow(workflowId, {
+          name,
+          description: description || null,
+          tags,
+          definition: buildDefinition(),
+        })
+        setDirty(false)
+      } catch (err: unknown) {
+        setIsExecuting(false)
+        setExecutionPhase("idle")
+        toast.error(
+          "Erro ao salvar antes de executar",
+          err instanceof Error ? err.message : "Tente novamente.",
+        )
+        return
+      }
     }
+    setExecutionPhase("connecting")
 
     const scopeId = workflowWorkspaceId ?? selectedWorkspace?.id
 
@@ -928,24 +1061,25 @@ function WorkflowEditorInner({
         onEvent: (event) => {
           setExecEvents((prev) => [...prev, event])
 
-          if (event.type === "node_start") {
+          if (event.type === "execution_start") {
+            executionIdRef.current = event.execution_id
+            setExecutionPhase("streaming")
+          } else if (event.type === "node_start") {
             setNodeExecStates((prev) => ({
               ...prev,
               [event.node_id]: { status: "running" },
             }))
           } else if (event.type === "node_complete") {
-            const isSkipped = event.output?.status === "skipped"
-            const isHandledError = event.output?.status === "handled_error"
+            const execId = executionIdRef.current ?? undefined
             setNodeExecStates((prev) => ({
               ...prev,
               [event.node_id]: {
-                status: isSkipped ? "skipped" : isHandledError ? "handled_error" : "success",
+                status: (event.status as NodeExecState["status"]) ?? "success",
                 duration_ms: event.duration_ms,
-                output: event.output,
-                error:
-                  isHandledError && typeof event.output?.error === "string"
-                    ? event.output.error
-                    : undefined,
+                output_reference: event.output_reference,
+                row_count: event.row_count,
+                execution_id: execId,
+                error: event.error,
                 is_pinned: event.is_pinned === true,
               },
             }))
@@ -980,20 +1114,24 @@ function WorkflowEditorInner({
             })
           } else if (event.type === "execution_complete") {
             setIsExecuting(false)
+            setExecutionPhase("idle")
             sweepRunningNodes("Execução encerrada antes da conclusão deste nó.")
           } else if (event.type === "error") {
             toast.error("Erro na execução", event.error)
             setIsExecuting(false)
+            setExecutionPhase("idle")
             sweepRunningNodes("Execução encerrada antes da conclusão deste nó.")
           }
         },
         onError: (msg) => {
           toast.error("Erro na execução", msg)
           setIsExecuting(false)
+          setExecutionPhase("idle")
           sweepRunningNodes("Execução encerrada antes da conclusão deste nó.")
         },
         onDone: () => {
           setIsExecuting(false)
+          setExecutionPhase("idle")
           sweepRunningNodes("Execução encerrada antes da conclusão deste nó.")
         },
       },
@@ -1002,7 +1140,7 @@ function WorkflowEditorInner({
       inputData,
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workflowId, name, description, nodes, edges, workflowMeta, variables, ioSchema, workflowWorkspaceId, selectedWorkspace])
+  }, [workflowId, dirty, name, description, tags, nodes, edges, workflowMeta, variables, ioSchema, workflowWorkspaceId, selectedWorkspace])
 
   // ── Execute with variable values (regular POST, not SSE) ────────────────
   const handleExecuteWithVars = useCallback(
@@ -1026,6 +1164,7 @@ function WorkflowEditorInner({
   const openExecuteDialog = useCallback(
     async (mode: { kind: "test"; targetNodeId?: string } | { kind: "preview" }) => {
       if (workflowId === "new") return
+      setIsOpeningDialog(true)
       if (dirty) {
         try {
           await updateWorkflow(workflowId, {
@@ -1039,6 +1178,7 @@ function WorkflowEditorInner({
           // (ex.: trocar workflow_id em um no call_workflow).
           void refreshInheritedVariables()
         } catch (err: unknown) {
+          setIsOpeningDialog(false)
           toast.error(
             "Erro ao salvar",
             err instanceof Error ? err.message : "Tente novamente.",
@@ -1046,6 +1186,7 @@ function WorkflowEditorInner({
           return
         }
       }
+      setIsOpeningDialog(false)
       setExecuteDialogMode(mode)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1055,6 +1196,7 @@ function WorkflowEditorInner({
   const handleAbortExecution = useCallback(() => {
     abortControllerRef.current?.abort()
     setIsExecuting(false)
+    setExecutionPhase("idle")
     sweepRunningNodes("Execução cancelada pelo usuário.")
     setExecEvents((prev) => [
       ...prev,
@@ -1095,11 +1237,23 @@ function WorkflowEditorInner({
     return ordered.map(({ nodeId, depth }) => {
       const srcNode = nodes.find((n) => n.id === nodeId)
       const srcData = (srcNode?.data ?? {}) as Record<string, unknown>
+      const state = nodeExecStates[nodeId]
+      // SSE node_complete é "lean": só carrega output_reference + row_count,
+      // não traz dados inline. Sintetizamos o shape esperado pelo DataViewer
+      // (que detecta {output_reference, ...} como kind=execution_preview e
+      // busca a prévia sob demanda via /executions/{id}/nodes/{id}/preview).
+      // Sem isso, nó downstream (mapper, filter, etc.) ficaria mostrando
+      // "Execute os nós anteriores" mesmo após a execução completar.
+      const output: Record<string, unknown> | null = state?.output
+        ?? (state?.output_reference
+          ? { output_reference: state.output_reference, row_count: state.row_count ?? null }
+          : null)
       return {
         nodeId,
         label: (srcData.label as string) ?? srcNode?.type ?? nodeId,
         nodeType: srcNode?.type ?? "unknown",
-        output: nodeExecStates[nodeId]?.output ?? null,
+        output,
+        executionId: state?.execution_id ?? null,
         depth,
       }
     })
@@ -1150,7 +1304,9 @@ function WorkflowEditorInner({
           onSave={handleSave}
           onExecute={() => void openExecuteDialog({ kind: "test" })}
           onExport={handleExport}
+          onExportFormat={handleExportFormat}
           onImport={handleImport}
+          onImportYaml={handleImportYaml}
           onOpenIoSchema={workflowId !== "new" ? () => setShowIoSchemaEditor(true) : undefined}
           onOpenVariables={workflowId !== "new" ? () => setShowVariablesPanel(true) : undefined}
           variableCount={variables.length}
@@ -1171,7 +1327,7 @@ function WorkflowEditorInner({
           }
           scheduleStatus={scheduleStatus}
           isSaving={isSaving}
-          isExecuting={isExecuting}
+          isExecuting={isExecuting || isOpeningDialog}
         />
 
         {/* Build mode bar foi movida para o chat (AIBuildConfirmationCard) para
@@ -1371,6 +1527,7 @@ function WorkflowEditorInner({
           <ExecutionPanel
             events={execEvents}
             isRunning={isExecuting}
+            phase={executionPhase}
             onAbort={handleAbortExecution}
             onClose={() => setShowExecPanel(false)}
             libraryOpen={showLibrary}
@@ -1531,6 +1688,23 @@ function WorkflowEditorInner({
           />
         )}
 
+        {unsupportedReport && (
+          <UnsupportedNodesDialog
+            format={unsupportedReport.format}
+            items={unsupportedReport.items}
+            onClose={() => setUnsupportedReport(null)}
+            onFocus={(nodeId) => {
+              const node = nodes.find((n) => n.id === nodeId)
+              if (node) {
+                setNodes((cur) =>
+                  cur.map((n) => ({ ...n, selected: n.id === nodeId })),
+                )
+              }
+              setUnsupportedReport(null)
+            }}
+          />
+        )}
+
       </div>
     </NodeExecutionContext.Provider>
     </NodeActionsContext.Provider>
@@ -1538,6 +1712,78 @@ function WorkflowEditorInner({
     </WorkflowVariablesContext.Provider>
   )
 }
+
+function UnsupportedNodesDialog({
+  format,
+  items,
+  onClose,
+  onFocus,
+}: {
+  format: WorkflowExportFormat
+  items: UnsupportedNodeReport[]
+  onClose: () => void
+  onFocus: (nodeId: string) => void
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-lg rounded-lg border border-border bg-card p-5 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">
+              Não foi possível exportar para {format.toUpperCase()}
+            </h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {items.length} nó(s) não são suportados na V1 deste formato.
+              Clique em um item para selecioná-lo no canvas.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            aria-label="Fechar"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+
+        <ul className="max-h-80 overflow-y-auto rounded-md border border-border">
+          {items.map((item) => (
+            <li
+              key={item.node_id}
+              className="border-b border-border last:border-0"
+            >
+              <button
+                type="button"
+                onClick={() => onFocus(item.node_id)}
+                className="flex w-full flex-col gap-0.5 px-3 py-2 text-left transition-colors hover:bg-muted"
+              >
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="font-mono text-xs font-medium text-foreground">
+                    {item.node_id}
+                  </span>
+                  <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-mono text-[10px] font-medium text-amber-700 dark:text-amber-400">
+                    {item.node_type}
+                  </span>
+                </div>
+                <span className="text-[11px] text-muted-foreground">
+                  {item.reason}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  )
+}
+
 
 function TabSwitch({
   active,

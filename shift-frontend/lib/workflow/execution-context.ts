@@ -23,8 +23,23 @@ export type NodeExecState = {
   status: NodeExecStatus
   duration_ms?: number
   output?: Record<string, unknown>
+  output_reference?: {
+    node_id: string
+    storage_type: string
+    // Caminho explícito do .duckdb e tabela quando o nó reusa o arquivo
+    // de outro (Mapper/Filter/Join compartilham o .duckdb upstream).
+    database_path?: string
+    table_name?: string
+    dataset_name?: string | null
+  } | null
+  row_count?: number | null
+  execution_id?: string
   error?: string
   is_pinned?: boolean
+  // Campos de pin v3: presentes quando o estado foi reidratado de um pin
+  // materializado que excedeu o limite de linhas (_MAX_PIN_ROWS = 5000).
+  pin_truncated?: boolean
+  pin_total_rows?: number
   // Progresso intermediario para nos iterativos (ex.: For Each / loop).
   // Populado a partir de eventos node_progress enquanto status === "running".
   progress?: NodeExecProgress

@@ -127,7 +127,7 @@ function SchemaGroup({ schemaName, tables }: { schemaName: string | null; tables
       {open && (
         <div className="ml-3 border-l border-border pl-1">
           {tables.map((t) => (
-            <SchemaTableItem key={t.name} table={t} />
+            <SchemaTableItem key={`${t.schema ?? ""}__${t.name}`} table={t} />
           ))}
         </div>
       )}
@@ -616,7 +616,7 @@ export default function PlaygroundPage({ params }: PageProps) {
                   ))
                 ) : (
                   filteredTables.map((table) => (
-                    <SchemaTableItem key={table.name} table={table} />
+                    <SchemaTableItem key={`${table.schema ?? ""}__${table.name}`} table={table} />
                   ))
                 )}
               </div>

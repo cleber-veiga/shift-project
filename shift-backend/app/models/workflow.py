@@ -189,6 +189,15 @@ class WorkflowExecution(Base):
         nullable=False,
     )
 
+    plan_snapshot: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        comment=(
+            "ExecutionPlanSnapshot: topological levels, node_count, edge_count, "
+            "predicted_strategies. Capturado antes do primeiro nó rodar (Fase 4)."
+        ),
+    )
+
     workflow: Mapped["Workflow"] = relationship(back_populates="executions", lazy="raise_on_sql")
     node_executions: Mapped[list["WorkflowNodeExecution"]] = relationship(
         back_populates="execution",

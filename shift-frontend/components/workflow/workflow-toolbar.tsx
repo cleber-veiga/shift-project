@@ -39,7 +39,9 @@ interface WorkflowToolbarProps {
   onSave: () => void
   onExecute: () => void
   onExport: () => void
+  onExportFormat?: (format: "sql" | "python" | "yaml") => void
   onImport: () => void
+  onImportYaml?: () => void
   onOpenIoSchema?: () => void
   onOpenPublish?: () => void
   onOpenVariables?: () => void
@@ -65,7 +67,9 @@ export function WorkflowToolbar({
   onSave,
   onExecute,
   onExport,
+  onExportFormat,
   onImport,
+  onImportYaml,
   onOpenIoSchema,
   onOpenPublish,
   onOpenVariables,
@@ -179,7 +183,9 @@ export function WorkflowToolbar({
           onOpenIoSchema={onOpenIoSchema}
           onOpenPublish={onOpenPublish}
           onImport={onImport}
+          onImportYaml={onImportYaml}
           onExport={onExport}
+          onExportFormat={onExportFormat}
         />
 
         <div className="h-5 w-px bg-border" />
@@ -452,12 +458,16 @@ function MoreMenu({
   onOpenIoSchema,
   onOpenPublish,
   onImport,
+  onImportYaml,
   onExport,
+  onExportFormat,
 }: {
   onOpenIoSchema?: () => void
   onOpenPublish?: () => void
   onImport: () => void
+  onImportYaml?: () => void
   onExport: () => void
+  onExportFormat?: (format: "sql" | "python" | "yaml") => void
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -509,12 +519,35 @@ function MoreMenu({
 
           <MenuItem onClick={() => call(onImport)}>
             <Upload className="size-3.5" />
-            <span className="text-xs font-medium text-foreground">Importar</span>
+            <span className="text-xs font-medium text-foreground">Importar JSON (canvas)</span>
           </MenuItem>
+          {onImportYaml && (
+            <MenuItem onClick={() => call(onImportYaml)}>
+              <Upload className="size-3.5" />
+              <span className="text-xs font-medium text-foreground">Importar YAML</span>
+            </MenuItem>
+          )}
+          <div className="my-1 border-t border-border" />
           <MenuItem onClick={() => call(onExport)}>
             <Download className="size-3.5" />
-            <span className="text-xs font-medium text-foreground">Exportar</span>
+            <span className="text-xs font-medium text-foreground">Exportar JSON (canvas)</span>
           </MenuItem>
+          {onExportFormat && (
+            <>
+              <MenuItem onClick={() => call(() => onExportFormat("sql"))}>
+                <Download className="size-3.5" />
+                <span className="text-xs font-medium text-foreground">Exportar SQL (DuckDB)</span>
+              </MenuItem>
+              <MenuItem onClick={() => call(() => onExportFormat("python"))}>
+                <Download className="size-3.5" />
+                <span className="text-xs font-medium text-foreground">Exportar Python</span>
+              </MenuItem>
+              <MenuItem onClick={() => call(() => onExportFormat("yaml"))}>
+                <Download className="size-3.5" />
+                <span className="text-xs font-medium text-foreground">Exportar YAML</span>
+              </MenuItem>
+            </>
+          )}
         </div>
       )}
     </div>

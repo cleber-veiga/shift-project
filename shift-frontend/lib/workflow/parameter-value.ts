@@ -7,10 +7,23 @@ export type TransformKind =
   | "replace"
   | "truncate"
   | "remove_chars"
+  // Substitui NULL e/ou string vazia por valores default (UI: "Padrão").
+  | "default"
+  // Mapeamento múltiplo de valor → valor (UI: "De-Para"). Args: ``pairs``
+  // é uma lista ``Array<{from: string; to: string}>``; ``fallback`` é o
+  // valor usado quando nenhum case bate (vazio = mantém o original).
+  | "map_values"
+
+export interface MapValuesPair {
+  from: string
+  to: string
+}
+
+export type TransformArgs = Record<string, string | number | MapValuesPair[] | undefined>
 
 export type TransformEntry = {
   kind: TransformKind
-  args?: Record<string, string | number>
+  args?: TransformArgs
 }
 
 export type ParameterValue =
@@ -118,6 +131,41 @@ function mapperTransformToEntry(
   if (id === "remove_chars") {
     return { kind: "remove_chars", args: { chars: params.chars ?? "" } }
   }
+  if (id === "default") {
+    return {
+      kind: "default",
+      args: {
+        null_value: params.null_value ?? "",
+        empty_value: params.empty_value ?? "",
+      },
+    }
+  }
+  if (id === "map_values") {
+    // O Mapper persiste ``pairs`` como JSON string (Record<string,string>
+    // não suporta arrays nativamente). Aqui revertemos para o formato
+    // estruturado que a UI usa.
+    let pairs: MapValuesPair[] = []
+    try {
+      const raw = JSON.parse(params.pairs ?? "[]")
+      if (Array.isArray(raw)) {
+        pairs = raw
+          .filter((p): p is MapValuesPair =>
+            typeof p === "object" && p !== null
+              && typeof (p as MapValuesPair).from === "string"
+              && typeof (p as MapValuesPair).to === "string"
+          )
+      }
+    } catch {
+      pairs = []
+    }
+    return {
+      kind: "map_values",
+      args: {
+        pairs,
+        fallback: params.fallback ?? "",
+      },
+    }
+  }
   const kind = simpleKinds[id]
   if (kind) return { kind }
   return null
@@ -136,6 +184,8 @@ function entryToMapperTransform(
     replace: "replace",
     truncate: "truncate",
     remove_chars: "remove_chars",
+    default: "default",
+    map_values: "map_values",
   }
 
   if (entry.kind === "replace") {
@@ -157,6 +207,30 @@ function entryToMapperTransform(
     return {
       id: "remove_chars",
       params: { chars: String(entry.args?.chars ?? "") },
+    }
+  }
+  if (entry.kind === "default") {
+    return {
+      id: "default",
+      params: {
+        null_value: String(entry.args?.null_value ?? ""),
+        empty_value: String(entry.args?.empty_value ?? ""),
+      },
+    }
+  }
+  if (entry.kind === "map_values") {
+    // ``Mapping.transforms`` usa ``Record<string,string>`` por contrato; o
+    // array de pares é serializado como JSON pra caber no formato.
+    const rawPairs = entry.args?.pairs
+    const pairs: MapValuesPair[] = Array.isArray(rawPairs)
+      ? (rawPairs as MapValuesPair[])
+      : []
+    return {
+      id: "map_values",
+      params: {
+        pairs: JSON.stringify(pairs),
+        fallback: String(entry.args?.fallback ?? ""),
+      },
     }
   }
   return pvToMapper[entry.kind] ?? entry.kind

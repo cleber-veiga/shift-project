@@ -81,12 +81,10 @@ function MiniBody({ node }: { node: NodeDefinition }) {
           <span className="mono truncate text-[10px] opacity-80">/webhook</span>
         </div>
       )
-    case "polling":
-      return <span className="mono truncate text-[10px]">poll · SQL</span>
     case "manual":
       return <span className="truncate text-[10px] italic">Execução manual</span>
     case "workflow_input":
-      return <span className="truncate text-[10px]">Entrada de sub-workflow</span>
+      return <span className="truncate text-[10px]">Entrada de sub-fluxo</span>
     case "sql_database":
       return (
         <div className="mono rounded bg-slate-900 px-1.5 py-1 text-[9px] leading-tight">

@@ -599,7 +599,9 @@ async def _resolve_current_user(
 
     cached = user_cache.get(user_id)
     if cached is not None:
-        return cached  # type: ignore[return-value]
+        # Cached instance foi expungido da sessao original (ja fechada).
+        # Reanexa a sessao atual para que o handler possa usa-lo normalmente.
+        return await db.merge(cached, load=False)  # type: ignore[return-value]
 
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -609,5 +611,11 @@ async def _resolve_current_user(
             detail="Token invalido ou expirado.",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    # Expunge ANTES de cachear: se algo no resto da request der rollback
+    # (ex.: falha conectando em Oracle), os atributos do User cacheado nao
+    # podem ser expirados — caso contrario uma request posterior pegaria
+    # o User detached+expired do cache e quebraria com DetachedInstanceError
+    # ao acessar current_user.id.
+    db.expunge(user)
     user_cache.set(user_id, user)
-    return user
+    return await db.merge(user, load=False)
