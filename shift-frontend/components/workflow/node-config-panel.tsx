@@ -20,14 +20,19 @@ import { SortConfig } from "@/components/workflow/nodes/sort-config"
 import { SampleConfig } from "@/components/workflow/nodes/sample-config"
 import { RecordIdConfig } from "@/components/workflow/nodes/record-id-config"
 import { UnionConfig } from "@/components/workflow/nodes/union-config"
+import { JoinConfig } from "@/components/workflow/nodes/join-config"
 import { PivotConfig } from "@/components/workflow/nodes/pivot-config"
+import { AggregatorConfig } from "@/components/workflow/nodes/aggregator-config"
+import { MathConfig } from "@/components/workflow/nodes/math-config"
 import { UnpivotConfig } from "@/components/workflow/nodes/unpivot-config"
 import { TextToRowsConfig } from "@/components/workflow/nodes/text-to-rows-config"
 import { CronConfig } from "@/components/workflow/nodes/cron-config"
+import { ManualConfig } from "@/components/workflow/nodes/manual-config"
 import { WebhookConfig } from "@/components/workflow/nodes/webhook-config"
 import { WorkflowInputConfig } from "@/components/workflow/nodes/workflow-input-config"
 import { WorkflowOutputConfig } from "@/components/workflow/nodes/workflow-output-config"
 import { CallWorkflowConfig } from "@/components/workflow/nodes/call-workflow-config"
+import { HttpRequestConfig } from "@/components/workflow/nodes/http-request-config"
 import {
   RetryPolicyEditor,
   type RetryPolicyValue,
@@ -312,15 +317,10 @@ function renderNodeSpecificFields({
   switch (nodeType) {
     case "manual":
       return (
-        <div className="space-y-4">
-
-          <div className="rounded-lg border border-dashed border-amber-500/30 bg-amber-500/5 p-3">
-            <p className="text-xs font-medium text-amber-600 dark:text-amber-400">Gatilho Manual</p>
-            <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
-              Este nó marca o ponto de entrada do fluxo. A execução será disparada manualmente pelo botão "Executar" na toolbar.
-            </p>
-          </div>
-        </div>
+        <ManualConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
       )
 
     case "cron":
@@ -421,81 +421,12 @@ function renderNodeSpecificFields({
         </div>
       )
 
-    case "api_input":
-      return (
-        <div className="space-y-4">
-
-          <ConfigField label="URL">
-            <TextInput
-              value={(data.url as string) ?? ""}
-              onChange={(v) => update("url", v)}
-              placeholder="https://api.exemplo.com/dados"
-            />
-          </ConfigField>
-          <ConfigField label="Método">
-            <SelectInput
-              value={(data.method as string) ?? "GET"}
-              onChange={(v) => update("method", v)}
-              options={[
-                { value: "GET", label: "GET" },
-                { value: "POST", label: "POST" },
-                { value: "PUT", label: "PUT" },
-                { value: "PATCH", label: "PATCH" },
-              ]}
-            />
-          </ConfigField>
-          <ConfigField label="Data Path (JSONPath)">
-            <TextInput
-              value={(data.data_path as string) ?? "$"}
-              onChange={(v) => update("data_path", v)}
-              placeholder="$.data.items"
-            />
-          </ConfigField>
-          <ConfigField label="Paginação">
-            <SelectInput
-              value={(data.pagination_type as string) ?? "none"}
-              onChange={(v) => update("pagination_type", v)}
-              options={[
-                { value: "none", label: "Nenhuma" },
-                { value: "offset", label: "Offset" },
-                { value: "page_number", label: "Número de página" },
-                { value: "cursor", label: "Cursor" },
-                { value: "next_url", label: "URL próxima" },
-              ]}
-            />
-          </ConfigField>
-        </div>
-      )
-
     case "http_request":
       return (
-        <div className="space-y-4">
-
-          <ConfigField label="URL">
-            <TextInput
-              value={(data.url as string) ?? ""}
-              onChange={(v) => update("url", v)}
-              placeholder="https://..."
-            />
-          </ConfigField>
-          <ConfigField label="Método">
-            <SelectInput
-              value={(data.method as string) ?? "GET"}
-              onChange={(v) => update("method", v)}
-              options={["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].map((m) => ({
-                value: m,
-                label: m,
-              }))}
-            />
-          </ConfigField>
-          <ConfigField label="Timeout (s)">
-            <TextInput
-              type="number"
-              value={String((data.timeout_seconds as number) ?? 30)}
-              onChange={(v) => update("timeout_seconds", Number(v))}
-            />
-          </ConfigField>
-        </div>
+        <HttpRequestConfig
+          data={data}
+          onUpdate={(patch) => onUpdate(node.id, { ...data, ...patch })}
+        />
       )
 
     case "inline_data":
@@ -565,58 +496,18 @@ function renderNodeSpecificFields({
 
     case "aggregator":
       return (
-        <div className="space-y-4">
-
-          <ConfigField label="Agrupar por (JSON array)">
-            <TextArea
-              value={JSON.stringify(data.group_by ?? [], null, 2)}
-              onChange={(v) => {
-                try {
-                  update("group_by", JSON.parse(v))
-                } catch {
-                  /* keep raw */
-                }
-              }}
-              placeholder='["coluna1", "coluna2"]'
-              rows={2}
-            />
-          </ConfigField>
-          <ConfigField label="Agregações (JSON)">
-            <TextArea
-              value={JSON.stringify(data.aggregations ?? [], null, 2)}
-              onChange={(v) => {
-                try {
-                  update("aggregations", JSON.parse(v))
-                } catch {
-                  /* keep raw */
-                }
-              }}
-              placeholder='[{"column": "valor", "operation": "sum", "alias": "total"}]'
-              rows={4}
-            />
-          </ConfigField>
-        </div>
+        <AggregatorConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
       )
 
     case "math":
       return (
-        <div className="space-y-4">
-
-          <ConfigField label="Expressões (JSON)">
-            <TextArea
-              value={JSON.stringify(data.expressions ?? [], null, 2)}
-              onChange={(v) => {
-                try {
-                  update("expressions", JSON.parse(v))
-                } catch {
-                  /* keep raw */
-                }
-              }}
-              placeholder='[{"target_column": "total", "expression": "preco * qtd"}]'
-              rows={4}
-            />
-          </ConfigField>
-        </div>
+        <MathConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
       )
 
     case "code":
@@ -813,6 +704,14 @@ function renderNodeSpecificFields({
     case "union":
       return (
         <UnionConfig
+          data={data}
+          onUpdate={(newData) => onUpdate(node.id, newData)}
+        />
+      )
+
+    case "join":
+      return (
+        <JoinConfig
           data={data}
           onUpdate={(newData) => onUpdate(node.id, newData)}
         />

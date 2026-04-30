@@ -1,16 +1,25 @@
 "use client"
 
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { Handle, Position, useReactFlow, type NodeProps } from "@xyflow/react"
+import {
+  Handle,
+  Position,
+  useReactFlow,
+  useStore,
+  useUpdateNodeInternals,
+  type NodeProps,
+} from "@xyflow/react"
 import {
   AlertTriangle,
   Bot,
   CheckCircle2,
   Copy,
   Info,
+  Minus,
   MoreHorizontal,
   Pencil,
   Play,
+  Plus,
   Power,
   PowerOff,
   RefreshCw,
@@ -33,7 +42,7 @@ function countVarRefs(data: Record<string, unknown>): number {
 
 // ─── Tone mapping (from registry `color` → handoff tone) ───────────────────────
 
-type Tone = "purple" | "emerald" | "orange" | "cyan" | "slate" | "pink"
+type Tone = "purple" | "emerald" | "orange" | "cyan" | "slate" | "pink" | "neutral"
 
 const COLOR_TO_TONE: Record<string, Tone> = {
   amber: "purple",     // triggers
@@ -45,6 +54,7 @@ const COLOR_TO_TONE: Record<string, Tone> = {
   slate: "slate",      // storage / utility
   red: "orange",       // dead letter → logic
   indigo: "cyan",      // call workflow → transform
+  stone: "neutral",    // outros (sql_database, inline_data)
 }
 
 function pickTone(def: NodeDefinition | undefined, customColor: string | null): Tone {
@@ -83,8 +93,7 @@ function getNodeSummaryRows(type: string, data: Record<string, unknown>): Summar
       return s(data.cron_expression)
         ? [{ label: "Expressão", value: s(data.cron_expression)!, badge: true }]
         : []
-    case "http_request":
-    case "api_input": {
+    case "http_request": {
       const rows: SummaryRow[] = []
       if (s(data.method)) rows.push({ label: "Método", value: s(data.method)!, badge: true })
       if (s(data.url))    rows.push({ label: "URL", value: s(data.url)! })
@@ -315,6 +324,69 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
   const isTrigger = definition?.category === "trigger"
 
   type PortDef = { id: string; label?: string; colorClass?: string }
+
+  // Slots de entrada do Union sao controlados explicitamente pelo data do
+  // node (``input_count``, default 2). Crescimento automatico baseado em
+  // conexoes era confuso — o usuario pediu controle manual via "+" e "-".
+  const unionInputCount = Math.max(
+    2,
+    typeof nodeData.input_count === "number" ? nodeData.input_count : 2,
+  )
+
+  // Detecta se o ULTIMO slot do Union esta conectado, pra habilitar o "-"
+  // somente quando a remocao nao corta uma aresta existente. Retorna boolean
+  // (primitivo) — comparacao por valor evita re-renders supurfluos.
+  const lastUnionSlotConnected = useStore((s) => {
+    if (type !== "union") return false
+    const lastHandleId = `input_${unionInputCount}`
+    return s.edges.some((e) => e.target === id && e.targetHandle === lastHandleId)
+  })
+
+  const inputs: PortDef[] = useMemo(() => {
+    if (isTrigger) return []
+    if (type === "union") {
+      return Array.from({ length: unionInputCount }, (_, i) => ({
+        id: `input_${i + 1}`,
+        label: `${i + 1}`,
+      }))
+    }
+    if (type === "join") {
+      return [
+        { id: "left",  label: "L" },
+        { id: "right", label: "R" },
+      ]
+    }
+    return [{ id: "in" }]
+  }, [type, isTrigger, unionInputCount])
+
+  // O React Flow cacheia posicoes dos handles ao montar — quando trocamos
+  // ``top`` dinamicamente (adicionando/removendo slots), a edge continua
+  // apontando pra posicao antiga ate forcarmos um re-measure via este hook.
+  // O ``useEffect`` que dispara o re-measure esta declarado mais abaixo,
+  // depois da useMemo de ``outputs``, pra evitar TDZ.
+  const updateNodeInternals = useUpdateNodeInternals()
+
+  // Mutators para os botoes "+" / "-" do Union.
+  const addUnionSlot = useCallback(() => {
+    setNodes((nds) =>
+      nds.map((n) =>
+        n.id === id
+          ? { ...n, data: { ...n.data, input_count: unionInputCount + 1 } }
+          : n,
+      ),
+    )
+  }, [id, setNodes, unionInputCount])
+  const removeUnionSlot = useCallback(() => {
+    if (unionInputCount <= 2) return
+    setNodes((nds) =>
+      nds.map((n) =>
+        n.id === id
+          ? { ...n, data: { ...n.data, input_count: unionInputCount - 1 } }
+          : n,
+      ),
+    )
+  }, [id, setNodes, unionInputCount])
+
   const outputs: PortDef[] = useMemo(() => {
     if (type === "if_node") {
       return [
@@ -336,6 +408,13 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
     return out
   }, [type, nodeData.cases, definition?.errorHandle])
 
+  // Re-measure dos handles quando inputs/outputs mudam de quantidade —
+  // declarado aqui (apos as useMemo de inputs e outputs) pra evitar TDZ
+  // ao referenciar ``outputs.length``.
+  useEffect(() => {
+    updateNodeInternals(id)
+  }, [updateNodeInternals, id, unionInputCount, outputs.length])
+
   // Loop em modo inline: o nó vira um container que abriga nos-filho
   // (React Flow ``parentId`` + ``extent: 'parent'``). O container precisa
   // ser fisicamente maior pra acomodar os filhos visualmente; eles sao
@@ -343,9 +422,37 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
   // relativas a esta caixa (ver loop-inline-bodies.ts).
   const isInlineLoopContainer = type === "loop" && nodeData.body_mode === "inline"
   const containerWidth = isInlineLoopContainer ? 460 : 260
+
+  // Espacamento fixo entre handles em pixels — pra que adicionar slots
+  // nao espreme as bolinhas existentes (que e o que acontece com o
+  // posicionamento percentual). Aplicado em ambos os lados quando o
+  // numero de handles passa de 2 (Union pelo lado dos inputs com seu
+  // input_count, Switch pelo lado dos outputs conforme cases).
+  const MULTI_HANDLE_FIRST_OFFSET = 50  // 1o handle ~50px do topo (abaixo do header)
+  const MULTI_HANDLE_SPACING = 28       // distancia vertical entre bolinhas
+  const MULTI_HANDLE_BOTTOM_PADDING = 60 // espaco abaixo do ultimo handle
+
+  // Calcula altura minima necessaria para inputs e outputs de forma
+  // independente — pegamos o maior pra acomodar os dois sem sobreposicao.
+  const usePixelInputs = inputs.length >= 3 || type === "union"
+  const usePixelOutputs = outputs.length >= 3
+  const inputsMinHeight = usePixelInputs
+    ? MULTI_HANDLE_FIRST_OFFSET +
+      Math.max(0, inputs.length - 1) * MULTI_HANDLE_SPACING +
+      MULTI_HANDLE_BOTTOM_PADDING
+    : 0
+  const outputsMinHeight = usePixelOutputs
+    ? MULTI_HANDLE_FIRST_OFFSET +
+      Math.max(0, outputs.length - 1) * MULTI_HANDLE_SPACING +
+      MULTI_HANDLE_BOTTOM_PADDING
+    : 0
+  const handleMinHeight = Math.max(inputsMinHeight, outputsMinHeight)
+
   const containerStyle: React.CSSProperties = isInlineLoopContainer
     ? { width: containerWidth, minHeight: 320 }
-    : { width: containerWidth }
+    : handleMinHeight > 0
+      ? { width: containerWidth, minHeight: handleMinHeight }
+      : { width: containerWidth }
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
@@ -695,18 +802,77 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
       )}
 
       {/* ── Handles ────────────────────────────────────────────────────── */}
-      {!isTrigger && (
-        <Handle
-          type="target"
-          position={Position.Left}
-          id="in"
-          className={HANDLE_CLS}
-          style={{ top: "50%" }}
-        />
+      {inputs.map((p, i) => {
+        // Pixel-based quando temos 3+ inputs (ou Union, que sempre usa)
+        // pra evitar espremer; o card cresce via minHeight. Caso contrario,
+        // mantem percentual pra centralizar visualmente.
+        const top = usePixelInputs
+          ? `${MULTI_HANDLE_FIRST_OFFSET + i * MULTI_HANDLE_SPACING}px`
+          : portTopPct(i, inputs.length)
+        return (
+          <Fragment key={`in-${p.id}`}>
+            <Handle
+              type="target"
+              position={Position.Left}
+              id={p.id}
+              className={cn(HANDLE_CLS, p.colorClass)}
+              style={{ top }}
+            />
+            {p.label && inputs.length > 1 && (
+              // Renderizado FORA do card pra esquerda — o lado esquerdo tem
+              // o icone e o titulo, entao colocar o label dentro causa
+              // sobreposicao. ``right: 100%`` ancora a borda direita do
+              // label na borda esquerda do card; o ``margin-right`` cria
+              // o respiro entre o handle e o numero.
+              <span
+                className="wf-node__handle-label wf-node__handle-label--input"
+                style={{ top, right: "100%", marginRight: 8 }}
+              >
+                {p.label}
+              </span>
+            )}
+          </Fragment>
+        )
+      })}
+
+      {/* Botoes "+" / "-" do Union — controle manual do numero de slots.
+          Posicionados FORA do card a esquerda, abaixo do ultimo handle.
+          O "+" cresce input_count; o "-" decrementa, mas so aparece quando
+          ha mais que o minimo (2) E o ultimo slot esta vazio (nao corta
+          conexao existente). */}
+      {type === "union" && (
+        <div
+          className="absolute flex flex-col items-center gap-1"
+          style={{ right: "100%", marginRight: 4, bottom: -6 }}
+        >
+          {unionInputCount > 2 && !lastUnionSlotConnected && (
+            <button
+              type="button"
+              onClick={removeUnionSlot}
+              title="Remover último slot vazio"
+              className="flex size-4 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm transition-colors hover:border-destructive hover:text-destructive"
+            >
+              <Minus className="size-2.5" />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={addUnionSlot}
+            title="Adicionar entrada"
+            className="flex size-4 items-center justify-center rounded-full border border-border bg-background text-muted-foreground shadow-sm transition-colors hover:border-primary hover:text-primary"
+          >
+            <Plus className="size-2.5" />
+          </button>
+        </div>
       )}
 
       {outputs.map((p, i) => {
-        const top = portTopPct(i, outputs.length)
+        // Pixel-based quando temos 3+ outputs (Switch com varios cases,
+        // por exemplo) — evita que portas se sobreponham com o conteudo
+        // do card. Card cresce em altura via minHeight calculado acima.
+        const top = usePixelOutputs
+          ? `${MULTI_HANDLE_FIRST_OFFSET + i * MULTI_HANDLE_SPACING}px`
+          : portTopPct(i, outputs.length)
         return (
           <Fragment key={`out-${p.id}`}>
             <Handle
@@ -717,9 +883,16 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
               style={{ top }}
             />
             {p.label && (
+              // Quando ha varios outputs (pixel mode), o label sai do card
+              // pela direita pra nao colidir com o conteudo. Caso contrario
+              // (1-2 outputs), mantem inline (right: 14).
               <span
                 className="wf-node__handle-label"
-                style={{ top, right: 14 }}
+                style={
+                  usePixelOutputs
+                    ? { top, left: "100%", marginLeft: 8 }
+                    : { top, right: 14 }
+                }
               >
                 {p.label}
               </span>

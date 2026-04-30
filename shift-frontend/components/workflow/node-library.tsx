@@ -25,7 +25,7 @@ interface NodeLibraryProps {
   onClose: () => void
 }
 
-type Tone = "purple" | "emerald" | "orange" | "cyan" | "slate" | "pink"
+type Tone = "purple" | "emerald" | "orange" | "cyan" | "slate" | "pink" | "neutral"
 
 interface ToneDef {
   name: string
@@ -33,14 +33,23 @@ interface ToneDef {
 
 const TONES: Record<Tone, ToneDef> = {
   purple: { name: "Gatilhos" },
-  emerald: { name: "Ações" },
+  emerald: { name: "Entradas" },
   orange: { name: "Lógica" },
   cyan: { name: "Transformação" },
   slate: { name: "Armazenamento" },
   pink: { name: "IA" },
+  neutral: { name: "Outros" },
 }
 
-const TONE_ORDER: Tone[] = ["purple", "emerald", "cyan", "orange", "slate", "pink"]
+const TONE_ORDER: Tone[] = [
+  "purple",
+  "emerald",
+  "cyan",
+  "orange",
+  "slate",
+  "pink",
+  "neutral",
+]
 
 const COLOR_TO_TONE: Record<string, Tone> = {
   amber: "purple",
@@ -52,6 +61,10 @@ const COLOR_TO_TONE: Record<string, Tone> = {
   slate: "slate",
   red: "orange",
   indigo: "cyan",
+  // ``stone`` agrupa nós que ainda não pertencem a uma categoria
+  // específica de UX (SQL Database, API REST, Dados Inline...) — caem
+  // no grupo "Outros" da biblioteca até ganharem casa própria.
+  stone: "neutral",
 }
 
 function toneOf(color: string): Tone {
@@ -101,7 +114,6 @@ function MiniBody({ node }: { node: NodeDefinition }) {
       return <div className="flex items-center gap-1">{chip("rgb(219 234 254)", "rgb(30 64 175)", "CSV")}<span className="truncate text-[10px]">arquivo.csv</span></div>
     case "excel_input":
       return <div className="flex items-center gap-1">{chip("rgb(220 252 231)", "rgb(22 101 52)", "XLSX")}<span className="truncate text-[10px]">planilha</span></div>
-    case "api_input":
     case "http_request":
       return (
         <div className="flex items-center gap-1.5">
@@ -271,6 +283,7 @@ export function NodeLibrary({ open, onClose }: NodeLibraryProps) {
     () => new Set(TONE_ORDER),
   )
   const inputRef = useRef<HTMLInputElement>(null)
+  const drawerRef = useRef<HTMLDivElement>(null)
 
   const customNodes = useCustomNodes()
 
@@ -289,6 +302,29 @@ export function NodeLibrary({ open, onClose }: NodeLibraryProps) {
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
+  }, [open, onClose])
+
+  // Click-outside fecha o drawer. Atrasamos o registro do listener em 1 tick
+  // pra nao capturar o proprio click que abriu a biblioteca (esse click
+  // viaja como bubble depois do setOpen, e a gente nao quer que ele dispare
+  // close imediato). Usa mousedown na fase de capture pra detectar antes de
+  // qualquer handler downstream.
+  useEffect(() => {
+    if (!open) return
+    const onMouseDown = (e: MouseEvent) => {
+      const target = e.target as Node | null
+      if (!target) return
+      if (drawerRef.current && !drawerRef.current.contains(target)) {
+        onClose()
+      }
+    }
+    const timer = setTimeout(() => {
+      document.addEventListener("mousedown", onMouseDown, true)
+    }, 0)
+    return () => {
+      clearTimeout(timer)
+      document.removeEventListener("mousedown", onMouseDown, true)
+    }
   }, [open, onClose])
 
   const items: LibItem[] = useMemo(() => {
@@ -325,6 +361,7 @@ export function NodeLibrary({ open, onClose }: NodeLibraryProps) {
       cyan: [],
       slate: [],
       pink: [],
+      neutral: [],
     }
     filtered.forEach((it) => out[it.tone].push(it))
     return out
@@ -338,6 +375,7 @@ export function NodeLibrary({ open, onClose }: NodeLibraryProps) {
       cyan: 0,
       slate: 0,
       pink: 0,
+      neutral: 0,
     }
     items.forEach((it) => (out[it.tone] += 1))
     return out
@@ -362,7 +400,11 @@ export function NodeLibrary({ open, onClose }: NodeLibraryProps) {
   const resetTones = () => setActiveTones(new Set(TONE_ORDER))
 
   return (
-    <div className={`lib-drawer${open ? " lib-drawer--open" : ""}`} aria-hidden={!open}>
+    <div
+      ref={drawerRef}
+      className={`lib-drawer${open ? " lib-drawer--open" : ""}`}
+      aria-hidden={!open}
+    >
       {/* Header */}
       <div className="lib-header">
         <div className="lib-header-badge">
@@ -420,49 +462,10 @@ export function NodeLibrary({ open, onClose }: NodeLibraryProps) {
         )}
       </div>
 
-      {/* Group filter chips */}
-      <div className="lib-groups">
-        {TONE_ORDER.map((t) => {
-          const active = activeTones.has(t)
-          const count = toneCount[t]
-          if (count === 0) return null
-          return (
-            <button
-              key={t}
-              type="button"
-              onClick={() => toggleTone(t)}
-              className={`lib-group-chip lib-tone${active ? " lib-group-chip--active" : ""}`}
-              data-tone={t}
-              style={
-                active
-                  ? {
-                      background: `var(--tone-tile)`,
-                      color: `var(--tone-ink)`,
-                      borderColor: `var(--tone-tile-ring)`,
-                    }
-                  : undefined
-              }
-            >
-              <span
-                className="inline-block size-1.5 rounded-full"
-                style={{ background: `var(--tone-dot)` }}
-              />
-              {TONES[t].name}
-              <span className="lib-group-count">{count}</span>
-            </button>
-          )
-        })}
-        {activeTones.size < TONE_ORDER.length && (
-          <button
-            type="button"
-            onClick={resetTones}
-            className="lib-group-chip lib-group-chip--reset"
-          >
-            <RotateCcw className="size-2.5" />
-            Limpar
-          </button>
-        )}
-      </div>
+      {/* Group filter chips foram removidos pra economizar espaço vertical —
+          a busca por texto cobre o caso comum, e os grupos seguem visíveis
+          como cabeçalhos de seção logo abaixo. Se precisar voltar como
+          filtro, ver historico (campo activeTones / toneCount). */}
 
       {/* Body */}
       <div className="lib-body">

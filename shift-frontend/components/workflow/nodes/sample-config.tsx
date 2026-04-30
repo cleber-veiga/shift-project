@@ -1,6 +1,7 @@
 "use client"
 
 import { cn } from "@/lib/utils"
+import { HelpTip } from "@/components/ui/help-tip"
 
 interface SampleConfigProps {
   data: Record<string, unknown>
@@ -29,8 +30,20 @@ export function SampleConfig({ data, onUpdate }: SampleConfigProps) {
     <div className="space-y-4">
       {/* Mode selector */}
       <div className="space-y-1.5">
-        <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+        <label className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           Modo
+          <HelpTip>
+            <strong>Primeiras N linhas:</strong> retorna sempre as N primeiras
+            do dataset, na ordem em que vieram.<br />
+            <br />
+            <strong>Aleatória (com seed):</strong> sorteia N linhas. Usar o
+            mesmo seed garante o mesmo sorteio em execuções diferentes — útil
+            para depurar e produzir relatórios reproduzíveis.<br />
+            <br />
+            <strong>Percentual:</strong> mantém X% das linhas via sorteio
+            probabilístico. Bom para amostrar datasets grandes mantendo a
+            proporção, mas o resultado pode variar levemente entre execuções.
+          </HelpTip>
         </label>
         <div className="flex flex-col gap-1">
           {MODES.map((m) => (
@@ -71,8 +84,21 @@ export function SampleConfig({ data, onUpdate }: SampleConfigProps) {
       {/* Seed field (random only) */}
       {mode === "random" && (
         <div className="space-y-1.5">
-          <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          <label className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
             Seed (reprodutibilidade)
+            <HelpTip>
+              O <strong>seed</strong> é uma "semente" numérica usada pelo
+              sorteador aleatório. Como o computador gera "aleatórios" a partir
+              dessa semente, fixar o número faz com que o mesmo conjunto de
+              linhas seja sempre escolhido — mesma execução, mesma amostra.
+              <br />
+              <br />
+              <strong>Quando manter o mesmo:</strong> ao depurar um fluxo,
+              comparar resultados entre execuções, ou produzir relatórios
+              reproduzíveis.<br />
+              <strong>Quando trocar:</strong> quando quiser uma amostra
+              diferente (qualquer outro número serve).
+            </HelpTip>
           </label>
           <input
             type="number"
@@ -90,8 +116,18 @@ export function SampleConfig({ data, onUpdate }: SampleConfigProps) {
       {/* Percent field */}
       {mode === "percent" && (
         <div className="space-y-1.5">
-          <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          <label className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
             Percentual (%)
+            <HelpTip>
+              Cada linha do dataset tem essa probabilidade (em %) de entrar na
+              amostra. Por isso o número final pode variar levemente entre
+              execuções — um dataset de 1.000 linhas com 10% pode retornar 98
+              ou 105, por exemplo.<br />
+              <br />
+              Use quando o tamanho exato não importa, mas você quer manter a
+              proporção do dataset. Para um número fixo, use{" "}
+              <em>Aleatória (com seed)</em>.
+            </HelpTip>
           </label>
           <div className="relative">
             <input

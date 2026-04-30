@@ -251,6 +251,8 @@ class HttpRequestNodeConfig(_RetryableNodeConfig):
     headers: dict[str, Any] = Field(default_factory=dict)
     query_params: dict[str, Any] = Field(default_factory=dict)
     body: Any | None = None
+    body_format: Literal["json", "text"] = "json"
+    auth: dict[str, Any] = Field(default_factory=dict)
     timeout_seconds: float = 30.0
     fail_on_error: bool = True
     output_field: str = "data"
@@ -285,6 +287,11 @@ class ManualTriggerNodeConfig(BaseModel):
     """Configuracao do no de trigger manual."""
 
     type: Literal["manual"]
+    # Payload de teste: usado como fallback quando o trigger dispara sem
+    # ``input_data`` externo (ex.: clicar Executar pelo editor sem
+    # declarar Variaveis). Aceita objeto (dict) ou lista de objetos
+    # (dataset). ``None`` mantem o comportamento legado.
+    payload: Any = None
 
 
 class WebhookAuthConfig(BaseModel):
@@ -409,43 +416,6 @@ class ExcelInputNodeConfig(_RetryableNodeConfig):
     skip_empty: bool = True
     output_field: str = "data"
 
-
-class ApiAuthConfig(BaseModel):
-    """Configuracao de autenticacao para o no de API."""
-
-    type: Literal["bearer", "basic", "api_key"]
-    # bearer
-    token: str | None = None
-    # basic
-    username: str | None = None
-    password: str | None = None
-    # api_key
-    header: str | None = Field(default=None, description="Nome do header (ex: X-API-Key)")
-    value: str | None = None
-
-
-class ApiInputNodeConfig(_RetryableNodeConfig):
-    """Configuracao do no de extracao de API REST paginada."""
-
-    type: Literal["api_input"]
-    url: str = Field(..., description="URL base da API")
-    method: Literal["GET", "POST", "PUT", "PATCH"] = "GET"
-    headers: dict[str, Any] = Field(default_factory=dict)
-    body: Any | None = None
-    data_path: str = Field(
-        default="$",
-        description="JSONPath para o array de registros na resposta (ex: $.data.items)",
-    )
-    auth: ApiAuthConfig | None = None
-    pagination_type: Literal["none", "offset", "page_number", "cursor", "next_url"] = "none"
-    pagination_config: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Parametros especificos da estrategia de paginacao",
-    )
-    max_records: int | None = Field(default=None, description="Limite total de registros")
-    max_pages: int = Field(default=10_000, description="Limite de paginas como salvaguarda")
-    timeout_seconds: float = 30.0
-    output_field: str = "data"
 
 
 class InlineDataNodeConfig(_RetryableNodeConfig):
@@ -825,7 +795,15 @@ class NodeRecordIdConfig(_RetryableNodeConfig):
 
     type: Literal["record_id"]
     id_column: str = Field(default="id", min_length=1)
-    start_at: int = Field(default=1, ge=1)
+    # Aceita ``int`` (modo fixo) ou ``str`` (template ``{{...}}`` resolvido em
+    # runtime via resolve_data e parseado pra inteiro pelo processor). A
+    # validacao de ``ge=1`` foi movida pro processor pra acomodar o caso
+    # template, onde o valor so existe em runtime.
+    start_at: int | str = Field(default=1)
+    # Offset opcional somado a ``start_at`` apos a resolucao. Util para
+    # casos como "MAX(id) + 1": linka o template pra ``start_at`` e usa
+    # ``start_at_offset = 1`` em vez de exigir aritmetica no template.
+    start_at_offset: int = Field(default=0)
     partition_by: list[str] = Field(default_factory=list)
     order_by: list[RecordIdOrderByConfig] = Field(default_factory=list)
     output_field: str = "data"
@@ -838,6 +816,40 @@ class NodeUnionConfig(_RetryableNodeConfig):
     mode: Literal["by_name", "by_position"] = "by_name"
     add_source_col: bool = False
     source_col_name: str = "_source"
+    output_field: str = "data"
+
+    # Dedup opcional pos-uniao. Quando ``dedup_keys`` esta vazio (padrao),
+    # o no se comporta como UNION ALL classico. Quando preenchido, aplica
+    # ROW_NUMBER() OVER (PARTITION BY <keys>) e mantem apenas uma linha
+    # por chave segundo o ``dedup_priority``:
+    #   - "first":       1a ocorrencia na ordem das entradas (default)
+    #   - "last":        ultima ocorrencia
+    #   - "input_first": prefere a entrada conectada primeiro (input_1 vence)
+    #   - "input_last":  prefere a ultima entrada (input_N vence)
+    dedup_keys: list[str] = Field(default_factory=list)
+    dedup_priority: Literal["first", "last", "input_first", "input_last"] = "first"
+
+
+# --- Join ---------------------------------------------------------------------
+
+
+class JoinConditionConfig(BaseModel):
+    """Par de colunas usado em um JOIN."""
+
+    left_column: str = Field(..., min_length=1)
+    right_column: str = Field(..., min_length=1)
+
+
+class NodeJoinConfig(_RetryableNodeConfig):
+    """Configuracao do no de JOIN entre dois datasets."""
+
+    type: Literal["join"]
+    join_type: Literal["inner", "left", "right", "full"] = "inner"
+    conditions: list[JoinConditionConfig] = Field(default_factory=list, min_length=1)
+    # ``columns`` opcional: cada item pode ser uma string SQL livre ou
+    # ``{"expression": "...", "alias": "..."}``. Quando vazio, o processor
+    # seleciona ``l.* + r.* EXCLUDE (chaves direitas)`` automaticamente.
+    columns: list[Any] = Field(default_factory=list)
     output_field: str = "data"
 
 
@@ -901,7 +913,6 @@ NodeConfig = Annotated[
         TriggerNodeConfig,
         CsvInputNodeConfig,
         ExcelInputNodeConfig,
-        ApiInputNodeConfig,
         InlineDataNodeConfig,
         SqlScriptNodeConfig,
         CompositeInsertNodeConfig,
@@ -916,6 +927,7 @@ NodeConfig = Annotated[
         NodeSampleConfig,
         NodeRecordIdConfig,
         NodeUnionConfig,
+        NodeJoinConfig,
         NodePivotConfig,
         NodeUnpivotConfig,
         NodeTextToRowsConfig,

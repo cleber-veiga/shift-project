@@ -3,6 +3,7 @@
 import { Plus, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useUpstreamFields } from "@/lib/workflow/upstream-fields-context"
+import { FieldChipPicker } from "@/components/workflow/nodes/field-chip-picker"
 
 type Aggregation = "sum" | "count" | "avg" | "max" | "min"
 
@@ -13,6 +14,8 @@ const AGGREGATIONS: { value: Aggregation; label: string }[] = [
   { value: "max", label: "MAX" },
   { value: "min", label: "MIN" },
 ]
+
+const FIELD_DRAG_TYPE = "application/x-shift-field"
 
 interface PivotConfigProps {
   data: Record<string, unknown>
@@ -57,49 +60,13 @@ export function PivotConfig({ data, onUpdate }: PivotConfigProps) {
 
   function handleDropIndex(e: React.DragEvent) {
     e.preventDefault()
-    const field = e.dataTransfer.getData("application/x-shift-field")
+    const field = e.dataTransfer.getData(FIELD_DRAG_TYPE)
     if (field) addIndexColumn(field)
-  }
-
-  function FieldSelect({
-    value,
-    onChange,
-    placeholder,
-  }: {
-    value: string
-    onChange: (v: string) => void
-    placeholder: string
-  }) {
-    if (upstreamFields.length > 0) {
-      return (
-        <select
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-primary"
-        >
-          <option value="">-- {placeholder} --</option>
-          {upstreamFields.map((f) => (
-            <option key={f} value={f}>
-              {f}
-            </option>
-          ))}
-        </select>
-      )
-    }
-    return (
-      <input
-        type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
-      />
-    )
   }
 
   return (
     <div className="space-y-4">
-      {/* Index columns */}
+      {/* Colunas de índice */}
       <div>
         <label className="mb-2 block text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           Colunas de índice
@@ -110,10 +77,11 @@ export function PivotConfig({ data, onUpdate }: PivotConfigProps) {
         <div className="space-y-1.5">
           {indexColumns.map((col, i) => (
             <div key={i} className="flex items-center gap-2">
-              <div className="flex-1">
-                <FieldSelect
+              <div className="min-w-0 flex-1">
+                <FieldChipPicker
                   value={col}
                   onChange={(v) => updateIndexColumn(i, v)}
+                  upstreamFields={upstreamFields}
                   placeholder="selecionar coluna"
                 />
               </div>
@@ -121,6 +89,7 @@ export function PivotConfig({ data, onUpdate }: PivotConfigProps) {
                 type="button"
                 onClick={() => removeIndexColumn(i)}
                 className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                aria-label="Remover coluna"
               >
                 <Trash2 className="size-3" />
               </button>
@@ -130,7 +99,7 @@ export function PivotConfig({ data, onUpdate }: PivotConfigProps) {
 
         <div
           onDragOver={(e) => {
-            if (e.dataTransfer.types.includes("application/x-shift-field")) {
+            if (e.dataTransfer.types.includes(FIELD_DRAG_TYPE)) {
               e.preventDefault()
               e.dataTransfer.dropEffect = "copy"
             }
@@ -142,12 +111,16 @@ export function PivotConfig({ data, onUpdate }: PivotConfigProps) {
             "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground",
           )}
         >
-          <Plus className="size-3" />
-          Adicionar coluna de índice
+          <span className="text-muted-foreground/50">Arraste um campo</span>
+          <span className="text-muted-foreground/30">ou</span>
+          <span className="flex items-center gap-1">
+            <Plus className="size-3" />
+            Adicionar coluna de índice
+          </span>
         </div>
       </div>
 
-      {/* Pivot column */}
+      {/* Coluna pivot */}
       <div className="space-y-1.5">
         <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           Coluna pivot
@@ -155,26 +128,28 @@ export function PivotConfig({ data, onUpdate }: PivotConfigProps) {
         <p className="text-[10px] text-muted-foreground/70">
           Valores únicos desta coluna viram novas colunas.
         </p>
-        <FieldSelect
+        <FieldChipPicker
           value={pivotColumn}
           onChange={(v) => onUpdate({ ...data, pivot_column: v })}
+          upstreamFields={upstreamFields}
           placeholder="selecionar coluna"
         />
       </div>
 
-      {/* Value column */}
+      {/* Coluna de valor */}
       <div className="space-y-1.5">
         <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           Coluna de valor
         </label>
-        <FieldSelect
+        <FieldChipPicker
           value={valueColumn}
           onChange={(v) => onUpdate({ ...data, value_column: v })}
+          upstreamFields={upstreamFields}
           placeholder="selecionar coluna"
         />
       </div>
 
-      {/* Aggregations */}
+      {/* Agregações */}
       <div className="space-y-2">
         <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           Agregações
@@ -198,7 +173,7 @@ export function PivotConfig({ data, onUpdate }: PivotConfigProps) {
         </div>
       </div>
 
-      {/* Max pivot values */}
+      {/* Limite de valores pivot */}
       <div className="space-y-1.5">
         <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           Limite de valores pivot

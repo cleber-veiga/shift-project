@@ -8,6 +8,7 @@ import {
   Clock,
   Download,
   FileJson,
+  History,
   MoreHorizontal,
   Pencil,
   Play,
@@ -17,6 +18,7 @@ import {
   Tag as TagIcon,
   Upload,
   Check,
+  Workflow as WorkflowIcon,
   X,
 } from "lucide-react"
 import { MorphLoader } from "@/components/ui/morph-loader"
@@ -49,6 +51,10 @@ interface WorkflowToolbarProps {
   scheduleStatus?: WorkflowScheduleStatus | null
   isSaving?: boolean
   isExecuting?: boolean
+  /** Aba ativa (Editor vs Execucoes). Tabs renderizadas no centro do toolbar
+   *  pra economizar a faixa horizontal que era ocupada pelo TabSwitch fora. */
+  activeTab?: "editor" | "executions"
+  onTabChange?: (tab: "editor" | "executions") => void
 }
 
 export function WorkflowToolbar({
@@ -77,6 +83,8 @@ export function WorkflowToolbar({
   scheduleStatus,
   isSaving = false,
   isExecuting = false,
+  activeTab,
+  onTabChange,
 }: WorkflowToolbarProps) {
   const router = useRouter()
   const [editingName, setEditingName] = useState(false)
@@ -87,7 +95,44 @@ export function WorkflowToolbar({
   const scheduleActive = hasSchedule && !!scheduleStatus?.is_active
 
   return (
-    <div className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-border bg-card px-3">
+    <div className="relative flex h-12 shrink-0 items-center justify-between gap-3 border-b border-border bg-card px-3">
+      {/* ── CENTER: tabs (Editor / Execuções) — posicionadas absolutamente
+          pra ficar centradas no toolbar inteiro independente das larguras
+          do LEFT (titulo) e RIGHT (acoes). Em telas estreitas elas podem
+          sobrepor o titulo, mas com z-index acima ficam acessiveis. */}
+      {activeTab && onTabChange && (
+        <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 -translate-x-1/2 -translate-y-1/2">
+          <div className="pointer-events-auto flex items-center gap-0.5 rounded-md border border-border bg-muted/40 p-0.5 shadow-sm">
+            <button
+              type="button"
+              onClick={() => onTabChange("editor")}
+              className={cn(
+                "flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-medium transition-colors",
+                activeTab === "editor"
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <WorkflowIcon className="size-3.5" />
+              Editor
+            </button>
+            <button
+              type="button"
+              onClick={() => onTabChange("executions")}
+              className={cn(
+                "flex items-center gap-1.5 rounded px-2.5 py-1 text-[11px] font-medium transition-colors",
+                activeTab === "executions"
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <History className="size-3.5" />
+              Execuções
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── LEFT: back + title/description ─────────────────────────────────── */}
       <div className="flex min-w-0 items-center gap-2">
         <button

@@ -2,6 +2,7 @@
 
 import { cn } from "@/lib/utils"
 import { useUpstreamFields } from "@/lib/workflow/upstream-fields-context"
+import { FieldChipPicker } from "@/components/workflow/nodes/field-chip-picker"
 
 interface TextToRowsConfigProps {
   data: Record<string, unknown>
@@ -25,28 +26,12 @@ export function TextToRowsConfig({ data, onUpdate }: TextToRowsConfigProps) {
         <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           Coluna a dividir
         </label>
-        {upstreamFields.length > 0 ? (
-          <select
-            value={columnToSplit}
-            onChange={(e) => onUpdate({ ...data, column_to_split: e.target.value })}
-            className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-primary"
-          >
-            <option value="">-- selecionar coluna --</option>
-            {upstreamFields.map((f) => (
-              <option key={f} value={f}>
-                {f}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <input
-            type="text"
-            value={columnToSplit}
-            onChange={(e) => onUpdate({ ...data, column_to_split: e.target.value })}
-            placeholder="nome da coluna"
-            className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
-          />
-        )}
+        <FieldChipPicker
+          value={columnToSplit}
+          onChange={(v) => onUpdate({ ...data, column_to_split: v })}
+          upstreamFields={upstreamFields}
+          placeholder="selecionar coluna"
+        />
       </div>
 
       {/* Delimiter */}

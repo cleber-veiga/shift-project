@@ -113,13 +113,23 @@ nav:
       - Variáveis e Connection Mapping: variables-e-connection-mapping.md
       - Planejamento DLT (Extração/Inserção): planejamento-dlt-extracao-insercao.md
   - Nós:
-      - Sort: users/nodes/sort.md
-      - Sample: users/nodes/sample.md
-      - Record ID: users/nodes/record_id.md
-      - Union: users/nodes/union.md
-      - Pivot: users/nodes/pivot.md
-      - Unpivot: users/nodes/unpivot.md
-      - Text to Rows: users/nodes/text_to_rows.md
+      - Gatilhos:
+          - Manual: users/nodes/manual.md
+          - Agendamento: users/nodes/agendamento.md
+          - Webhook: users/nodes/webhook.md
+          - Entrada do Fluxo: users/nodes/entrada_do_fluxo.md
+      - Entradas:
+          - CSV: users/nodes/csv.md
+          - Excel: users/nodes/excel.md
+          - HTTP Request: users/nodes/http_request.md
+      - Transformação:
+          - Sort: users/nodes/sort.md
+          - Sample: users/nodes/sample.md
+          - Record ID: users/nodes/record_id.md
+          - Union: users/nodes/union.md
+          - Pivot: users/nodes/pivot.md
+          - Unpivot: users/nodes/unpivot.md
+          - Text to Rows: users/nodes/text_to_rows.md
   - Deploy:
       - Firebird: firebird-deployment.md
   - Benchmarks:

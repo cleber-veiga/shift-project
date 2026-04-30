@@ -94,7 +94,6 @@ _BODY_FORBIDDEN_NODE_TYPES = frozenset({
     "schedule_trigger",
     "webhook_trigger",
     "polling_trigger",
-    "api_input_node",
     "workflow_input",
     "workflow_output",
     # Variantes legadas de tipo no campo "type" do React Flow:

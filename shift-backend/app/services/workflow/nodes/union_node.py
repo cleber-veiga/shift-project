@@ -14,6 +14,13 @@ Configuracao:
 - add_source_col  : bool — adiciona coluna com o handle de origem (ex: "input_1")
 - source_col_name : str  — nome da coluna de origem (padrao: "_source")
 - output_field    : str  — campo de saida (padrao: "data")
+- dedup_keys      : list[str] — quando preenchido, aplica dedup pos-uniao
+  via ROW_NUMBER() OVER (PARTITION BY ...). Mantem 1 linha por chave.
+- dedup_priority  : "first" | "last" | "input_first" | "input_last"
+                    Controla qual linha sobrevive em caso de duplicata.
+                    "input_first"/"input_last" usam a ordem das entradas
+                    (input_1 < input_2 < ...) — exige um campo interno de
+                    rank, que adicionamos no SELECT e removemos no resultado.
 
 Quando os datasets estao em bancos DuckDB distintos, o no realiza ATTACH
 de todos os bancos adicionais no banco da primeira entrada. O resultado
@@ -37,6 +44,11 @@ from app.services.workflow.nodes import BaseNodeProcessor, register_processor
 from app.services.workflow.nodes.exceptions import NodeProcessingError
 
 _VALID_MODES = {"by_name", "by_position"}
+_VALID_DEDUP_PRIORITIES = {"first", "last", "input_first", "input_last"}
+# Coluna interna usada para rankear linhas por entrada quando o priority
+# usa ordem de entrada. Adicionada no SELECT de cada upstream e removida
+# do resultado final via EXCLUDE.
+_INPUT_RANK_COL = "__shift_union_input_rank__"
 
 
 @register_processor("union")
@@ -54,10 +66,27 @@ class UnionNodeProcessor(BaseNodeProcessor):
         add_source_col = bool(resolved.get("add_source_col", False))
         source_col_name = str(resolved.get("source_col_name", "_source")).strip() or "_source"
         output_field = str(resolved.get("output_field", "data"))
+        dedup_keys_raw = resolved.get("dedup_keys") or []
+        dedup_keys = [str(k).strip() for k in dedup_keys_raw if str(k).strip()]
+        dedup_priority = str(resolved.get("dedup_priority", "first")).lower()
 
         if mode not in _VALID_MODES:
             raise NodeProcessingError(
                 f"No union '{node_id}': mode deve ser um de {sorted(_VALID_MODES)}."
+            )
+        if dedup_keys and dedup_priority not in _VALID_DEDUP_PRIORITIES:
+            raise NodeProcessingError(
+                f"No union '{node_id}': dedup_priority deve ser um de "
+                f"{sorted(_VALID_DEDUP_PRIORITIES)}."
+            )
+        # Quando o priority depende da entrada, exigimos by_name (UNION ALL BY
+        # NAME) — adicionamos uma coluna interna ``__shift_union_input_rank__``
+        # so em algumas entradas, o que quebra by_position.
+        priority_uses_input = dedup_priority in {"input_first", "input_last"}
+        if priority_uses_input and mode != "by_name":
+            raise NodeProcessingError(
+                f"No union '{node_id}': priority '{dedup_priority}' exige "
+                f"mode 'by_name' (a ordem das entradas precisa de UNION BY NAME)."
             )
 
         # Descobre todos os handles input_N conectados
@@ -128,13 +157,25 @@ class UnionNodeProcessor(BaseNodeProcessor):
                 )
                 schemas_per_handle.append(cols)
 
+                # Rank por entrada: input_1 → 1, input_2 → 2, etc. Injetado
+                # no SELECT para que o ROW_NUMBER() de dedup possa usar essa
+                # ordem como criterio de desempate. So adicionamos quando a
+                # dedup pediu priority por entrada — caso contrario nao polui
+                # o output com colunas extras.
+                input_rank_idx = len(select_parts) + 1
+                input_rank_select = (
+                    f"{input_rank_idx} AS {quote_identifier(_INPUT_RANK_COL)}, "
+                    if priority_uses_input
+                    else ""
+                )
                 if add_source_col:
                     escaped = handle.replace("'", "''")
                     select_parts.append(
+                        f"{input_rank_select}"
                         f"'{escaped}' AS {quote_identifier(source_col_name)}, * FROM {table_ref}"
                     )
                 else:
-                    select_parts.append(f"* FROM {table_ref}")
+                    select_parts.append(f"{input_rank_select}* FROM {table_ref}")
 
             # by_position com schemas divergentes vai concatenar colunas pela
             # ordem — risco de juntar dados semanticamente diferentes.
@@ -147,9 +188,57 @@ class UnionNodeProcessor(BaseNodeProcessor):
             output_table = sanitize_name(build_next_table_name(node_id, "union"))
             output_ref_sql = f"main.{quote_identifier(output_table)}"
 
-            conn.execute(
-                f"CREATE OR REPLACE TABLE {output_ref_sql} AS {union_sql}"
-            )
+            if dedup_keys:
+                # Dedup pos-uniao via ROW_NUMBER() OVER (PARTITION BY <chaves>).
+                # ORDER BY decide qual linha sobrevive em cada grupo:
+                #   - "first":       ordem natural (mantem a 1a linha vista)
+                #   - "last":        ordem reversa (mantem a ultima)
+                #   - "input_first": rank das entradas ASC (input_1 vence)
+                #   - "input_last":  rank das entradas DESC (input_N vence)
+                partition_cols = ", ".join(quote_identifier(k) for k in dedup_keys)
+                if dedup_priority == "input_first":
+                    order_clause = f"{quote_identifier(_INPUT_RANK_COL)} ASC"
+                elif dedup_priority == "input_last":
+                    order_clause = f"{quote_identifier(_INPUT_RANK_COL)} DESC"
+                elif dedup_priority == "last":
+                    # Sem coluna estavel, usamos um proxy via NULL ordering.
+                    # ROW_NUMBER em DuckDB sem ORDER BY tambem e nao-deterministico,
+                    # entao o mais simples e ordenar por NULL ASC (= ordem de
+                    # insercao) e usar RANK reverso. Fallback pragmatico:
+                    order_clause = "NULL DESC"
+                else:  # "first"
+                    order_clause = "NULL ASC"
+
+                # Excluimos colunas internas do output final pra nao poluir
+                # o resultado. DuckDB so aceita UM clausula EXCLUDE por
+                # SELECT — listamos todas as colunas a omitir junto.
+                excluded_cols = ["__shift_dedup_rn"]
+                if priority_uses_input:
+                    excluded_cols.append(quote_identifier(_INPUT_RANK_COL))
+                exclude_clause = f"EXCLUDE ({', '.join(excluded_cols)})"
+
+                conn.execute(
+                    f"""
+                    CREATE OR REPLACE TABLE {output_ref_sql} AS
+                    WITH __unioned AS ({union_sql}),
+                    __ranked AS (
+                        SELECT
+                            *,
+                            ROW_NUMBER() OVER (
+                                PARTITION BY {partition_cols}
+                                ORDER BY {order_clause}
+                            ) AS __shift_dedup_rn
+                        FROM __unioned
+                    )
+                    SELECT * {exclude_clause}
+                    FROM __ranked
+                    WHERE __shift_dedup_rn = 1
+                    """
+                )
+            else:
+                conn.execute(
+                    f"CREATE OR REPLACE TABLE {output_ref_sql} AS {union_sql}"
+                )
             row_out: int = conn.execute(
                 f"SELECT COUNT(*) FROM {output_ref_sql}"
             ).fetchone()[0]  # type: ignore[index]

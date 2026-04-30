@@ -83,6 +83,7 @@ export function WorkflowEdge({
       {/* Visible path */}
       <path
         d={edgePath}
+        className="workflow-edge-path"
         fill="none"
         markerEnd={markerEnd}
         strokeLinecap="round"
@@ -94,7 +95,7 @@ export function WorkflowEdge({
             ? `url(#${gradId})`
             : "#94a3b8"
         }
-        strokeDasharray={isErrorEdge ? "6 4" : undefined}
+        strokeDasharray="6 4"
         style={{
           transition: "stroke 0.2s ease, stroke-width 0.2s ease, stroke-opacity 0.2s ease",
           filter: isActive && !isErrorEdge

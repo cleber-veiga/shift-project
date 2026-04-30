@@ -62,7 +62,7 @@ import {
 import { NodeExecutionContext, type NodeExecState } from "@/lib/workflow/execution-context"
 import { NodeActionsContext } from "@/lib/workflow/node-actions-context"
 import { WorkflowVariablesContext } from "@/lib/workflow/workflow-variables-context"
-import { Copy, Hand, History, LayoutGrid, Maximize2, MousePointer2, Power, PowerOff, Trash2, Workflow as WorkflowIcon, X, ZoomIn, ZoomOut } from "lucide-react"
+import { Copy, Hand, LayoutGrid, Maximize2, MousePointer2, Power, PowerOff, Trash2, X, ZoomIn, ZoomOut } from "lucide-react"
 import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import {
@@ -1328,6 +1328,8 @@ function WorkflowEditorInner({
           scheduleStatus={scheduleStatus}
           isSaving={isSaving}
           isExecuting={isExecuting || isOpeningDialog}
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
         />
 
         {/* Build mode bar foi movida para o chat (AIBuildConfirmationCard) para
@@ -1346,24 +1348,6 @@ function WorkflowEditorInner({
             />
           </div>
         )}
-
-        {/* Tabs: Editor (canvas) | Execuções (historico) — centered pill group */}
-        <div className="flex shrink-0 items-center justify-center border-b border-border bg-muted/10 py-2">
-          <div className="workflow-tab-pill-group">
-            <TabSwitch
-              active={activeTab === "editor"}
-              onClick={() => setActiveTab("editor")}
-              icon={<WorkflowIcon className="size-3.5" />}
-              label="Editor"
-            />
-            <TabSwitch
-              active={activeTab === "executions"}
-              onClick={() => setActiveTab("executions")}
-              icon={<History className="size-3.5" />}
-              label="Execuções"
-            />
-          </div>
-        </div>
 
         {/* Editor body wrapper — relative pra ancorar a sidebar da Biblioteca
             de Nos (full-height) sobre canvas + execution panel. */}
@@ -1784,32 +1768,6 @@ function UnsupportedNodesDialog({
   )
 }
 
-
-function TabSwitch({
-  active,
-  onClick,
-  icon,
-  label,
-}: {
-  active: boolean
-  onClick: () => void
-  icon: React.ReactNode
-  label: string
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "workflow-tab-pill",
-        active && "workflow-tab-pill--active",
-      )}
-    >
-      {icon}
-      {label}
-    </button>
-  )
-}
 
 function ZoomControls() {
   const { zoomIn, zoomOut, fitView } = useReactFlow()

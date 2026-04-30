@@ -3,6 +3,7 @@
 import { Plus, Trash2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useUpstreamFields } from "@/lib/workflow/upstream-fields-context"
+import { FieldChipPicker } from "@/components/workflow/nodes/field-chip-picker"
 
 type ByType = "all_numeric" | "all_string"
 
@@ -75,42 +76,6 @@ export function UnpivotConfig({ data, onUpdate }: UnpivotConfigProps) {
     if (field) addValueColumn(field)
   }
 
-  function ColumnSelect({
-    value,
-    onChange,
-    placeholder,
-  }: {
-    value: string
-    onChange: (v: string) => void
-    placeholder: string
-  }) {
-    if (upstreamFields.length > 0) {
-      return (
-        <select
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className="h-7 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-primary"
-        >
-          <option value="">-- {placeholder} --</option>
-          {upstreamFields.map((f) => (
-            <option key={f} value={f}>
-              {f}
-            </option>
-          ))}
-        </select>
-      )
-    }
-    return (
-      <input
-        type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="h-7 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
-      />
-    )
-  }
-
   return (
     <div className="space-y-4">
       {/* Index columns */}
@@ -124,10 +89,11 @@ export function UnpivotConfig({ data, onUpdate }: UnpivotConfigProps) {
         <div className="space-y-1.5">
           {indexColumns.map((col, i) => (
             <div key={i} className="flex items-center gap-2">
-              <div className="flex-1">
-                <ColumnSelect
+              <div className="min-w-0 flex-1">
+                <FieldChipPicker
                   value={col}
                   onChange={(v) => updateIndexColumn(i, v)}
+                  upstreamFields={upstreamFields}
                   placeholder="selecionar coluna"
                 />
               </div>
@@ -135,6 +101,7 @@ export function UnpivotConfig({ data, onUpdate }: UnpivotConfigProps) {
                 type="button"
                 onClick={() => removeIndexColumn(i)}
                 className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                aria-label="Remover coluna"
               >
                 <Trash2 className="size-3" />
               </button>
@@ -155,8 +122,12 @@ export function UnpivotConfig({ data, onUpdate }: UnpivotConfigProps) {
             "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground",
           )}
         >
-          <Plus className="size-3" />
-          Adicionar coluna de índice
+          <span className="text-muted-foreground/50">Arraste um campo</span>
+          <span className="text-muted-foreground/30">ou</span>
+          <span className="flex items-center gap-1">
+            <Plus className="size-3" />
+            Adicionar coluna de índice
+          </span>
         </div>
       </div>
 
@@ -217,10 +188,11 @@ export function UnpivotConfig({ data, onUpdate }: UnpivotConfigProps) {
             <div className="space-y-1.5">
               {valueColumns.map((col, i) => (
                 <div key={i} className="flex items-center gap-2">
-                  <div className="flex-1">
-                    <ColumnSelect
+                  <div className="min-w-0 flex-1">
+                    <FieldChipPicker
                       value={col}
                       onChange={(v) => updateValueColumn(i, v)}
+                      upstreamFields={upstreamFields}
                       placeholder="selecionar coluna"
                     />
                   </div>
@@ -228,6 +200,7 @@ export function UnpivotConfig({ data, onUpdate }: UnpivotConfigProps) {
                     type="button"
                     onClick={() => removeValueColumn(i)}
                     className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                    aria-label="Remover coluna"
                   >
                     <Trash2 className="size-3" />
                   </button>
@@ -248,38 +221,60 @@ export function UnpivotConfig({ data, onUpdate }: UnpivotConfigProps) {
                 "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground",
               )}
             >
-              <Plus className="size-3" />
-              Adicionar coluna de valor
+              <span className="text-muted-foreground/50">Arraste um campo</span>
+              <span className="text-muted-foreground/30">ou</span>
+              <span className="flex items-center gap-1">
+                <Plus className="size-3" />
+                Adicionar coluna de valor
+              </span>
             </div>
           </>
         )}
       </div>
 
-      {/* Output column names */}
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-1.5">
-          <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-            Col. variável
-          </label>
-          <input
-            type="text"
-            value={variableColumnName}
-            onChange={(e) => onUpdate({ ...data, variable_column_name: e.target.value })}
-            placeholder="variable"
-            className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
-          />
+      {/* Output column names — campos LIVRES (nao linkam a colunas do input,
+          sao nomes das duas colunas que o no vai CRIAR no resultado). */}
+      <div className="rounded-lg border border-dashed border-border bg-muted/10 p-3">
+        <div className="mb-2 flex items-center gap-1.5">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+            Saída
+          </span>
+          <span className="text-[10px] text-muted-foreground/70">
+            Nomes das colunas novas que serão criadas no resultado.
+          </span>
         </div>
-        <div className="space-y-1.5">
-          <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-            Col. valor
-          </label>
-          <input
-            type="text"
-            value={valueColumnName}
-            onChange={(e) => onUpdate({ ...data, value_column_name: e.target.value })}
-            placeholder="value"
-            className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
-          />
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-[11px] font-medium text-foreground">
+              Coluna que recebe o <em className="not-italic font-semibold text-primary">nome</em>
+            </label>
+            <input
+              type="text"
+              value={variableColumnName}
+              onChange={(e) => onUpdate({ ...data, variable_column_name: e.target.value })}
+              placeholder="ex.: forma_pagamento"
+              className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none placeholder:text-muted-foreground/60 focus:ring-1 focus:ring-primary"
+            />
+            <p className="text-[10px] leading-relaxed text-muted-foreground/70">
+              Cada nome de coluna derretida (ex.: <code>Boleto_sum</code>)
+              vira valor desta coluna.
+            </p>
+          </div>
+          <div className="space-y-1">
+            <label className="text-[11px] font-medium text-foreground">
+              Coluna que recebe o <em className="not-italic font-semibold text-primary">valor</em>
+            </label>
+            <input
+              type="text"
+              value={valueColumnName}
+              onChange={(e) => onUpdate({ ...data, value_column_name: e.target.value })}
+              placeholder="ex.: faturamento"
+              className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none placeholder:text-muted-foreground/60 focus:ring-1 focus:ring-primary"
+            />
+            <p className="text-[10px] leading-relaxed text-muted-foreground/70">
+              O valor numérico ou textual de cada célula vai aqui.
+            </p>
+          </div>
         </div>
       </div>
 

@@ -4,6 +4,7 @@ import { useCallback } from "react"
 import { Plus, Trash2, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useUpstreamFields } from "@/lib/workflow/upstream-fields-context"
+import { FieldChipPicker } from "@/components/workflow/nodes/field-chip-picker"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -93,31 +94,12 @@ export function SwitchConfig({ data, onUpdate }: SwitchConfigProps) {
         <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           Campo para avaliar
         </label>
-        {upstreamFields.length > 0 ? (
-          <select
-            value={switchField}
-            onChange={(e) => onUpdate({ ...data, switch_field: e.target.value })}
-            className={cn(
-              "h-8 w-full rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-primary",
-              switchField ? "text-foreground" : "text-muted-foreground",
-            )}
-          >
-            <option value="">Selecionar campo...</option>
-            {upstreamFields.map((f) => (
-              <option key={f} value={f}>
-                {f}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <input
-            type="text"
-            value={switchField}
-            onChange={(e) => onUpdate({ ...data, switch_field: e.target.value })}
-            placeholder="nome_do_campo"
-            className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
-          />
-        )}
+        <FieldChipPicker
+          value={switchField}
+          onChange={(v) => onUpdate({ ...data, switch_field: v })}
+          upstreamFields={upstreamFields}
+          placeholder="selecionar campo"
+        />
       </div>
 
       {/* Cases */}

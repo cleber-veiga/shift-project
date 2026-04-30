@@ -161,7 +161,6 @@ from app.services.workflow.nodes.lookup_node import LookupNodeProcessor  # noqa:
 from app.services.workflow.nodes.notification_node import NotificationNodeProcessor  # noqa: E402, F401
 from app.services.workflow.nodes.csv_input_node import CsvInputNodeProcessor  # noqa: E402, F401
 from app.services.workflow.nodes.excel_input_node import ExcelInputNodeProcessor  # noqa: E402, F401
-from app.services.workflow.nodes.api_input_node import ApiInputNodeProcessor  # noqa: E402, F401
 from app.services.workflow.nodes.inline_data_node import InlineDataNodeProcessor  # noqa: E402, F401
 from app.services.workflow.nodes.truncate_table import TruncateTableProcessor  # noqa: E402, F401
 from app.services.workflow.nodes.bulk_insert import BulkInsertProcessor  # noqa: E402, F401

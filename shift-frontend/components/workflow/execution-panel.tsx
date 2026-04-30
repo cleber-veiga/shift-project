@@ -262,7 +262,7 @@ export function ExecutionPanel({ events, isRunning, phase = "idle", onAbort, onC
         </div>
 
         {/* Right: detail panel */}
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {selectedNode ? (
             <NodeDetail node={selectedNode} />
           ) : (
@@ -406,11 +406,13 @@ function NodeDetail({ node }: { node: NodeState }) {
     )
   }
 
-  // Success: show row count summary + on-demand preview for DuckDB nodes
-  const hasPreview = node.output_reference?.storage_type === "duckdb" && node.execution_id
+  // Success: show row count summary + on-demand preview for any node with execution data
   const hasRowCount = node.row_count !== null && node.row_count !== undefined
+  const hasPreview = !!node.execution_id
 
   if (hasPreview) {
+    // Synthesize output_reference when SSE didn't carry one (e.g. webhook/trigger nodes)
+    const outputRef = node.output_reference ?? { node_id: node.node_id, storage_type: "json" }
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         {hasRowCount && (
@@ -423,7 +425,7 @@ function NodeDetail({ node }: { node: NodeState }) {
         )}
         <DataViewer
           output={{
-            output_reference: node.output_reference,
+            output_reference: outputRef,
             row_count: node.row_count,
           }}
           sourceLabel={node.label}

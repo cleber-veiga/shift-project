@@ -37,7 +37,6 @@ NODE_EXECUTION_PROFILE: dict[str, dict[str, str]] = {
     "http_request":     {"shape": "io",      "default_strategy": "io_thread"},
     "csv_input":        {"shape": "io",      "default_strategy": "io_thread"},
     "excel_input":      {"shape": "io",      "default_strategy": "io_thread"},
-    "api_input":        {"shape": "io",      "default_strategy": "io_thread"},
     "inline_data":      {"shape": "io",      "default_strategy": "local_thread"},
     "extractNode":      {"shape": "io",      "default_strategy": "io_thread"},
     "sql_script":       {"shape": "io",      "default_strategy": "io_thread"},

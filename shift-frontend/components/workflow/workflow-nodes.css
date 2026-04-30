@@ -59,6 +59,18 @@
   --tone-aura: radial-gradient(60% 60% at 50% 30%, rgba(236, 72, 153, 0.50), transparent 70%);
   --tone-glow: rgba(236, 72, 153, 0.45);
 }
+/* ``neutral`` = paleta stone (warmer gray que slate) — usada pelo
+   grupo "Outros" da biblioteca para nós que não têm casa definitiva
+   ainda (SQL Database, API REST, Dados Inline). */
+.wf-node[data-tone="neutral"] {
+  --tone-solid: #78716c;
+  --tone-ink: #44403c;
+  --tone-grad: linear-gradient(135deg, #78716c, #57534e);
+  --tone-tile: linear-gradient(180deg, #fafaf9, #f5f5f4);
+  --tone-tile-ring: rgba(120, 113, 108, 0.25);
+  --tone-aura: radial-gradient(60% 60% at 50% 30%, rgba(120, 113, 108, 0.50), transparent 70%);
+  --tone-glow: rgba(120, 113, 108, 0.45);
+}
 
 /* ---- Base card --------------------------------------------------- */
 .wf-node {
@@ -383,6 +395,17 @@
   border-color: rgba(255, 255, 255, 0.08);
 }
 
+/* Edge flow — "marching ants" animation aplicado a todas as edges custom.
+ * Centralizado no CSS pra independer do prop ``animated`` do ReactFlow,
+ * garantindo padrão visual consistente entre edges criadas no canvas e
+ * edges carregadas de workflows salvos. */
+@keyframes wfEdgeFlow {
+  to { stroke-dashoffset: -10; }
+}
+.workflow-edge-path {
+  animation: wfEdgeFlow 0.5s linear infinite;
+}
+
 /* Shimmer for wait / progress bars */
 @keyframes wfShimmer {
   0%   { transform: translateX(-100%); }
@@ -445,6 +468,13 @@
   --tone-tile: linear-gradient(180deg, #fdf2f8, #fce7f3);
   --tone-tile-ring: rgba(236, 72, 153, 0.25);
   --tone-glow: rgba(236, 72, 153, 0.35);
+}
+.lib-tone[data-tone="neutral"] {
+  --tone-dot: #78716c;
+  --tone-ink: #44403c;
+  --tone-tile: linear-gradient(180deg, #fafaf9, #f5f5f4);
+  --tone-tile-ring: rgba(120, 113, 108, 0.25);
+  --tone-glow: rgba(120, 113, 108, 0.35);
 }
 
 /* ---- Drawer shell — sidebar full-height ------------------------- */

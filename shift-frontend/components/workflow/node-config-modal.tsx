@@ -179,12 +179,19 @@ export function NodeConfigModal({
     [upstreamOutputs],
   )
 
-  // Compute which source fields are already used (mappings, conditions, switch_field)
+  // Compute which source fields are already used by the current node config.
+  // Centralizado aqui pra ficar como padrão da plataforma — qualquer nó novo
+  // que use uma coluna do upstream deve ter sua extração adicionada abaixo,
+  // de modo que o sidebar marca automaticamente o campo como "já usado" sem
+  // precisar wiring manual em cada config component.
   const usedSources = useMemo(() => {
     const data = node.data as Record<string, unknown>
     const sources = new Set<string>()
+    const addIf = (v: unknown) => {
+      if (typeof v === "string" && v) sources.add(v)
+    }
 
-    // Mapper mappings
+    // ── Mapper ──────────────────────────────────────────────────────────────
     const mappings = Array.isArray(data?.mappings)
       ? (data.mappings as Array<{ source?: string; valueType?: string; exprTemplate?: string }>)
       : []
@@ -200,17 +207,108 @@ export function NodeConfigModal({
       }
     }
 
-    // IF / Filter conditions
+    // ── IF / Filter ─────────────────────────────────────────────────────────
     const conditions = Array.isArray(data?.conditions)
       ? (data.conditions as Array<{ field?: string }>)
       : []
     for (const c of conditions) {
-      if (c.field) sources.add(c.field)
+      addIf(c.field)
     }
 
-    // Switch field
-    const switchField = data?.switch_field as string | undefined
-    if (switchField) sources.add(switchField)
+    // ── Switch ──────────────────────────────────────────────────────────────
+    addIf(data?.switch_field)
+
+    // ── Sort ────────────────────────────────────────────────────────────────
+    const sortColumns = Array.isArray(data?.sort_columns)
+      ? (data.sort_columns as Array<{ column?: string }>)
+      : []
+    for (const sc of sortColumns) addIf(sc.column)
+
+    // ── Aggregator ──────────────────────────────────────────────────────────
+    const groupBy = Array.isArray(data?.group_by) ? (data.group_by as unknown[]) : []
+    for (const g of groupBy) addIf(g)
+    const aggregations = Array.isArray(data?.aggregations)
+      ? (data.aggregations as Array<{ column?: string | null }>)
+      : []
+    for (const a of aggregations) addIf(a.column)
+
+    // ── Pivot ──────────────────────────────────────────────────────────────
+    const pivotIndex = Array.isArray(data?.index_columns) ? (data.index_columns as unknown[]) : []
+    for (const c of pivotIndex) addIf(c)
+    addIf(data?.pivot_column)
+    addIf(data?.value_column)
+
+    // ── Unpivot ────────────────────────────────────────────────────────────
+    // index_columns ja coberto acima (mesmo nome de campo). value_columns
+    // sao colunas adicionais a marcar como usadas (lista de strings).
+    const unpivotValueCols = Array.isArray(data?.value_columns)
+      ? (data.value_columns as unknown[])
+      : []
+    for (const c of unpivotValueCols) addIf(c)
+
+    // ── Text → Rows ────────────────────────────────────────────────────────
+    addIf(data?.column_to_split)
+
+    // ── Math (extrai colunas do SQL e dos estados de UI dos modos
+    //   estruturados para não depender só do parsing best-effort do SQL) ─────
+    const expressions = Array.isArray(data?.expressions)
+      ? (data.expressions as Array<Record<string, unknown>>)
+      : []
+    for (const e of expressions) {
+      // SQL compilado: pega tudo entre aspas duplas (referência de coluna).
+      const sql = typeof e.expression === "string" ? e.expression : ""
+      const re = /"([^"]+)"/g
+      let match: RegExpExecArray | null
+      while ((match = re.exec(sql)) !== null) sources.add(match[1])
+
+      // Estado UI Cálculo
+      const calc = e._calc as { operands?: Array<{ kind?: string; value?: string }> } | undefined
+      for (const op of calc?.operands ?? []) {
+        if (op.kind === "field") addIf(op.value)
+      }
+      // Estado UI Condição
+      const cond = e._cond as
+        | {
+            branches?: Array<{
+              left?: { kind?: string; value?: string }
+              right?: { kind?: string; value?: string }
+              then?: { kind?: string; value?: string }
+            }>
+            fallback?: { kind?: string; value?: string }
+          }
+        | undefined
+      for (const b of cond?.branches ?? []) {
+        if (b.left?.kind === "field") addIf(b.left.value)
+        if (b.right?.kind === "field") addIf(b.right.value)
+        if (b.then?.kind === "field") addIf(b.then.value)
+      }
+      if (cond?.fallback?.kind === "field") addIf(cond.fallback.value)
+      // Estado UI Texto
+      const text = e._text as
+        | { source?: string; transforms?: Array<{ params?: Record<string, string> }> }
+        | undefined
+      addIf(text?.source)
+      for (const t of text?.transforms ?? []) {
+        // O parâmetro ``other`` do "Juntar com outra coluna" também é uma ref
+        addIf(t.params?.other)
+      }
+    }
+
+    // ── Deduplication / Record ID ──────────────────────────────────────────
+    const partitionBy = Array.isArray(data?.partition_by)
+      ? (data.partition_by as unknown[])
+      : []
+    for (const p of partitionBy) addIf(p)
+    const orderBy = data?.order_by
+    if (typeof orderBy === "string") {
+      addIf(orderBy)
+    } else if (Array.isArray(orderBy)) {
+      for (const ob of orderBy) {
+        if (ob && typeof ob === "object") {
+          addIf((ob as { column?: string }).column)
+        }
+      }
+    }
 
     return sources
   }, [node.data])
@@ -574,7 +672,7 @@ function InputPanel({ upstreamOutputs }: { upstreamOutputs: UpstreamOutput[] }) 
                 selectedNodeId={selectedNodeId}
                 onSelect={setSelectedNodeId}
               />
-              <div className="min-h-0 flex-1 overflow-auto">
+              <div className="flex min-h-0 flex-1 flex-col">
                 {selectedUpstream && selectedUpstream.output ? (
                   <DataViewer
                     output={selectedUpstream.output}
@@ -1001,6 +1099,9 @@ export function extractTableSource(
       if (typeof ref.node_id === "string") {
         return { kind: "execution_preview", executionId, nodeId: ref.node_id }
       }
+    } else if (typeof ref.node_id === "string") {
+      // Non-DuckDB reference (e.g. webhook/trigger nodes with storage_type "json")
+      return { kind: "execution_preview", executionId, nodeId: ref.node_id }
     }
   }
 

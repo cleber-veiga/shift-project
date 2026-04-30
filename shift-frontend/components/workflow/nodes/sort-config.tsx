@@ -3,6 +3,7 @@
 import { Plus, Trash2, ArrowUp, ArrowDown } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useUpstreamFields } from "@/lib/workflow/upstream-fields-context"
+import { FieldChipPicker } from "@/components/workflow/nodes/field-chip-picker"
 
 interface SortColumn {
   column: string
@@ -77,29 +78,14 @@ export function SortConfig({ data, onUpdate }: SortConfigProps) {
               className="rounded-lg border border-border bg-background p-2.5"
             >
               <div className="flex items-center gap-2">
-                {/* Column name */}
-                {upstreamFields.length > 0 ? (
-                  <select
+                {/* Column name (chip linkado) */}
+                <div className="min-w-0 flex-1">
+                  <FieldChipPicker
                     value={sc.column}
-                    onChange={(e) => updateColumn(i, { column: e.target.value })}
-                    className="h-7 flex-1 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-primary"
-                  >
-                    <option value="">-- selecionar coluna --</option>
-                    {upstreamFields.map((f) => (
-                      <option key={f} value={f}>
-                        {f}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <input
-                    type="text"
-                    value={sc.column}
-                    onChange={(e) => updateColumn(i, { column: e.target.value })}
-                    placeholder="nome da coluna"
-                    className="h-7 flex-1 rounded-md border border-input bg-background px-2.5 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
+                    onChange={(v) => updateColumn(i, { column: v })}
+                    upstreamFields={upstreamFields}
                   />
-                )}
+                </div>
 
                 {/* Direction toggle */}
                 <button
