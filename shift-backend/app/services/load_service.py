@@ -102,6 +102,11 @@ class LoadResult:
     duplicate_sample: list[dict[str, Any]] = field(default_factory=list)
     successful_row_numbers: list[int] = field(default_factory=list)
     failed_row_numbers: list[int] = field(default_factory=list)
+    # Linhas retornadas pelo banco via RETURNING/OUTPUT — paralelas a
+    # ``successful_row_numbers``. Cada item inclui ``_source_row_number`` para
+    # parear com a linha de origem no DuckDB upstream.
+    returned_rows: list[dict[str, Any]] = field(default_factory=list)
+    returning_columns: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -139,6 +144,9 @@ class LoadResult:
             d["cast_warnings"] = self.cast_warnings[:5]
         if self.columns_mapped:
             d["columns_mapped"] = self.columns_mapped
+        if self.returning_columns:
+            d["returning_columns"] = self.returning_columns
+            d["returned_rows_count"] = len(self.returned_rows)
         d["loader"] = self.loader
         return d
 
@@ -250,6 +258,7 @@ class LoadService:
         unique_columns: list[str] | None = None,
         load_strategy: str = "append_fast",
         workspace_id: str | None = None,
+        returning_columns: list[str] | None = None,
     ) -> LoadResult:
         """
         Insere dados na tabela destino.
@@ -326,6 +335,25 @@ class LoadService:
                 f"write_disposition='merge' requer merge_key com ao menos uma coluna. "
                 f"Tabela de destino: {target_table}"
             )
+
+        # ── Validacao de returning_columns ────────────────────────────────────
+        # MySQL nao tem RETURNING portavel em batch. LAST_INSERT_ID retorna
+        # apenas o primeiro ID gerado num INSERT multi-row, entao nao da pra
+        # parear linha-a-linha. Rejeita explicitamente.
+        if returning_columns:
+            if conn_type in {"mysql", "firebird"}:
+                raise ValueError(
+                    f"returning_columns nao suportado em {conn_type}. "
+                    "Disponivel apenas em PostgreSQL, SQL Server, Oracle e SQLite."
+                )
+            # RETURNING precisa de transacao previsivel — append_fast (dlt)
+            # gerencia conexoes internamente e nao expõe o cursor de retorno.
+            # Promove silenciosamente para append_safe quando o usuario pediu
+            # IDs de volta — esse e o caminho que captura por linha.
+            if load_strategy == "append_fast":
+                load_strategy = "append_safe"
+            # upsert + returning agora e suportado via try-INSERT-then-UPDATE
+            # row-by-row em ``_upsert_with_returning``.
 
         engine = _create_engine(connection_string, conn_type, workspace_id=workspace_id)
         try:
@@ -415,6 +443,7 @@ class LoadService:
                     cols=cols,
                     merge_key=merge_key,
                     batch_size=batch_size,
+                    returning_columns=returning_columns,
                 )
             elif load_strategy == "append_safe":
                 result = _insert_via_sqlalchemy(
@@ -425,6 +454,7 @@ class LoadService:
                     write_disposition=write_disposition,
                     merge_key=merge_key or [],
                     batch_size=batch_size,
+                    returning_columns=returning_columns,
                 )
             else:
                 # append_fast: dlt para PG/MySQL/MSSQL, SQLAlchemy para Oracle/Firebird
@@ -454,6 +484,7 @@ class LoadService:
                             write_disposition=write_disposition,
                             merge_key=merge_key or [],
                             batch_size=batch_size,
+                            returning_columns=returning_columns,
                         )
                 else:
                     result = _insert_via_sqlalchemy(
@@ -464,6 +495,7 @@ class LoadService:
                         write_disposition=write_disposition,
                         merge_key=merge_key or [],
                         batch_size=batch_size,
+                        returning_columns=returning_columns,
                     )
 
             # ── COUNT(*) apos insercao ──────────────────────────────────────
@@ -1040,6 +1072,85 @@ def _track_cast(summary: dict[str, int], original: Any, converted: Any, db_type:
 
 # ─── Insercao via SQLAlchemy (Oracle/Firebird + fallback) ────────────────────
 
+def _reflect_table_for_returning(
+    engine: sa.Engine,
+    target_table: str,
+    returning_columns: list[str] | None,
+) -> tuple[sa.Table, dict[str, Any], list[Any]]:
+    """Reflete uma Table via Inspector e devolve ``(table, col_lookup, return_cols)``.
+
+    Inspector e mais permissivo que ``Table(autoload_with=engine)`` em Oracle —
+    o autoloader falha em casos de schema explicito quando o usuario nao tem
+    privilegio suficiente no dicionario de dados, enquanto get_columns funciona
+    com privilegios menores. Compartilhado por insert+returning e upsert+returning.
+    """
+    inspector = sa.inspect(engine)
+    parts = target_table.split(".", 1)
+    if len(parts) == 2:
+        tbl_schema, tbl_name = parts
+    else:
+        tbl_schema, tbl_name = None, parts[0]
+
+    db_cols: list[dict[str, Any]] = []
+    try:
+        db_cols = inspector.get_columns(tbl_name, schema=tbl_schema)
+    except sa.exc.NoSuchTableError:
+        db_cols = []
+
+    # Fallback Oracle: alguns ambientes nao expoem schema via Inspector
+    # (privilegios, current_schema, sinonimos publicos).
+    if not db_cols and tbl_schema is not None:
+        try:
+            db_cols = inspector.get_columns(tbl_name)
+        except sa.exc.NoSuchTableError:
+            db_cols = []
+
+    if not db_cols:
+        raise ValueError(
+            f"Nao foi possivel inspecionar a tabela '{target_table}'. "
+            f"Verifique se a tabela existe e se a conexao tem permissao "
+            f"de leitura no dicionario de dados."
+        )
+
+    metadata = sa.MetaData()
+    sa_columns = [sa.Column(str(c["name"]), c["type"]) for c in db_cols]
+    table_obj = sa.Table(tbl_name, metadata, *sa_columns, schema=tbl_schema)
+
+    col_lookup = {c.name.lower(): c for c in table_obj.columns}
+    return_cols: list[Any] = []
+    for c in returning_columns or []:
+        col_obj = col_lookup.get(c.lower())
+        if col_obj is None:
+            raise ValueError(
+                f"returning_columns: coluna '{c}' nao existe na tabela "
+                f"'{target_table}'."
+            )
+        return_cols.append(col_obj)
+    return table_obj, col_lookup, return_cols
+
+
+def _build_insert_sql(
+    target_table: str,
+    cols: list[str],
+    dialect: str,
+    returning_columns: list[str] | None,
+) -> sa.TextClause:
+    """Monta o INSERT em SQL raw para o caminho rapido (sem RETURNING).
+
+    Quando ``returning_columns`` esta definido, ``_insert_via_sqlalchemy``
+    usa a API Core (reflexao da tabela + ``Table.insert().returning(...)``)
+    em vez deste helper — necessario porque cada dialeto tem sintaxe propria
+    (Oracle: ``RETURNING ... INTO :var``, MSSQL: ``OUTPUT INSERTED.*``,
+    PG/SQLite: ``RETURNING col``). O Core resolve isso transparente.
+    """
+    _ = dialect, returning_columns
+    col_names = ", ".join(f'"{c}"' for c in cols)
+    placeholders = ", ".join(f":{c}" for c in cols)
+    return sa.text(
+        f'INSERT INTO {target_table} ({col_names}) VALUES ({placeholders})'
+    )
+
+
 def _insert_via_sqlalchemy(
     engine: sa.Engine,
     target_table: str,
@@ -1048,6 +1159,7 @@ def _insert_via_sqlalchemy(
     write_disposition: str,
     merge_key: list[str],
     batch_size: int,
+    returning_columns: list[str] | None = None,
 ) -> LoadResult:
     """Insere dados usando SQLAlchemy direto com diagnostico de erros.
 
@@ -1055,24 +1167,49 @@ def _insert_via_sqlalchemy(
     fantasma (Oracle nao invalida a transacao em caso de erro, entao as
     linhas inseridas antes do erro permaneciam e o fallback linha-a-linha
     as duplicava).
+
+    Quando ``returning_columns`` esta definido, o INSERT inclui RETURNING /
+    OUTPUT INSERTED para capturar valores gerados pelo banco (ex.: IDs
+    auto-incrementais). Nesse modo a execucao e linha-a-linha pra parear cada
+    linha retornada com seu ``source_row_number``. Throughput cai um pouco,
+    mas isso e o esperado para o uso (poucos milhares de linhas com IDs).
     """
     _ = merge_key
-    col_names = ", ".join(f'"{c}"' for c in cols)
-    placeholders = ", ".join(f":{c}" for c in cols)
-    insert_sql = sa.text(
-        f'INSERT INTO {target_table} ({col_names}) VALUES ({placeholders})'
+    dialect_name = engine.dialect.name.lower()
+    has_returning = bool(returning_columns)
+    # Caminho sem RETURNING: SQL raw em batch (mais rapido). Caminho com
+    # RETURNING: API Core do SQLAlchemy com reflexao da tabela — necessario
+    # porque cada dialeto tem sintaxe propria (Oracle exige
+    # ``RETURNING ... INTO :var``, MSSQL exige ``OUTPUT INSERTED.*``,
+    # PG/SQLite usam ``RETURNING col``). O Core resolve isso por dialeto.
+    insert_sql = (
+        _build_insert_sql(target_table, cols, dialect_name, None)
+        if not has_returning
+        else None
     )
+
+    table_obj: sa.Table | None = None
+    return_cols: list[Any] = []
+    col_lookup: dict[str, Any] = {}
+    if has_returning:
+        # Reflexao via helper compartilhado (mais permissivo que autoload em
+        # Oracle). Match case-insensitive nos returning_columns: o Inspector
+        # normaliza Oracle pra lowercase, mas o usuario pode mandar em UPPER
+        # da UI ("ID" vs "id").
+        table_obj, col_lookup, return_cols = _reflect_table_for_returning(
+            engine, target_table, returning_columns
+        )
 
     rows_written = 0
     rejected: list[RejectedRow] = []
     successful_row_numbers: list[int] = []
+    returned_rows: list[dict[str, Any]] = []
     batch_count = 0
 
     with engine.begin() as db_conn:
         # Limpa tabela se modo replace
         if write_disposition == "replace":
-            dialect = engine.dialect.name.lower()
-            if dialect == "sqlite":
+            if dialect_name == "sqlite":
                 db_conn.execute(sa.text(f"DELETE FROM {target_table}"))
             else:
                 db_conn.execute(sa.text(f"TRUNCATE TABLE {target_table}"))
@@ -1084,72 +1221,119 @@ def _insert_via_sqlalchemy(
         # reinserimos linha a linha, sem deixar linhas fantasma.
         supports_savepoint = True
 
-        # Insere em lotes com savepoint para rollback preciso
-        for i in range(0, len(prepared_rows), batch_size):
-            batch_prepared = prepared_rows[i:i + batch_size]
-            batch = [prepared.values for prepared in batch_prepared]
-            batch_count += 1
+        # Quando ha RETURNING, usa caminho linha-a-linha pela API Core (que
+        # gera SQL dialeto-correto). Sem RETURNING, mantem o caminho em
+        # batch otimizado com SQL raw.
+        if has_returning and table_obj is not None:
+            # col_lookup mapeia nome.lower() -> Column. Usado pra remapear
+            # chaves do values dict (que pode vir em UPPER do column_mapping).
+            for prepared in prepared_rows:
+                # Remapeia keys do values dict para os nomes refletidos pela
+                # Table (que no Oracle vem lowercase do Inspector). Sem isso,
+                # SA reclama "Unconsumed column names: CLIENTE, TOTAL".
+                remapped_values: dict[str, Any] = {}
+                for k, v in prepared.values.items():
+                    col = col_lookup.get(k.lower())
+                    if col is not None:
+                        remapped_values[col.name] = v
+                batch_count += 1
+                sp_row = db_conn.begin_nested()
+                try:
+                    stmt = (
+                        table_obj.insert()
+                        .values(**remapped_values)
+                        .returning(*return_cols)
+                    )
+                    cursor = db_conn.execute(stmt)
+                    returned = cursor.fetchone()
+                    sp_row.commit()
+                    rows_written += 1
+                    successful_row_numbers.append(prepared.source_row_number)
+                    captured: dict[str, Any] = {
+                        "_source_row_number": prepared.source_row_number,
+                    }
+                    if returned is not None:
+                        captured.update(dict(returned._mapping))
+                    returned_rows.append(captured)
+                except Exception as row_exc:
+                    sp_row.rollback()
+                    col_hint, val_hint, type_hint = _diagnose_row_error(
+                        single_row, str(row_exc)
+                    )
+                    rejected.append(RejectedRow(
+                        row_number=prepared.source_row_number,
+                        error=str(row_exc)[:300],
+                        column=col_hint,
+                        value=val_hint,
+                        expected_type=type_hint,
+                    ))
+        else:
+            # Insere em lotes com savepoint para rollback preciso
+            for i in range(0, len(prepared_rows), batch_size):
+                batch_prepared = prepared_rows[i:i + batch_size]
+                batch = [prepared.values for prepared in batch_prepared]
+                batch_count += 1
 
-            if supports_savepoint:
-                # SAVEPOINT antes do batch — se falhar, rollback limpo
-                savepoint = db_conn.begin_nested()
-                try:
-                    db_conn.execute(insert_sql, batch)
-                    savepoint.commit()
-                    rows_written += len(batch)
-                    successful_row_numbers.extend(
-                        prepared.source_row_number for prepared in batch_prepared
-                    )
-                except Exception:
-                    # Rollback do savepoint: DESFAZ linhas parciais do batch
-                    savepoint.rollback()
-                    # Agora reinsere linha a linha com savepoint individual
-                    for prepared in batch_prepared:
-                        single_row = prepared.values
-                        sp_row = db_conn.begin_nested()
-                        try:
-                            db_conn.execute(insert_sql, [single_row])
-                            sp_row.commit()
-                            rows_written += 1
-                            successful_row_numbers.append(prepared.source_row_number)
-                        except Exception as row_exc:
-                            sp_row.rollback()
-                            col_hint, val_hint, type_hint = _diagnose_row_error(
-                                single_row, str(row_exc)
-                            )
-                            rejected.append(RejectedRow(
-                                row_number=prepared.source_row_number,
-                                error=str(row_exc)[:300],
-                                column=col_hint,
-                                value=val_hint,
-                                expected_type=type_hint,
-                            ))
-            else:
-                # Fallback sem savepoint (SQLite)
-                try:
-                    db_conn.execute(insert_sql, batch)
-                    rows_written += len(batch)
-                    successful_row_numbers.extend(
-                        prepared.source_row_number for prepared in batch_prepared
-                    )
-                except Exception:
-                    for prepared in batch_prepared:
-                        single_row = prepared.values
-                        try:
-                            db_conn.execute(insert_sql, [single_row])
-                            rows_written += 1
-                            successful_row_numbers.append(prepared.source_row_number)
-                        except Exception as row_exc:
-                            col_hint, val_hint, type_hint = _diagnose_row_error(
-                                single_row, str(row_exc)
-                            )
-                            rejected.append(RejectedRow(
-                                row_number=prepared.source_row_number,
-                                error=str(row_exc)[:300],
-                                column=col_hint,
-                                value=val_hint,
-                                expected_type=type_hint,
-                            ))
+                if supports_savepoint:
+                    # SAVEPOINT antes do batch — se falhar, rollback limpo
+                    savepoint = db_conn.begin_nested()
+                    try:
+                        db_conn.execute(insert_sql, batch)
+                        savepoint.commit()
+                        rows_written += len(batch)
+                        successful_row_numbers.extend(
+                            prepared.source_row_number for prepared in batch_prepared
+                        )
+                    except Exception:
+                        # Rollback do savepoint: DESFAZ linhas parciais do batch
+                        savepoint.rollback()
+                        # Agora reinsere linha a linha com savepoint individual
+                        for prepared in batch_prepared:
+                            single_row = prepared.values
+                            sp_row = db_conn.begin_nested()
+                            try:
+                                db_conn.execute(insert_sql, [single_row])
+                                sp_row.commit()
+                                rows_written += 1
+                                successful_row_numbers.append(prepared.source_row_number)
+                            except Exception as row_exc:
+                                sp_row.rollback()
+                                col_hint, val_hint, type_hint = _diagnose_row_error(
+                                    single_row, str(row_exc)
+                                )
+                                rejected.append(RejectedRow(
+                                    row_number=prepared.source_row_number,
+                                    error=str(row_exc)[:300],
+                                    column=col_hint,
+                                    value=val_hint,
+                                    expected_type=type_hint,
+                                ))
+                else:
+                    # Fallback sem savepoint (SQLite)
+                    try:
+                        db_conn.execute(insert_sql, batch)
+                        rows_written += len(batch)
+                        successful_row_numbers.extend(
+                            prepared.source_row_number for prepared in batch_prepared
+                        )
+                    except Exception:
+                        for prepared in batch_prepared:
+                            single_row = prepared.values
+                            try:
+                                db_conn.execute(insert_sql, [single_row])
+                                rows_written += 1
+                                successful_row_numbers.append(prepared.source_row_number)
+                            except Exception as row_exc:
+                                col_hint, val_hint, type_hint = _diagnose_row_error(
+                                    single_row, str(row_exc)
+                                )
+                                rejected.append(RejectedRow(
+                                    row_number=prepared.source_row_number,
+                                    error=str(row_exc)[:300],
+                                    column=col_hint,
+                                    value=val_hint,
+                                    expected_type=type_hint,
+                                ))
     failed_row_numbers = [row.row_number for row in rejected]
     status = "success"
     if rejected:
@@ -1162,6 +1346,8 @@ def _insert_via_sqlalchemy(
         rejected_rows=rejected,
         successful_row_numbers=successful_row_numbers,
         failed_row_numbers=failed_row_numbers,
+        returned_rows=returned_rows,
+        returning_columns=list(returning_columns or []),
         loader="sqlalchemy",
     )
 
@@ -1180,6 +1366,157 @@ def _diagnose_row_error(
 
 # ─── Upsert via SQLAlchemy (append_safe idempotente por chave) ───────────────
 
+def _upsert_with_returning(
+    engine: sa.Engine,
+    target_table: str,
+    prepared_rows: list[PreparedLoadRow],
+    merge_key: list[str],
+    returning_columns: list[str],
+) -> LoadResult:
+    """Upsert por linha que devolve valores gerados pelo banco.
+
+    Algoritmo: **SELECT-first**. Pra cada linha:
+      1. SELECT EXISTS(... WHERE merge_key=...) — checa existencia
+      2. Se existe: ``UPDATE ... WHERE merge_key=... RETURNING ...``
+      3. Senao: ``INSERT ... RETURNING ...``
+
+    Por que nao try-INSERT-then-UPDATE? Aquela abordagem so funciona quando
+    a merge_key tem ``UNIQUE`` constraint no banco. Sem constraint, o INSERT
+    sempre passa e duplicados aparecem — caso classico de "merge por chave
+    natural sem indice unique" (ex.: dedupe por nome do cliente).
+
+    Trade-off: 1 SELECT extra por linha. Aceitavel — upsert ja e row-by-row.
+    Vantagem: funciona com qualquer merge_key, com ou sem indice unique.
+
+    Compativel com qualquer dialeto que suporte ``INSERT/UPDATE ... RETURNING``
+    (PG, SQLite, Oracle, Firebird).
+    """
+    table_obj, col_lookup, return_cols = _reflect_table_for_returning(
+        engine, target_table, returning_columns
+    )
+
+    # Match merge_key case-insensitive (Oracle reflete em lowercase).
+    merge_key_cols: list[Any] = []
+    for k in merge_key:
+        col = col_lookup.get(k.lower())
+        if col is None:
+            raise ValueError(
+                f"merge_key: coluna '{k}' nao existe na tabela '{target_table}'."
+            )
+        merge_key_cols.append(col)
+    merge_key_lower = {c.name.lower() for c in merge_key_cols}
+
+    rows_written = 0
+    rejected: list[RejectedRow] = []
+    successful_row_numbers: list[int] = []
+    returned_rows: list[dict[str, Any]] = []
+    batch_count = 0
+
+    with engine.begin() as db_conn:
+        for prepared in prepared_rows:
+            # Remapeia keys do values dict (UPPER vindo da UI) pros nomes
+            # refletidos (lowercase no Oracle).
+            remapped: dict[str, Any] = {}
+            for k, v in prepared.values.items():
+                col = col_lookup.get(k.lower())
+                if col is not None:
+                    remapped[col.name] = v
+            batch_count += 1
+
+            # Garante que todos os merge_keys tem valor — sem isso o WHERE
+            # bate em qualquer NULL da tabela e o upsert vira chaos.
+            missing = [
+                col.name for col in merge_key_cols
+                if col.name not in remapped
+            ]
+            if missing:
+                rejected.append(RejectedRow(
+                    row_number=prepared.source_row_number,
+                    error=f"upsert: merge_key sem valor mapeado: {missing}",
+                ))
+                continue
+
+            captured: dict[str, Any] = {
+                "_source_row_number": prepared.source_row_number,
+            }
+
+            sp = db_conn.begin_nested()
+            try:
+                where_clause = sa.and_(
+                    *[col == remapped[col.name] for col in merge_key_cols]
+                )
+
+                # 1) Checa existencia pela merge_key
+                exists_stmt = sa.select(sa.literal(1)).where(where_clause).limit(1)
+                cursor = db_conn.execute(exists_stmt)
+                row_exists = cursor.fetchone() is not None
+
+                # 2) UPDATE se existe, INSERT se nao existe
+                if row_exists:
+                    update_values = {
+                        k: v for k, v in remapped.items()
+                        if k.lower() not in merge_key_lower
+                    }
+                    if update_values:
+                        stmt = (
+                            table_obj.update()
+                            .where(where_clause)
+                            .values(**update_values)
+                            .returning(*return_cols)
+                        )
+                        cursor = db_conn.execute(stmt)
+                        returned = cursor.fetchone()
+                    else:
+                        # So merge_keys mapeadas — nada pra atualizar.
+                        # Re-le o registro existente pra capturar returning.
+                        select_stmt = sa.select(*return_cols).where(where_clause).limit(1)
+                        cursor = db_conn.execute(select_stmt)
+                        returned = cursor.fetchone()
+                else:
+                    stmt = (
+                        table_obj.insert()
+                        .values(**remapped)
+                        .returning(*return_cols)
+                    )
+                    cursor = db_conn.execute(stmt)
+                    returned = cursor.fetchone()
+
+                sp.commit()
+                rows_written += 1
+                successful_row_numbers.append(prepared.source_row_number)
+                if returned is not None:
+                    captured.update(dict(returned._mapping))
+                returned_rows.append(captured)
+            except Exception as row_exc:
+                sp.rollback()
+                col_hint, val_hint, type_hint = _diagnose_row_error(remapped, str(row_exc))
+                rejected.append(RejectedRow(
+                    row_number=prepared.source_row_number,
+                    error=str(row_exc)[:300],
+                    column=col_hint,
+                    value=val_hint,
+                    expected_type=type_hint,
+                ))
+
+    failed_row_numbers = [r.row_number for r in rejected]
+    status = "success"
+    if rejected:
+        status = "partial" if rows_written > 0 else "error"
+
+    return LoadResult(
+        status=status,
+        rows_written=rows_written,
+        batches=batch_count,
+        rejected_rows=rejected,
+        successful_row_numbers=successful_row_numbers,
+        failed_row_numbers=failed_row_numbers,
+        returned_rows=returned_rows,
+        returning_columns=list(returning_columns or []),
+        loader="sqlalchemy",
+        write_disposition="merge",
+    )
+
+
 def _upsert_via_sqlalchemy(
     engine: sa.Engine,
     connection_string: str,
@@ -1189,6 +1526,7 @@ def _upsert_via_sqlalchemy(
     cols: list[str],
     merge_key: list[str],
     batch_size: int,
+    returning_columns: list[str] | None = None,
 ) -> LoadResult:
     """Upsert idempotente por chave de idempotencia.
 
@@ -1199,8 +1537,24 @@ def _upsert_via_sqlalchemy(
     - Outros      : fallback para _insert_via_sqlalchemy com write_disposition='merge'
       (nao e idempotente mas nao quebra o workflow).
 
-    Todos os dialetos executam em transacao unica — rollback total em erro.
+    Quando ``returning_columns`` esta definido, delega para
+    ``_upsert_with_returning`` que usa padrao try-INSERT-then-UPDATE row-by-row
+    com Core API — necessario porque MERGE em Oracle/MSSQL nao tem RETURNING
+    portavel e ON CONFLICT no PG nao garante captura quando a colisao e em
+    constraint diferente da declarada.
+
+    Sem returning_columns: mantem o caminho rapido em batch com SQL raw por
+    dialeto.
     """
+    if returning_columns:
+        return _upsert_with_returning(
+            engine=engine,
+            target_table=target_table,
+            prepared_rows=prepared_rows,
+            merge_key=merge_key,
+            returning_columns=returning_columns,
+        )
+
     dialect = engine.dialect.name.lower()
     col_names = ", ".join(f'"{c}"' for c in cols)
 

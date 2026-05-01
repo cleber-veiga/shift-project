@@ -557,6 +557,72 @@ def _get_node_type(node: dict[str, Any]) -> str:
     return str(node.get("type") or node.get("data", {}).get("type", "unknown"))
 
 
+def _derive_node_status(result: Any) -> tuple[str, int | None]:
+    """Deriva ``(status_sse, failed_count)`` a partir do resultado do no.
+
+    Resolve o problema do runner hardcodar ``"success"`` mesmo quando o
+    processor reportou erro/rejeicao por linha. Cobre os casos:
+    - bulk_insert/loadNode com ``rejected_count`` > 0 e ``rows_written`` > 0
+      -> ``partial`` (amarelo/aviso na UI)
+    - bulk_insert com 100% de linhas falhando -> ``error`` (vermelho)
+    - resultado com ``status`` explicito (ex.: "skipped", "error") -> propaga
+    - default -> ``success``
+    """
+    if not isinstance(result, dict):
+        return "success", None
+
+    explicit = result.get("status")
+    if isinstance(explicit, str) and explicit in {"error", "partial", "skipped"}:
+        failed = result.get("failed_rows_count") or result.get("rejected_count")
+        return explicit, int(failed) if isinstance(failed, int) else None
+
+    failed_raw = result.get("failed_rows_count") or result.get("rejected_count")
+    failed = int(failed_raw) if isinstance(failed_raw, int) and failed_raw > 0 else None
+    rows_written = result.get("rows_written")
+    rows_written_int = int(rows_written) if isinstance(rows_written, int) else None
+
+    if failed:
+        if rows_written_int is None or rows_written_int == 0:
+            return "error", failed
+        return "partial", failed
+
+    return "success", None
+
+
+def _extract_error_summary(result: Any, status: str, failed_count: int | None) -> str | None:
+    """Extrai uma mensagem de erro humana a partir do result quando o status
+    e error/partial — corrige o bug em que o OutputPanel renderizava ``ERRO``
+    sem texto algum (rejeicao interna por linha sem exception no nó).
+
+    Estrategia:
+    1) Se result.error existe (campo explicito), usa.
+    2) Se ha rejected_rows, monta resumo: "<N linhas rejeitadas> | <primeira mensagem>"
+    3) Se nada bater, mensagem generica orientando a olhar o branch on_error.
+    """
+    if status not in {"error", "partial"}:
+        return None
+    if not isinstance(result, dict):
+        return None
+
+    if isinstance(result.get("error"), str) and result["error"].strip():
+        return result["error"][:600]
+
+    rejected = result.get("rejected_rows")
+    if isinstance(rejected, list) and rejected:
+        first = rejected[0] if isinstance(rejected[0], dict) else {}
+        first_msg = str(first.get("error") or "").strip()
+        if first_msg:
+            n = failed_count or len(rejected)
+            return f"{n} linha(s) rejeitada(s). Primeiro erro: {first_msg[:400]}"
+
+    if failed_count:
+        return (
+            f"{failed_count} linha(s) rejeitada(s). Verifique o branch "
+            "'on_error' para diagnostico por linha."
+        )
+    return None
+
+
 def _extract_row_counts(result: Any) -> tuple[int | None, int | None]:
     """Deriva ``(row_count_in, row_count_out)`` a partir do resultado do no.
 
@@ -866,29 +932,51 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _compute_schema_fingerprint(ref: dict | None) -> str | None:
-    """Computes a short hash of the DuckDB table schema for change detection.
-
-    Called synchronously after node completion — DuckDB DESCRIBE on a local
-    file is O(1) metadata read, typically < 1ms.
-    """
+def _describe_duckdb_table(ref: dict | None) -> list[tuple[str, str]] | None:
+    """Returns ``[(col_name, col_type), ...]`` para a tabela DuckDB referenciada,
+    ou ``None`` se nao aplicavel/erro. Centraliza o DESCRIBE para reuso em
+    fingerprint e em extracao de colunas."""
     if not ref or ref.get("storage_type") != "duckdb":
         return None
     try:
-        import hashlib  # noqa: PLC0415
         import duckdb as _duckdb  # noqa: PLC0415
         from app.data_pipelines.duckdb_storage import build_table_ref  # noqa: PLC0415
 
         con = _duckdb.connect(str(ref["database_path"]))
         try:
             table_ref = build_table_ref(ref)
-            cols = con.execute(f"DESCRIBE {table_ref}").fetchall()
-            schema_str = ",".join(f"{c[0]}:{c[1]}" for c in cols)
-            return hashlib.md5(schema_str.encode()).hexdigest()[:16]  # noqa: S324
+            return [(str(c[0]), str(c[1])) for c in con.execute(f"DESCRIBE {table_ref}").fetchall()]
         finally:
             con.close()
     except Exception:  # noqa: BLE001
         return None
+
+
+def _compute_schema_fingerprint(ref: dict | None) -> str | None:
+    """Computes a short hash of the DuckDB table schema for change detection.
+
+    Called synchronously after node completion — DuckDB DESCRIBE on a local
+    file is O(1) metadata read, typically < 1ms.
+    """
+    cols = _describe_duckdb_table(ref)
+    if cols is None:
+        return None
+    try:
+        import hashlib  # noqa: PLC0415
+        schema_str = ",".join(f"{c[0]}:{c[1]}" for c in cols)
+        return hashlib.md5(schema_str.encode()).hexdigest()[:16]  # noqa: S324
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _extract_output_columns(ref: dict | None) -> list[str] | None:
+    """Retorna a lista de nomes de colunas da tabela DuckDB upstream — usada
+    no SSE node_complete pra alimentar pickers/auto-map dos nos downstream
+    sem precisar bater na API de preview por upstream."""
+    cols = _describe_duckdb_table(ref)
+    if cols is None:
+        return None
+    return [name for name, _type in cols]
 
 
 def _extract_output_reference(result: Any, execution_id: str | None, node_id: str) -> dict | None:
@@ -1317,6 +1405,7 @@ async def run_workflow(
                                 "status": "success",
                                 "row_count": row_out,
                                 "schema_fingerprint": _compute_schema_fingerprint(_chk_ref),
+                                "columns": _extract_output_columns(_chk_ref),
                                 "output_reference": _extract_output_reference(chk_result, execution_id, node_id),
                                 "duration_ms": 0,
                                 "is_checkpoint": True,
@@ -1419,6 +1508,9 @@ async def run_workflow(
                                     "status": "success",
                                     "row_count": row_out,
                                     "schema_fingerprint": None,
+                                    "columns": _extract_output_columns(
+                                        _extract_output_reference(_cached_r, execution_id, node_id)
+                                    ),
                                     "output_reference": _extract_output_reference(_cached_r, execution_id, node_id),
                                     "duration_ms": 0,
                                     "is_cache_hit": True,
@@ -1507,6 +1599,9 @@ async def run_workflow(
                                 "status": "success",
                                 "row_count": row_out,
                                 "schema_fingerprint": None,
+                                "columns": _extract_output_columns(
+                                    _extract_output_reference(pinned_result, execution_id, node_id)
+                                ),
                                 "output_reference": _extract_output_reference(pinned_result, execution_id, node_id),
                                 "duration_ms": 0,
                                 "is_pinned": True,
@@ -1945,9 +2040,22 @@ async def run_workflow(
                                 # Lean payload: sem dados completos do output.
                                 # Frontend busca via GET /executions/{eid}/nodes/{nid}/preview
                                 # quando o usuario seleciona o no no painel de execucao.
-                                "status": "success",
+                                # Status reflete erro/parcial reportado pelo processor:
+                                # bulk_insert/loadNode podem aceitar a chamada mas terem
+                                # 100% de linhas falhando — sem isso o usuario ve "ok"
+                                # na UI mesmo com 0 linhas inseridas.
+                                **(lambda s, fc: {
+                                    "status": s,
+                                    **({"failed_rows_count": fc} if fc else {}),
+                                    **(
+                                        {"error": _extract_error_summary(result, s, fc)}
+                                        if _extract_error_summary(result, s, fc)
+                                        else {}
+                                    ),
+                                })(*_derive_node_status(result)),
                                 "row_count": row_out,
                                 "schema_fingerprint": _compute_schema_fingerprint(_result_ref),
+                                "columns": _extract_output_columns(_result_ref),
                                 "output_reference": _extract_output_reference(result, execution_id, node_id),
                                 "duration_ms": duration_ms,
                             },

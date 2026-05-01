@@ -99,6 +99,13 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
   const uniqueColumns: string[] = Array.isArray(data.unique_columns)
     ? (data.unique_columns as string[])
     : []
+  const returningColumns: string[] = Array.isArray(data.returning_columns)
+    ? (data.returning_columns as string[])
+    : []
+  const mergeKeys: string[] = Array.isArray(data.merge_keys)
+    ? (data.merge_keys as string[])
+    : []
+  const isUpsert = data.load_strategy === "upsert"
 
   // Get columns for selected table
   const targetColumns = useMemo(() => {
@@ -170,37 +177,146 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
     setMapping(next)
   }
 
-  function autoMap() {
-    const mapped = new Set(
-      columnMapping.map((m) => {
-        if (m.value.mode === "dynamic") {
-          const match = m.value.template.match(/^\{\{([^}]+)\}\}$/)
-          return match ? match[1].toLowerCase() : ""
-        }
-        return m.value.value.toLowerCase()
-      }),
-    )
-    const newMaps: ColumnMap[] = [...columnMapping]
-
-    for (const src of upstreamFields) {
-      if (mapped.has(src.toLowerCase())) continue
-      const match = targetColumns.find((t) => t.toLowerCase() === src.toLowerCase())
-      if (match) {
-        newMaps.push({ value: createDynamic(`{{${src}}}`, []), target: match })
-        mapped.add(src.toLowerCase())
-      }
-    }
-
-    if (newMaps.length === columnMapping.length) {
-      for (const src of upstreamFields) {
-        if (!mapped.has(src.toLowerCase())) {
-          newMaps.push({ value: createDynamic(`{{${src}}}`, []), target: "" })
-        }
-      }
-    }
-
-    setMapping(newMaps)
+  // Normaliza nomes pra match fuzzy: lowercase + remove underscores/hifens/espacos.
+  // Isso resolve cliente↔CLIENTE, client_id↔CLIENTID, criado em↔CRIADO_EM, etc.
+  function normalize(name: string): string {
+    return name.toLowerCase().replace(/[_\-\s]+/g, "")
   }
+
+  function extractSourceField(m: ColumnMap): string {
+    if (m.value.mode === "dynamic") {
+      const match = m.value.template.match(/^\{\{([^}]+)\}\}$/)
+      if (match) {
+        // Refs com nodeId.campo — extrai apenas o campo final pro match.
+        const parts = match[1].split(".")
+        return parts[parts.length - 1].trim()
+      }
+      return ""
+    }
+    return m.value.value || ""
+  }
+
+  function autoMap() {
+    // Diagnostico: se ambos os lados estao vazios, nao tem como casar nada.
+    // Logamos pra ajudar a entender por que "clicar Auto mapear nao fez nada".
+    if (upstreamFields.length === 0 || targetColumns.length === 0) {
+      console.warn(
+        "[BulkInsert.autoMap] sem campos para mapear",
+        {
+          upstreamFields,
+          targetColumnsCount: targetColumns.length,
+          hint: upstreamFields.length === 0
+            ? "Upstream nao expos colunas. Re-execute o workflow apos restart do backend."
+            : "Tabela destino nao tem colunas carregadas. Re-selecione a tabela.",
+        },
+      )
+    }
+
+    // Fase 0: limpa linhas totalmente vazias (sem source nem target) — usuario
+    // costuma clicar "+ Adicionar coluna" antes do auto-map e essas linhas
+    // poluem o resultado.
+    const next: ColumnMap[] = columnMapping
+      .filter((m) => extractSourceField(m) !== "" || m.target !== "")
+      .map((m) => ({ ...m }))
+
+    // Coleta sources ja mapeados (normalizados) pra evitar duplicatas.
+    const mappedSourcesNorm = new Set<string>()
+    const usedTargetsNorm = new Set<string>()
+    for (const m of next) {
+      const src = extractSourceField(m)
+      if (src) mappedSourcesNorm.add(normalize(src))
+      if (m.target) usedTargetsNorm.add(normalize(m.target))
+    }
+
+    // Fase 1: preenche target vazio em linhas que ja tem source valido —
+    // antes era ignorado, fazendo o usuario abrir cada select manualmente.
+    let didFillTarget = false
+    for (const m of next) {
+      if (m.target) continue
+      const src = extractSourceField(m)
+      if (!src) continue
+      const matched = targetColumns.find(
+        (t) => normalize(t) === normalize(src) && !usedTargetsNorm.has(normalize(t)),
+      )
+      if (matched) {
+        m.target = matched
+        usedTargetsNorm.add(normalize(matched))
+        didFillTarget = true
+      }
+    }
+
+    // Fase 2: cria novas linhas para campos upstream ainda nao mapeados,
+    // casando com colunas destino disponiveis.
+    let didAddNew = false
+    for (const src of upstreamFields) {
+      if (mappedSourcesNorm.has(normalize(src))) continue
+      const matched = targetColumns.find(
+        (t) => normalize(t) === normalize(src) && !usedTargetsNorm.has(normalize(t)),
+      )
+      if (matched) {
+        next.push({ value: createDynamic(`{{${src}}}`, []), target: matched })
+        mappedSourcesNorm.add(normalize(src))
+        usedTargetsNorm.add(normalize(matched))
+        didAddNew = true
+      }
+    }
+
+    // Fallback: se nao conseguiu casar nada com a tabela destino, entrega ao
+    // usuario uma starter list — todas as colunas upstream restantes como
+    // linhas com target vazio pra ele resolver na mao.
+    if (!didFillTarget && !didAddNew) {
+      for (const src of upstreamFields) {
+        if (!mappedSourcesNorm.has(normalize(src))) {
+          next.push({ value: createDynamic(`{{${src}}}`, []), target: "" })
+          mappedSourcesNorm.add(normalize(src))
+        }
+      }
+    }
+
+    setMapping(next)
+  }
+
+  // Drop em "+ Adicionar coluna": cria nova linha ja com source preenchido
+  // e tenta casar target automaticamente.
+  function handleAddDrop(e: React.DragEvent) {
+    e.preventDefault()
+    setIsDraggingOverAdd(false)
+
+    const refRaw = e.dataTransfer.getData("application/x-shift-field-ref")
+    const field = e.dataTransfer.getData("application/x-shift-field")
+    if (!field && !refRaw) return
+
+    // Prefere cross-node reference (nodeId.campo) se disponivel — preserva
+    // a origem exata pro template ParameterValue.
+    let template = field ? `{{${field}}}` : ""
+    let sourceForMatch = field
+    if (refRaw) {
+      try {
+        const ref = JSON.parse(refRaw) as { nodeId: string; field: string }
+        template = `{{${ref.field}}}`
+        const parts = ref.field.split(".")
+        sourceForMatch = parts[parts.length - 1]
+      } catch {
+        // mantem fallback do field puro
+      }
+    }
+    if (!template) return
+
+    const matchedTarget = sourceForMatch
+      ? targetColumns.find(
+          (t) =>
+            normalize(t) === normalize(sourceForMatch) &&
+            !columnMapping.some((m) => normalize(m.target) === normalize(t)),
+        ) ?? ""
+      : ""
+
+    setMapping([
+      ...columnMapping,
+      { value: createDynamic(template, []), target: matchedTarget },
+    ])
+  }
+
+  const [isDraggingOverAdd, setIsDraggingOverAdd] = useState(false)
 
   const filteredConnections = connectionSearch
     ? connections.filter(
@@ -356,6 +472,102 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
         </div>
       )}
 
+      {/* ── Modo de escrita (Insert / Upsert) ── */}
+      {selectedTableName && (
+        <div className="space-y-1.5">
+          <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Modo de escrita
+          </label>
+          <div className="grid grid-cols-2 gap-0.5 rounded-lg bg-muted p-0.5">
+            <button
+              type="button"
+              onClick={() =>
+                onUpdate({ ...data, load_strategy: "append_fast", merge_keys: [] })
+              }
+              className={cn(
+                "rounded-md py-1.5 text-[11px] font-semibold transition-all",
+                !isUpsert
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              Insert
+            </button>
+            <button
+              type="button"
+              onClick={() => onUpdate({ ...data, load_strategy: "upsert" })}
+              className={cn(
+                "rounded-md py-1.5 text-[11px] font-semibold transition-all",
+                isUpsert
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              Upsert
+            </button>
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            {isUpsert
+              ? "Atualiza linhas existentes (casadas pela chave) e insere as novas. Compatível com retorno de IDs."
+              : "Insere todas as linhas. Falhas de constraint vão para o branch on_error."}
+          </p>
+        </div>
+      )}
+
+      {/* ── Colunas-chave do upsert (so no modo Upsert) ── */}
+      {selectedTableName && isUpsert && (
+        <div className="space-y-1.5">
+          <label className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Colunas-chave do upsert
+            <span className="rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[8px] font-bold normal-case tracking-normal text-amber-600">
+              obrigatório
+            </span>
+          </label>
+          {targetColumns.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {targetColumns.map((col) => {
+                const isSelected = mergeKeys.includes(col)
+                return (
+                  <button
+                    key={col}
+                    type="button"
+                    onClick={() => {
+                      const next = isSelected
+                        ? mergeKeys.filter((c) => c !== col)
+                        : [...mergeKeys, col]
+                      onUpdate({ ...data, merge_keys: next })
+                    }}
+                    className={cn(
+                      "inline-flex h-6 items-center gap-1 rounded-md border px-2 text-[10px] font-medium transition-colors",
+                      isSelected
+                        ? "border-primary/30 bg-primary/10 text-primary"
+                        : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground",
+                    )}
+                  >
+                    {isSelected && <span className="size-1.5 rounded-full bg-primary" />}
+                    {col}
+                  </button>
+                )
+              })}
+            </div>
+          ) : (
+            <p className="text-[10px] text-muted-foreground">
+              Selecione uma tabela para listar colunas.
+            </p>
+          )}
+          <p className="text-[10px] text-muted-foreground">
+            {mergeKeys.length > 0 ? (
+              <>
+                Linhas onde <code className="font-mono text-foreground">[{mergeKeys.join(", ")}]</code>{" "}
+                já existirem serão atualizadas; demais, inseridas.
+              </>
+            ) : (
+              "Selecione as colunas que identificam unicamente cada registro (ex.: chave natural como CNPJ ou código)."
+            )}
+          </p>
+        </div>
+      )}
+
       {/* ── Column mapping ── */}
       {selectedTableName && (
         <div className="space-y-1.5">
@@ -432,13 +644,39 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
             ))}
           </div>
 
-          {/* Add mapping button */}
+          {/* Add mapping button — aceita drop direto pra criar linha
+              ja com source preenchido e target auto-casado. */}
           <button
             type="button"
             onClick={addMapping}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md border-2 border-dashed border-border py-2 text-[11px] font-medium text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+            onDragEnter={(e) => {
+              if (
+                e.dataTransfer.types.includes("application/x-shift-field") ||
+                e.dataTransfer.types.includes("application/x-shift-field-ref")
+              ) {
+                e.preventDefault()
+                setIsDraggingOverAdd(true)
+              }
+            }}
+            onDragOver={(e) => {
+              if (
+                e.dataTransfer.types.includes("application/x-shift-field") ||
+                e.dataTransfer.types.includes("application/x-shift-field-ref")
+              ) {
+                e.preventDefault()
+                e.dataTransfer.dropEffect = "copy"
+              }
+            }}
+            onDragLeave={() => setIsDraggingOverAdd(false)}
+            onDrop={handleAddDrop}
+            className={cn(
+              "flex w-full items-center justify-center gap-1.5 rounded-md border-2 border-dashed py-2 text-[11px] font-medium transition-all",
+              isDraggingOverAdd
+                ? "border-primary bg-primary/10 text-primary scale-[1.01]"
+                : "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+            )}
           >
-            + Adicionar coluna
+            {isDraggingOverAdd ? "Soltar para adicionar" : "+ Adicionar coluna"}
           </button>
         </div>
       )}
@@ -481,6 +719,61 @@ export function BulkInsertConfig({ data, onUpdate }: BulkInsertConfigProps) {
             {uniqueColumns.length > 0
               ? `Duplicatas com mesmos valores em [${uniqueColumns.join(", ")}] serão removidas antes do INSERT.`
               : "Selecione colunas que formam a chave única. Duplicatas serão removidas antes de inserir."}
+          </p>
+        </div>
+      )}
+
+      {/* ── Colunas a retornar (RETURNING / OUTPUT INSERTED) ── */}
+      {selectedTableName && (
+        <div className="space-y-1.5">
+          <label className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+            Colunas a retornar
+            <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[8px] font-bold normal-case tracking-normal text-primary">
+              novo
+            </span>
+          </label>
+          {targetColumns.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {targetColumns.map((col) => {
+                const isSelected = returningColumns.includes(col)
+                return (
+                  <button
+                    key={col}
+                    type="button"
+                    onClick={() => {
+                      const next = isSelected
+                        ? returningColumns.filter((c) => c !== col)
+                        : [...returningColumns, col]
+                      onUpdate({ ...data, returning_columns: next })
+                    }}
+                    className={cn(
+                      "inline-flex h-6 items-center gap-1 rounded-md border px-2 text-[10px] font-medium transition-colors",
+                      isSelected
+                        ? "border-primary/30 bg-primary/10 text-primary"
+                        : "border-border bg-background text-muted-foreground hover:bg-muted hover:text-foreground",
+                    )}
+                  >
+                    {isSelected && <span className="size-1.5 rounded-full bg-primary" />}
+                    {col}
+                  </button>
+                )
+              })}
+            </div>
+          ) : (
+            <p className="text-[10px] text-muted-foreground">
+              Selecione uma tabela para listar colunas.
+            </p>
+          )}
+          <p className="text-[10px] text-muted-foreground">
+            {returningColumns.length > 0 ? (
+              <>
+                Cada linha do branch <code className="font-mono text-foreground">success</code> downstream
+                receberá <code className="font-mono text-foreground">[{returningColumns.join(", ")}]</code>{" "}
+                gerados pelo banco. Compatível com PostgreSQL, SQL Server, Oracle e SQLite.
+              </>
+            ) : (
+              "Receba valores gerados pelo banco (ex.: ID auto-increment) sem precisar de um SELECT extra. Não suportado em MySQL/Firebird."
+            )}
           </p>
         </div>
       )}

@@ -1963,6 +1963,13 @@ export type WorkflowTestEvent =
       status: string
       row_count: number | null
       schema_fingerprint: string | null
+      // Lista de colunas extraidas do output materializado (DuckDB DESCRIBE).
+      // Alimenta useUpstreamFields() pra que pickers/auto-map de nos
+      // downstream tenham o schema sincrono sem precisar bater na API de preview.
+      columns?: string[] | null
+      // Numero de linhas rejeitadas — populado quando status="partial"/"error".
+      // Permite a UI distinguir sucesso pleno de "completou mas zero gravadas".
+      failed_rows_count?: number | null
       output_reference: {
         node_id: string
         storage_type: string

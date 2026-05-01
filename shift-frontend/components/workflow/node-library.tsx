@@ -25,7 +25,7 @@ interface NodeLibraryProps {
   onClose: () => void
 }
 
-type Tone = "purple" | "emerald" | "orange" | "cyan" | "slate" | "pink" | "neutral"
+type Tone = "purple" | "emerald" | "orange" | "cyan" | "slate" | "teal" | "pink" | "neutral"
 
 interface ToneDef {
   name: string
@@ -37,6 +37,7 @@ const TONES: Record<Tone, ToneDef> = {
   orange: { name: "Lógica" },
   cyan: { name: "Transformação" },
   slate: { name: "Armazenamento" },
+  teal: { name: "Banco de Dados" },
   pink: { name: "IA" },
   neutral: { name: "Outros" },
 }
@@ -46,7 +47,7 @@ const TONE_ORDER: Tone[] = [
   "emerald",
   "cyan",
   "orange",
-  "slate",
+  "teal",
   "pink",
   "neutral",
 ]
@@ -61,9 +62,10 @@ const COLOR_TO_TONE: Record<string, Tone> = {
   slate: "slate",
   red: "orange",
   indigo: "cyan",
+  teal: "teal",
   // ``stone`` agrupa nós que ainda não pertencem a uma categoria
-  // específica de UX (SQL Database, API REST, Dados Inline...) — caem
-  // no grupo "Outros" da biblioteca até ganharem casa própria.
+  // específica de UX (API REST, Dados Inline...) — caem no grupo
+  // "Outros" da biblioteca até ganharem casa própria.
   stone: "neutral",
 }
 
@@ -360,6 +362,7 @@ export function NodeLibrary({ open, onClose }: NodeLibraryProps) {
       orange: [],
       cyan: [],
       slate: [],
+      teal: [],
       pink: [],
       neutral: [],
     }
@@ -374,6 +377,7 @@ export function NodeLibrary({ open, onClose }: NodeLibraryProps) {
       orange: 0,
       cyan: 0,
       slate: 0,
+      teal: 0,
       pink: 0,
       neutral: 0,
     }

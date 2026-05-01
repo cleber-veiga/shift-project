@@ -439,8 +439,57 @@ def _assert_no_interpolation(node_id: str, script: str) -> None:
         )
 
 
+def _strip_sql_lead(script: str) -> str:
+    """Remove whitespace e comentarios SQL de inicio para inspecao da
+    primeira palavra real (usado por ``_is_plsql_block``)."""
+    s = script.lstrip()
+    while True:
+        if s.startswith("--"):
+            nl = s.find("\n")
+            if nl < 0:
+                return ""
+            s = s[nl + 1:].lstrip()
+        elif s.startswith("/*"):
+            end = s.find("*/")
+            if end < 0:
+                return ""
+            s = s[end + 2:].lstrip()
+        else:
+            return s
+
+
+def _is_plsql_block(script: str) -> bool:
+    """Detecta blocos PL/SQL anonimos do Oracle (``BEGIN ... END;`` ou
+    ``DECLARE ... BEGIN ... END;``).
+
+    Necessario porque ``;`` dentro de um bloco PL/SQL e parte da gramatica
+    e nao deve dividir statements — caso contrario o Oracle recebe so o
+    primeiro fragmento (ate o primeiro ``;``) e levanta ORA-06550.
+    """
+    head = _strip_sql_lead(script).upper()
+    if head.startswith("BEGIN"):
+        return len(head) == 5 or not head[5].isalnum()
+    if head.startswith("DECLARE"):
+        return len(head) == 7 or not head[7].isalnum()
+    return False
+
+
 def _split_statements(script: str) -> list[str]:
-    """Divide o script em statements, ignorando ``;`` dentro de literais."""
+    """Divide o script em statements, ignorando ``;`` dentro de literais e
+    blocos PL/SQL anonimos.
+
+    Blocos PL/SQL (``BEGIN ... END;`` / ``DECLARE ... END;``) sao tratados
+    como uma unica unidade — qualquer ``;`` interno e parte da gramatica.
+    """
+    if _is_plsql_block(script):
+        # Bloco PL/SQL inteiro como statement unico. Remove '/' final
+        # (terminador do SQL*Plus, nao reconhecido pelo driver), mas mantem
+        # o ';' apos END que faz parte da gramatica do bloco.
+        s = script.strip()
+        if s.endswith("/"):
+            s = s[:-1].rstrip()
+        return [s] if s else []
+
     statements: list[str] = []
     buffer: list[str] = []
     in_single = False

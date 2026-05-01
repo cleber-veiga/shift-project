@@ -3,6 +3,11 @@ import { createContext, useContext } from "react"
 export type NodeExecStatus =
   | "running"
   | "success"
+  // "partial" = nó completou sem exception, mas teve linhas rejeitadas
+  // (ex.: bulk_insert com 3 linhas inseridas e 2 com erro de tipo).
+  // Renderizado com cor de aviso (amber) — diferente de "success" pra
+  // o usuario nao confundir falha silenciosa com sucesso pleno.
+  | "partial"
   | "error"
   | "skipped"
   | "handled_error"
@@ -33,6 +38,15 @@ export type NodeExecState = {
     dataset_name?: string | null
   } | null
   row_count?: number | null
+  // Lista de colunas extraidas do output materializado (DuckDB DESCRIBE),
+  // emitida pelo SSE node_complete. Alimenta useUpstreamFields() pra que
+  // pickers/auto-map de nos downstream tenham acesso sincrono ao schema
+  // sem precisar bater na API de preview.
+  columns?: string[] | null
+  // Quantas linhas foram rejeitadas (status="partial" ou "error") — usado
+  // pra renderizar badge "N falharam" no no, evitando que falha silenciosa
+  // do bulk_insert passe despercebida.
+  failed_rows_count?: number | null
   execution_id?: string
   error?: string
   is_pinned?: boolean

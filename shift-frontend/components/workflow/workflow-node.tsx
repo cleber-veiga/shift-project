@@ -144,18 +144,31 @@ interface StatusMeta {
   dot: string
   text: string
   pulse?: boolean
-  cls?: "is-running" | "is-success" | "is-error" | "is-handled-error"
+  cls?: "is-running" | "is-success" | "is-error" | "is-handled-error" | "is-partial"
 }
 
 function computeStatus(
   execStatus: string | undefined,
   enabled: boolean,
+  failedCount?: number | null,
 ): StatusMeta {
   if (execStatus === "running") {
     return { label: "executando", dot: "#0ea5e9", text: "text-sky-600", pulse: true, cls: "is-running" }
   }
   if (execStatus === "success") {
     return { label: "ok", dot: "#10b981", text: "text-emerald-600", cls: "is-success" }
+  }
+  // "partial": completou mas teve linhas rejeitadas. Critico distinguir de
+  // "ok" pra evitar falha silenciosa do bulk_insert (caso classico: 100% das
+  // linhas vao pro on_error e o nó reportava verde antes desta correcao).
+  if (execStatus === "partial") {
+    const n = failedCount ?? 0
+    return {
+      label: n > 0 ? `${n} falharam` : "parcial",
+      dot: "#f59e0b",
+      text: "text-amber-600",
+      cls: "is-partial",
+    }
   }
   if (execStatus === "handled_error") {
     return { label: "tratado", dot: "#fb7185", text: "text-rose-500", cls: "is-handled-error" }
@@ -220,7 +233,7 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
     return null
   }, [type, nodeData])
 
-  const statusMeta = computeStatus(execState?.status, enabled)
+  const statusMeta = computeStatus(execState?.status, enabled, execState?.failed_rows_count)
 
   // ── Inline title editing ─────────────────────────────────────────────────
   const [editing, setEditing] = useState(false)
@@ -697,6 +710,20 @@ function WorkflowNodeComponent({ id, data, selected, type }: NodeProps) {
                   {typeof execState.output?.row_count === "number"
                     ? `${execState.output.row_count} linhas`
                     : "ok"}
+                  {typeof execState.duration_ms === "number" && (
+                    <span className="opacity-60">· {execState.duration_ms}ms</span>
+                  )}
+                </span>
+              )}
+              {execState?.status === "partial" && (
+                <span
+                  className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 font-semibold text-amber-600 dark:text-amber-400"
+                  title="O nó completou, mas algumas linhas foram rejeitadas. Verifique o branch on_error."
+                >
+                  <AlertTriangle className="size-2.5" />
+                  {typeof execState.failed_rows_count === "number" && execState.failed_rows_count > 0
+                    ? `${execState.failed_rows_count} falharam`
+                    : "parcial"}
                   {typeof execState.duration_ms === "number" && (
                     <span className="opacity-60">· {execState.duration_ms}ms</span>
                   )}

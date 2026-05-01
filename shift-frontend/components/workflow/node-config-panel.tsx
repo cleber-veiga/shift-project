@@ -32,6 +32,7 @@ import { WebhookConfig } from "@/components/workflow/nodes/webhook-config"
 import { WorkflowInputConfig } from "@/components/workflow/nodes/workflow-input-config"
 import { WorkflowOutputConfig } from "@/components/workflow/nodes/workflow-output-config"
 import { CallWorkflowConfig } from "@/components/workflow/nodes/call-workflow-config"
+import { LoadNodeConfig } from "@/components/workflow/nodes/load-node-config"
 import { HttpRequestConfig } from "@/components/workflow/nodes/http-request-config"
 import {
   RetryPolicyEditor,
@@ -618,34 +619,10 @@ function renderNodeSpecificFields({
 
     case "loadNode":
       return (
-        <div className="space-y-4">
-
-          <ConfigField label="Connection ID">
-            <TextInput
-              value={(data.connection_id as string) ?? ""}
-              onChange={(v) => update("connection_id", v)}
-              placeholder="UUID da conexão de destino"
-            />
-          </ConfigField>
-          <ConfigField label="Tabela de destino">
-            <TextInput
-              value={(data.target_table as string) ?? ""}
-              onChange={(v) => update("target_table", v)}
-              placeholder="schema.tabela"
-            />
-          </ConfigField>
-          <ConfigField label="Modo de escrita">
-            <SelectInput
-              value={(data.write_disposition as string) ?? "append"}
-              onChange={(v) => update("write_disposition", v)}
-              options={[
-                { value: "append", label: "Append (adicionar)" },
-                { value: "replace", label: "Replace (substituir)" },
-                { value: "merge", label: "Merge (mesclar)" },
-              ]}
-            />
-          </ConfigField>
-        </div>
+        <LoadNodeConfig
+          data={data}
+          onUpdate={(patch) => onUpdate(node.id, patch)}
+        />
       )
 
     case "aiNode":

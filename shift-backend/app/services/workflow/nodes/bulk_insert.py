@@ -24,6 +24,14 @@ Configuracao do no
                        Obrigatorio.
     unique_columns   : Lista de colunas (em ``target``) usadas para dedup
                        interno antes do insert. Opcional.
+    returning_columns: Lista de colunas a retornar do banco apos o insert
+                       (ex.: IDs auto-incrementais via ``INSERT...RETURNING``
+                       no PostgreSQL/SQLite/Oracle ou ``OUTPUT INSERTED.*`` no
+                       SQL Server). Os valores devolvidos sao injetados no
+                       branch ``success`` para uso downstream. Opcional. Se
+                       configurado, a estrategia e promovida para
+                       ``append_safe`` (transacao unica linha-a-linha) e MySQL/
+                       Firebird sao rejeitados.
     batch_size       : Tamanho do lote do insert (padrao 1000).
     output_field     : Nome do campo com o relatorio de carga (padrao
                        ``"load_result"``).
@@ -173,6 +181,8 @@ class BulkInsertProcessor(BaseNodeProcessor):
         # Lê column_mapping do config bruto para preservar templates de ParameterValue
         raw_mapping = config.get("column_mapping") or []
         unique_columns_raw = resolved_config.get("unique_columns") or []
+        returning_columns_raw = resolved_config.get("returning_columns") or []
+        merge_keys_raw = resolved_config.get("merge_keys") or []
         batch_size = int(resolved_config.get("batch_size") or 1000)
         output_field = str(resolved_config.get("output_field", "load_result"))
         load_strategy = str(resolved_config.get("load_strategy") or "append_fast")
@@ -213,6 +223,18 @@ class BulkInsertProcessor(BaseNodeProcessor):
         unique_columns: list[str] = [
             str(c) for c in unique_columns_raw if isinstance(c, str) and c.strip()
         ]
+        returning_columns: list[str] = [
+            str(c) for c in returning_columns_raw if isinstance(c, str) and c.strip()
+        ]
+        merge_keys: list[str] = [
+            str(c) for c in merge_keys_raw if isinstance(c, str) and c.strip()
+        ]
+
+        if load_strategy == "upsert" and not merge_keys:
+            raise NodeProcessingError(
+                f"No bulk_insert '{node_id}': modo upsert requer merge_keys "
+                "com ao menos uma coluna que identifique unicamente cada registro."
+            )
 
         has_pv = any(m["pv"] is not None for m in valid_maps)
         ctx = ResolutionContext(
@@ -310,6 +332,8 @@ class BulkInsertProcessor(BaseNodeProcessor):
                     unique_columns=unique_columns if unique_columns else None,
                     load_strategy=load_strategy,
                     workspace_id=context.get("workspace_id"),
+                    returning_columns=returning_columns if returning_columns else None,
+                    merge_key=merge_keys if merge_keys else None,
                 )
                 chunks_processed += 1
 
@@ -343,6 +367,17 @@ class BulkInsertProcessor(BaseNodeProcessor):
                 }
                 success_set = set(chunk_result.successful_row_numbers)
 
+                # Mapa de valores RETURNING por linha do chunk (chave: row_number)
+                returned_by_chunk_row: dict[int, dict[str, Any]] = {}
+                if chunk_result.returned_rows:
+                    for ret in chunk_result.returned_rows:
+                        rn = ret.get("_source_row_number")
+                        if rn is None:
+                            continue
+                        returned_by_chunk_row[int(rn)] = {
+                            k: v for k, v in ret.items() if k != "_source_row_number"
+                        }
+
                 for rr in chunk_result.rejected_rows:
                     total_rejected.append(
                         RejectedRow(
@@ -359,10 +394,16 @@ class BulkInsertProcessor(BaseNodeProcessor):
                 for rn in chunk_result.failed_row_numbers:
                     total_failed_rn.append(rn + row_offset)
 
-                # Escrita incremental das partitions de branch em JSONL
+                # Escrita incremental das partitions de branch em JSONL.
+                # Quando RETURNING esta ativo, enriquece a linha do success branch
+                # com os valores devolvidos pelo banco (ex.: ID auto-incremental).
                 for row_number, row in enumerate(chunk_rows, start=1):
                     if row_number in success_set:
-                        success_stream.write_row(dict(row))
+                        out_row = dict(row)
+                        ret_data = returned_by_chunk_row.get(row_number)
+                        if ret_data:
+                            out_row.update(ret_data)
+                        success_stream.write_row(out_row)
                     elif row_number in rejected_by_chunk_row:
                         enriched = _enrich_failed_row(
                             dict(row), rejected_by_chunk_row[row_number]
@@ -420,6 +461,7 @@ class BulkInsertProcessor(BaseNodeProcessor):
             failed_row_numbers=total_failed_rn,
             unique_columns=unique_columns,
             duplicate_sample=duplicate_sample,
+            returning_columns=returning_columns,
         )
 
         result_dict = aggregated.to_dict()

@@ -59,9 +59,18 @@
   --tone-aura: radial-gradient(60% 60% at 50% 30%, rgba(236, 72, 153, 0.50), transparent 70%);
   --tone-glow: rgba(236, 72, 153, 0.45);
 }
+.wf-node[data-tone="teal"] {
+  --tone-solid: #14b8a6;
+  --tone-ink: #0f766e;
+  --tone-grad: linear-gradient(135deg, #14b8a6, #0891b2);
+  --tone-tile: linear-gradient(180deg, #f0fdfa, #ccfbf1);
+  --tone-tile-ring: rgba(20, 184, 166, 0.25);
+  --tone-aura: radial-gradient(60% 60% at 50% 30%, rgba(20, 184, 166, 0.50), transparent 70%);
+  --tone-glow: rgba(20, 184, 166, 0.45);
+}
 /* ``neutral`` = paleta stone (warmer gray que slate) — usada pelo
    grupo "Outros" da biblioteca para nós que não têm casa definitiva
-   ainda (SQL Database, API REST, Dados Inline). */
+   ainda (API REST, Dados Inline). */
 .wf-node[data-tone="neutral"] {
   --tone-solid: #78716c;
   --tone-ink: #44403c;
@@ -468,6 +477,13 @@
   --tone-tile: linear-gradient(180deg, #fdf2f8, #fce7f3);
   --tone-tile-ring: rgba(236, 72, 153, 0.25);
   --tone-glow: rgba(236, 72, 153, 0.35);
+}
+.lib-tone[data-tone="teal"] {
+  --tone-dot: #14b8a6;
+  --tone-ink: #0f766e;
+  --tone-tile: linear-gradient(180deg, #f0fdfa, #ccfbf1);
+  --tone-tile-ring: rgba(20, 184, 166, 0.25);
+  --tone-glow: rgba(20, 184, 166, 0.35);
 }
 .lib-tone[data-tone="neutral"] {
   --tone-dot: #78716c;

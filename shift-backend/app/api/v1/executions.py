@@ -67,8 +67,17 @@ def _open_node_duckdb_table(
 
     Lança HTTPException em caso de caminho inválido, arquivo ausente ou erro
     de query. O chamador é responsável por fechar a conexão.
+
+    Fallback para nós com branches (bulk_insert escreve em
+    ``{node_id}_success.duckdb`` em vez de ``{node_id}.duckdb``) — quando o
+    arquivo principal não existe, tenta o ``_success`` como preview default.
     """
-    db_path = _SHIFT_EXECUTIONS_DIR / execution_id / f"{sanitize_name(node_id)}.duckdb"
+    safe_node = sanitize_name(node_id)
+    base_dir = _SHIFT_EXECUTIONS_DIR / execution_id
+    main_path = base_dir / f"{safe_node}.duckdb"
+    success_path = base_dir / f"{safe_node}_success.duckdb"
+
+    db_path = main_path if main_path.exists() else success_path
 
     try:
         resolved = db_path.resolve()

@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { ChevronDown, Plus, Search, Trash2 } from "lucide-react"
+import { ChevronDown, ChevronRight, Plus, Search, Terminal, Trash2 } from "lucide-react"
 import { MorphLoader } from "@/components/ui/morph-loader"
 import { cn } from "@/lib/utils"
 import { useDashboard } from "@/lib/context/dashboard-context"
@@ -38,6 +38,18 @@ const DB_COLORS: Record<string, string> = {
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type ScriptMode = "query" | "execute" | "execute_many"
+
+const MODE_LABELS: Record<ScriptMode, string> = {
+  query: "Query",
+  execute: "Execute",
+  execute_many: "Exec Many",
+}
+
+const MODE_DESCRIPTIONS: Record<ScriptMode, string> = {
+  query: "Materializa o resultado em DuckDB — disponível downstream como dataset",
+  execute: "Executa DML/DDL — retorna rows_affected, sem dataset downstream",
+  execute_many: "Executa o script uma vez para cada linha do dataset upstream",
+}
 
 interface OutputColumn {
   name: string
@@ -81,7 +93,6 @@ function rowsToParameters(
     const key = row.name.trim()
     if (!key) continue
     if (mode === "execute_many") {
-      // execute_many values are column name strings
       out[key] = row.value.mode === "fixed" ? row.value.value : ""
     } else {
       out[key] = row.value
@@ -101,6 +112,7 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
   const [connectionsLoading, setConnectionsLoading] = useState(false)
   const [showConnectionPicker, setShowConnectionPicker] = useState(false)
   const [connectionSearch, setConnectionSearch] = useState("")
+  const [showAdvanced, setShowAdvanced] = useState(false)
 
   const selectedConnectionId = (data.connection_id as string) ?? ""
   const selectedConnection =
@@ -310,17 +322,26 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
         <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           Modo
         </label>
-        <select
-          value={mode}
-          onChange={(e) => update({ mode: e.target.value as ScriptMode })}
-          className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-primary"
-        >
-          <option value="query">query — SELECT (materializa em DuckDB)</option>
-          <option value="execute">execute — INSERT/UPDATE/DELETE/DDL</option>
-          <option value="execute_many">
-            execute_many — itera sobre linhas upstream
-          </option>
-        </select>
+        <div className="grid grid-cols-3 gap-0.5 rounded-lg bg-muted p-0.5">
+          {(["query", "execute", "execute_many"] as ScriptMode[]).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => update({ mode: m })}
+              className={cn(
+                "rounded-md py-1.5 text-[11px] font-semibold transition-all",
+                mode === m
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {MODE_LABELS[m]}
+            </button>
+          ))}
+        </div>
+        <p className="text-[10px] text-muted-foreground">
+          {MODE_DESCRIPTIONS[mode]}
+        </p>
       </div>
 
       {/* ── Script SQL ── */}
@@ -328,18 +349,32 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
         <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           Script SQL
         </label>
-        <textarea
-          value={script}
-          onChange={(e) => update({ script: e.target.value })}
-          placeholder={"SELECT * FROM clientes WHERE cnpj = :cnpj"}
-          rows={8}
-          spellCheck={false}
-          className="w-full rounded-md border border-input bg-background px-2.5 py-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
-        />
-        <p className="text-[10px] text-muted-foreground">
-          Use bindings nomeados no formato <code>:nome</code>. Interpolação de
-          string (<code>{"{var}"}</code>) é bloqueada por segurança.
-        </p>
+        <div>
+          <div className="flex items-center gap-2 rounded-t-md border border-input border-b-0 bg-muted px-3 py-1.5">
+            <Terminal className="size-3 text-muted-foreground" />
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              SQL
+            </span>
+            <div className="flex-1" />
+            <span className="text-[9px] text-muted-foreground/60">
+              use <code className="font-mono">:nome</code> para parâmetros
+            </span>
+          </div>
+          <textarea
+            value={script}
+            onChange={(e) => update({ script: e.target.value })}
+            placeholder={
+              mode === "query"
+                ? "SELECT * FROM clientes WHERE cnpj = :cnpj"
+                : mode === "execute"
+                  ? "UPDATE clientes SET ativo = :ativo WHERE id = :id"
+                  : "INSERT INTO log (ref) VALUES (:id)"
+            }
+            rows={8}
+            spellCheck={false}
+            className="w-full rounded-b-md rounded-t-none border border-input bg-background px-2.5 py-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground focus:ring-1 focus:ring-primary"
+          />
+        </div>
       </div>
 
       {/* ── Parâmetros ── */}
@@ -374,7 +409,6 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
 
             {parameters.map((p, i) => (
               <div key={i} className="flex items-start gap-2">
-                {/* Bind name */}
                 <input
                   type="text"
                   value={p.name}
@@ -383,9 +417,7 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
                   className="h-7 w-24 shrink-0 rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
                 />
 
-                {/* Value */}
                 {mode === "execute_many" ? (
-                  // execute_many: bind column name from upstream DuckDB table
                   upstreamColumnNames.length > 0 ? (
                     <select
                       value={p.value.mode === "fixed" ? p.value.value : ""}
@@ -413,7 +445,6 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
                     />
                   )
                 ) : (
-                  // query / execute: full ValueInput with chip support
                   <ValueInput
                     value={p.value}
                     onChange={(pv) => updateParameterValue(i, pv)}
@@ -445,100 +476,121 @@ export function SqlScriptConfig({ data, onUpdate }: SqlScriptConfigProps) {
         )}
       </div>
 
-      {/* ── Output schema (apenas query) ── */}
-      {mode === "query" && (
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between">
-            <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-              Schema de saída
-            </label>
-            <button
-              type="button"
-              onClick={addColumn}
-              className="flex items-center gap-1 text-[10px] font-medium text-primary transition-colors hover:text-primary/80"
-            >
-              <Plus className="size-3" />
-              Adicionar coluna
-            </button>
-          </div>
-
-          {outputSchema.length === 0 ? (
-            <p className="text-[10px] text-muted-foreground">
-              Opcional. Declare colunas para validar o retorno e expor o
-              mapeamento downstream.
-            </p>
+      {/* ── Avançado (schema, output field, timeout) ── */}
+      <div>
+        <button
+          type="button"
+          onClick={() => setShowAdvanced((v) => !v)}
+          className="flex w-full items-center gap-1.5 border-t border-border pt-3 text-[11px] font-medium text-muted-foreground transition-colors hover:text-foreground"
+        >
+          {showAdvanced ? (
+            <ChevronDown className="size-3.5" />
           ) : (
-            <div className="space-y-1.5">
-              <div className="flex items-center gap-2 px-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/60">
-                <span className="flex-1">Nome</span>
-                <span className="w-24">Tipo SQL</span>
-                <span className="w-7" />
-              </div>
-              {outputSchema.map((col, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={col.name}
-                    onChange={(e) =>
-                      updateColumn(i, { name: e.target.value })
-                    }
-                    placeholder="nome_coluna"
-                    className="h-7 flex-1 rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
-                  />
-                  <input
-                    type="text"
-                    value={col.type}
-                    onChange={(e) =>
-                      updateColumn(i, { type: e.target.value })
-                    }
-                    placeholder="VARCHAR"
-                    className="h-7 w-24 rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
-                  />
+            <ChevronRight className="size-3.5" />
+          )}
+          Avançado
+          {!showAdvanced && (outputSchema.length > 0 || outputField !== "sql_result") && (
+            <span className="ml-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-[9px] font-semibold text-primary">
+              configurado
+            </span>
+          )}
+        </button>
+
+        {showAdvanced && (
+          <div className="mt-3 space-y-4">
+            {/* Output schema — apenas query */}
+            {mode === "query" && (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                    Schema de saída
+                  </label>
                   <button
                     type="button"
-                    onClick={() => removeColumn(i)}
-                    className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                    onClick={addColumn}
+                    className="flex items-center gap-1 text-[10px] font-medium text-primary transition-colors hover:text-primary/80"
                   >
-                    <Trash2 className="size-3" />
+                    <Plus className="size-3" />
+                    Adicionar coluna
                   </button>
                 </div>
-              ))}
+
+                {outputSchema.length === 0 ? (
+                  <p className="text-[10px] text-muted-foreground">
+                    Opcional. Declare colunas para validar o retorno e expor o
+                    mapeamento downstream.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2 px-1 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+                      <span className="flex-1">Nome</span>
+                      <span className="w-24">Tipo SQL</span>
+                      <span className="w-7" />
+                    </div>
+                    {outputSchema.map((col, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={col.name}
+                          onChange={(e) => updateColumn(i, { name: e.target.value })}
+                          placeholder="nome_coluna"
+                          className="h-7 flex-1 rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
+                        />
+                        <input
+                          type="text"
+                          value={col.type}
+                          onChange={(e) => updateColumn(i, { type: e.target.value })}
+                          placeholder="VARCHAR"
+                          className="h-7 w-24 rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-primary"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeColumn(i)}
+                          className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                        >
+                          <Trash2 className="size-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Campo de saída */}
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                Campo de saída
+              </label>
+              <input
+                type="text"
+                value={outputField}
+                onChange={(e) => update({ output_field: e.target.value })}
+                placeholder="sql_result"
+                className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs outline-none focus:ring-1 focus:ring-primary"
+              />
             </div>
-          )}
-        </div>
-      )}
 
-      {/* ── Campo de saída ── */}
-      <div className="space-y-1.5">
-        <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-          Campo de saída
-        </label>
-        <input
-          type="text"
-          value={outputField}
-          onChange={(e) => update({ output_field: e.target.value })}
-          placeholder="sql_result"
-          className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs outline-none focus:ring-1 focus:ring-primary"
-        />
-      </div>
-
-      {/* ── Timeout ── */}
-      <div className="space-y-1.5">
-        <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-          Timeout (segundos)
-        </label>
-        <input
-          type="number"
-          value={timeoutSeconds}
-          onChange={(e) =>
-            update({
-              timeout_seconds: parseInt(e.target.value, 10) || 60,
-            })
-          }
-          min={1}
-          max={600}
-          className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs outline-none focus:ring-1 focus:ring-primary"
-        />
+            {/* Timeout */}
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                Timeout (segundos)
+              </label>
+              <input
+                type="number"
+                value={timeoutSeconds}
+                onChange={(e) =>
+                  update({
+                    timeout_seconds: parseInt(e.target.value, 10) || 60,
+                  })
+                }
+                min={1}
+                max={600}
+                className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs outline-none focus:ring-1 focus:ring-primary"
+              />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

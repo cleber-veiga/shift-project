@@ -130,11 +130,39 @@ function typeLabel(type: FieldType): string {
   }
 }
 
-// ─── Persisted panel widths (survives modal close/reopen within session) ─────
+// ─── Persisted panel widths (localStorage — sobrevive a F5) ──────────────────
 
-const _savedPanelWidths: { left: number | null; center: number | null } = {
-  left: null,
-  center: null,
+const PANEL_WIDTHS_STORAGE_KEY = "shift.nodeConfig.panelWidths"
+const PANEL_MIN_WIDTH = 240
+const PANEL_HANDLE_TOTAL = 16  // 2 handles x w-2 (= 8px cada)
+
+interface SavedPanelWidths {
+  left: number | null
+  center: number | null
+}
+
+function loadSavedPanelWidths(): SavedPanelWidths {
+  if (typeof window === "undefined") return { left: null, center: null }
+  try {
+    const raw = window.localStorage.getItem(PANEL_WIDTHS_STORAGE_KEY)
+    if (!raw) return { left: null, center: null }
+    const parsed = JSON.parse(raw) as Partial<SavedPanelWidths>
+    return {
+      left: typeof parsed.left === "number" ? parsed.left : null,
+      center: typeof parsed.center === "number" ? parsed.center : null,
+    }
+  } catch {
+    return { left: null, center: null }
+  }
+}
+
+function saveSavedPanelWidths(w: SavedPanelWidths) {
+  if (typeof window === "undefined") return
+  try {
+    window.localStorage.setItem(PANEL_WIDTHS_STORAGE_KEY, JSON.stringify(w))
+  } catch {
+    // quota / privacy mode: ignora silenciosamente
+  }
 }
 
 // ─── Main Modal ───────────────────────────────────────────────────────────────
@@ -156,12 +184,50 @@ export function NodeConfigModal({
   const Icon = getNodeIcon(definition?.icon ?? "Database")
   const label = (node.data as Record<string, unknown>).label as string | undefined
 
-  // Compute upstream columns for the UpstreamFieldsContext
+  // Compute upstream columns for the UpstreamFieldsContext.
+  // Tenta multiplas estrategias em cascata pra cobrir os varios shapes que
+  // ``up.output`` pode assumir (SSE lean, inline pinned, inline_data, etc.)
+  // — sem isso, pickers/auto-map de nos downstream ficavam vazios pra
+  // qualquer upstream que materializa em DuckDB.
   const upstreamColumns = useMemo(() => {
-    for (const up of upstreamOutputs) {
-      if (up.output && Array.isArray(up.output.columns)) {
-        return up.output.columns as string[]
+    function extractFromOutput(out: Record<string, unknown>): string[] | null {
+      // 1) Array `columns` direto — vindo do SSE node_complete (rota nova)
+      //    ou de pinned output materializado.
+      if (Array.isArray(out.columns) && out.columns.length > 0) {
+        return out.columns as string[]
       }
+      // 2) `data` como array de dicts — caso de pinned/inline com dados crus.
+      const candidates = ["data", "rows"]
+      const outputField = typeof out.output_field === "string" ? out.output_field : null
+      if (outputField) candidates.unshift(outputField)
+      for (const key of candidates) {
+        const v = out[key]
+        if (
+          Array.isArray(v) && v.length > 0 &&
+          typeof v[0] === "object" && v[0] !== null && !Array.isArray(v[0])
+        ) {
+          return Object.keys(v[0] as Record<string, unknown>)
+        }
+      }
+      // 3) `data` como dict simples (Manual com payload de objeto unico) —
+      //    expoe as chaves como pseudo-colunas.
+      const dataField = out.data
+      if (
+        dataField && typeof dataField === "object" && !Array.isArray(dataField)
+        // Evita confundir DuckDbReference (storage_type/database_path) com dados.
+        && !("storage_type" in (dataField as Record<string, unknown>))
+        && !("database_path" in (dataField as Record<string, unknown>))
+      ) {
+        const keys = Object.keys(dataField as Record<string, unknown>)
+        if (keys.length > 0) return keys
+      }
+      return null
+    }
+
+    for (const up of upstreamOutputs) {
+      if (!up.output) continue
+      const cols = extractFromOutput(up.output)
+      if (cols && cols.length > 0) return cols
     }
     return []
   }, [upstreamOutputs])
@@ -381,12 +447,14 @@ export function NodeConfigModal({
 
   // ── Resizable panels ──────────────────────────────────────────────────────
   const containerRef = useRef<HTMLDivElement>(null)
-  const [leftWidth, setLeftWidth]     = useState<number | null>(_savedPanelWidths.left)
-  const [centerWidth, setCenterWidth] = useState<number | null>(_savedPanelWidths.center)
+  const [leftWidth, setLeftWidth] = useState<number | null>(() => loadSavedPanelWidths().left)
+  const [centerWidth, setCenterWidth] = useState<number | null>(() => loadSavedPanelWidths().center)
 
-  // Persist widths so they survive modal close/reopen
-  useEffect(() => { _savedPanelWidths.left = leftWidth }, [leftWidth])
-  useEffect(() => { _savedPanelWidths.center = centerWidth }, [centerWidth])
+  // Persiste larguras em localStorage — sobrevive a F5 e troca de no.
+  useEffect(() => {
+    saveSavedPanelWidths({ left: leftWidth, center: centerWidth })
+  }, [leftWidth, centerWidth])
+
   const draggingRef = useRef<"left" | "right" | null>(null)
   const startXRef   = useRef(0)
   const startLRef   = useRef(0)
@@ -394,6 +462,23 @@ export function NodeConfigModal({
 
   const leftRef   = useRef<HTMLDivElement>(null)
   const centerRef = useRef<HTMLDivElement>(null)
+
+  // Clampa larguras salvas se o viewport encolheu desde a ultima sessao —
+  // sem isso, larguras antigas extrapolam o container atual e quebram o
+  // layout. Roda apenas no mount.
+  useEffect(() => {
+    if (!containerRef.current) return
+    const totalW = containerRef.current.offsetWidth
+    const maxBoth = totalW - PANEL_MIN_WIDTH - PANEL_HANDLE_TOTAL
+    if (leftWidth !== null && centerWidth !== null) {
+      if (leftWidth + centerWidth > maxBoth) {
+        const ratio = maxBoth / (leftWidth + centerWidth)
+        setLeftWidth(Math.max(PANEL_MIN_WIDTH, Math.floor(leftWidth * ratio)))
+        setCenterWidth(Math.max(PANEL_MIN_WIDTH, Math.floor(centerWidth * ratio)))
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const handlePointerDown = useCallback(
     (side: "left" | "right", e: React.PointerEvent) => {
@@ -413,12 +498,25 @@ export function NodeConfigModal({
       if (!draggingRef.current || !containerRef.current) return
       const dx = e.clientX - startXRef.current
       const totalW = containerRef.current.offsetWidth
-      const MIN = 240
+      // Right panel = totalW - leftW - centerW - HANDLES. Para garantir que
+      // ele nao encolha abaixo de MIN, calculamos o teto com base na largura
+      // ATUAL do painel que nao esta sendo arrastado — so assim o lado oposto
+      // mantem espaco suficiente.
       if (draggingRef.current === "left") {
-        const newLeft = Math.max(MIN, Math.min(startLRef.current + dx, totalW - MIN * 2 - 16))
+        const currentCenter = centerRef.current?.offsetWidth ?? 0
+        const maxLeft = totalW - currentCenter - PANEL_MIN_WIDTH - PANEL_HANDLE_TOTAL
+        const newLeft = Math.max(
+          PANEL_MIN_WIDTH,
+          Math.min(startLRef.current + dx, Math.max(PANEL_MIN_WIDTH, maxLeft)),
+        )
         setLeftWidth(newLeft)
       } else {
-        const newCenter = Math.max(MIN, Math.min(startCRef.current + dx, totalW - MIN * 2 - 16))
+        const currentLeft = leftRef.current?.offsetWidth ?? 0
+        const maxCenter = totalW - currentLeft - PANEL_MIN_WIDTH - PANEL_HANDLE_TOTAL
+        const newCenter = Math.max(
+          PANEL_MIN_WIDTH,
+          Math.min(startCRef.current + dx, Math.max(PANEL_MIN_WIDTH, maxCenter)),
+        )
         setCenterWidth(newCenter)
       }
     }
@@ -494,7 +592,7 @@ export function NodeConfigModal({
           <div
             ref={leftRef}
             className="flex min-h-0 min-w-[240px] flex-col"
-            style={leftWidth ? { width: leftWidth, flexShrink: 0, flexGrow: 0 } : { flex: 7 }}
+            style={leftWidth ? { width: leftWidth, flexShrink: 0, flexGrow: 0 } : { flex: 1 }}
           >
             <UsedSourcesContext.Provider value={usedSources}>
               <InputPanel upstreamOutputs={upstreamOutputs} />
@@ -513,7 +611,7 @@ export function NodeConfigModal({
           <div
             ref={centerRef}
             className="flex min-h-0 min-w-[240px] flex-col"
-            style={centerWidth ? { width: centerWidth, flexShrink: 0, flexGrow: 0 } : { flex: 6 }}
+            style={centerWidth ? { width: centerWidth, flexShrink: 0, flexGrow: 0 } : { flex: 1 }}
           >
             {/* Parameters header with execute button */}
             <div className="flex h-9 shrink-0 items-center justify-between border-b border-border px-3">
@@ -983,9 +1081,33 @@ function OutputPanel({
             <XCircle className="size-3" />
             Erro
           </div>
-          <div className="rounded-md border border-red-500/20 bg-red-500/5 p-2.5 text-[11px] text-red-600 break-all dark:text-red-400">
-            {currentOutput.error}
-          </div>
+          {currentOutput.error ? (
+            <div className="rounded-md border border-red-500/20 bg-red-500/5 p-2.5 text-[11px] text-red-600 break-all dark:text-red-400">
+              {currentOutput.error}
+            </div>
+          ) : (
+            <div className="rounded-md border border-red-500/20 bg-red-500/5 p-2.5 text-[11px] text-red-600 dark:text-red-400">
+              O nó falhou sem mensagem detalhada. Conecte o handle{" "}
+              <code className="font-mono font-semibold">on_error</code> a outro
+              nó (ex.: Saída do Fluxo) e re-execute para inspecionar o motivo
+              por linha.
+            </div>
+          )}
+          {/* Mesmo em erro, se houver branch on_error materializado, mostra
+              os dados rejeitados — UX critica: usuario vê AGORA por que falhou
+              sem precisar re-wirar o workflow. O preview API ja faz fallback
+              ``{node_id}_on_error.duckdb`` quando o principal nao existe. */}
+          {currentOutput.output_reference && currentOutput.execution_id && (
+            <div className="mt-2 border-t border-border pt-2">
+              <div className="mb-1.5 text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Branch on_error (linhas rejeitadas)
+              </div>
+              <DataViewer
+                output={{ output_reference: currentOutput.output_reference }}
+                executionId={currentOutput.execution_id}
+              />
+            </div>
+          )}
         </div>
       ) : currentOutput?.output || currentOutput?.output_reference ? (
         <DataViewer

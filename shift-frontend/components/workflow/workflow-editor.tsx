@@ -1078,6 +1078,9 @@ function WorkflowEditorInner({
                 duration_ms: event.duration_ms,
                 output_reference: event.output_reference,
                 row_count: event.row_count,
+                columns: Array.isArray(event.columns) ? (event.columns as string[]) : null,
+                failed_rows_count:
+                  typeof event.failed_rows_count === "number" ? event.failed_rows_count : null,
                 execution_id: execId,
                 error: event.error,
                 is_pinned: event.is_pinned === true,
@@ -1238,15 +1241,19 @@ function WorkflowEditorInner({
       const srcNode = nodes.find((n) => n.id === nodeId)
       const srcData = (srcNode?.data ?? {}) as Record<string, unknown>
       const state = nodeExecStates[nodeId]
-      // SSE node_complete é "lean": só carrega output_reference + row_count,
-      // não traz dados inline. Sintetizamos o shape esperado pelo DataViewer
-      // (que detecta {output_reference, ...} como kind=execution_preview e
-      // busca a prévia sob demanda via /executions/{id}/nodes/{id}/preview).
-      // Sem isso, nó downstream (mapper, filter, etc.) ficaria mostrando
-      // "Execute os nós anteriores" mesmo após a execução completar.
+      // SSE node_complete é "lean": só carrega output_reference + row_count
+      // + columns, não traz dados inline. Sintetizamos o shape esperado pelo
+      // DataViewer (que detecta {output_reference, ...} como kind=execution_preview
+      // e busca a prévia sob demanda via /executions/{id}/nodes/{id}/preview).
+      // O ``columns`` aqui alimenta useUpstreamFields() — pickers/auto-map de
+      // nós downstream (Mapper, Filter, Bulk Insert, etc.) ficavam vazios sem isso.
       const output: Record<string, unknown> | null = state?.output
         ?? (state?.output_reference
-          ? { output_reference: state.output_reference, row_count: state.row_count ?? null }
+          ? {
+              output_reference: state.output_reference,
+              row_count: state.row_count ?? null,
+              columns: state.columns ?? null,
+            }
           : null)
       return {
         nodeId,
